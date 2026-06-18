@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -32,6 +33,15 @@ type Client struct {
 	// the configured model (see SetEmbedModel) and can be overridden directly.
 	QueryPrefix string
 	DocPrefix   string
+
+	// EmbedDim, if positive and smaller than the model's native dimension,
+	// truncates every embedding to its first EmbedDim coordinates and renormalizes
+	// to unit length. This is Matryoshka Representation Learning: models like
+	// EmbeddingGemma are trained so a prefix of the vector is itself a usable
+	// embedding, trading a little accuracy for proportionally smaller, faster
+	// vectors. Use a dimension the model documents (768/512/256/128 for
+	// EmbeddingGemma); 0 keeps the full embedding.
+	EmbedDim int
 }
 
 // New returns a client honoring the OLLAMA_HOST environment variable, falling
@@ -139,7 +149,33 @@ func (c *Client) embed(ctx context.Context, texts []string, prefix string) ([][]
 	if len(out.Embeddings) != len(texts) {
 		return nil, fmt.Errorf("ollama embed: got %d embeddings for %d inputs", len(out.Embeddings), len(texts))
 	}
+	if c.EmbedDim > 0 {
+		for i, v := range out.Embeddings {
+			out.Embeddings[i] = truncateNormalize(v, c.EmbedDim)
+		}
+	}
 	return out.Embeddings, nil
+}
+
+// truncateNormalize keeps the first dim coordinates of a Matryoshka embedding and
+// rescales the result to unit length. A vector already at or below dim is
+// returned unchanged (renormalization is the store's job for full vectors).
+func truncateNormalize(v []float32, dim int) []float32 {
+	if dim <= 0 || dim >= len(v) {
+		return v
+	}
+	out := v[:dim]
+	var n float64
+	for _, x := range out {
+		n += float64(x) * float64(x)
+	}
+	if n > 0 {
+		inv := float32(1 / math.Sqrt(n))
+		for i := range out {
+			out[i] *= inv
+		}
+	}
+	return out
 }
 
 // EmbedOne embeds a single string.

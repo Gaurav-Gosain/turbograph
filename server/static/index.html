@@ -304,9 +304,9 @@
           <small>how many chunks to retrieve and ground on</small>
         </div>
         <div class="po-row">
-          <div class="lab">graph boost <b id="vMix">0.20</b></div>
-          <input id="pMix" type="range" min="0" max="1" step="0.05" value="0.2">
-          <small>how much graph-associated neighbors are added on top of direct relevance; 0 is pure retrieval</small>
+          <div class="lab">graph boost <b id="vMix">0.00</b></div>
+          <input id="pMix" type="range" min="0" max="1" step="0.05" value="0">
+          <small>adds graph-associated neighbors on top of direct relevance; off by default (it trades precision for thematic reach)</small>
         </div>
         <div class="po-row">
           <div class="lab">diversity <b id="vMMR">0.00</b></div>
@@ -458,7 +458,7 @@ $("#pRerank").addEventListener("change",()=>{syncReadouts();saveSettings()});
 const settingsEl=$("#settings");
 $("#settingsBtn").onclick=e=>{e.stopPropagation();settingsEl.classList.toggle("open")};
 $("#settingsClose").onclick=()=>settingsEl.classList.remove("open");
-$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0.2;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;syncReadouts();saveSettings()};
+$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;syncReadouts();saveSettings()};
 document.addEventListener("click",e=>{
   if(settingsEl.classList.contains("open")&&!settingsEl.contains(e.target)&&e.target.id!=="settingsBtn")
     settingsEl.classList.remove("open");
@@ -742,7 +742,7 @@ async function graphSearch(q){
   if(!q.trim())return;
   try{
     const r=await api(bk("/query"),{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({query:q,top_k:+$("#pTopK").value||8,graph_mix:(+$("#pMix").value)||-1,entity_mix:+$("#pEnt").value})});
+      body:JSON.stringify({query:q,top_k:+$("#pTopK").value||8,graph_mix:+$("#pMix").value,entity_mix:+$("#pEnt").value})});
     highlightIDs((r.results||[]).map(x=>x.id));
     if(!G.highlight.size)toast("no matches");
   }catch(e){toast(e.message,true)}
@@ -843,7 +843,7 @@ async function sendChat(){
   let nb=true;
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
-      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:(+$("#pMix").value)||-1,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
+      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
         min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,history,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){

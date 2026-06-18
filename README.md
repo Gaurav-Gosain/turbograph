@@ -103,17 +103,22 @@ flowchart LR
   M --> R[ranked chunks]
 ```
 
-The graph step is the point: a chunk that is one hop from a strong hit, but not
-directly similar to the query, still receives mass and can be retrieved. That is
-what makes it graph RAG rather than plain nearest-neighbor search. The graph score
-is added on top of direct relevance rather than blended into it, so it lifts
-associated chunks without ever demoting a strong direct match; the boost defaults
-to a modest level and can be turned off for pure retrieval. This is measured, not
-assumed, on BEIR SciFact and NFCorpus; see [docs/benchmarks.md](docs/benchmarks.md).
+Direct relevance is dense cosine plus a small additive BM25 term (`relevance =
+dense + LexicalWeight * bm25`), which preserves the dense ranking while letting an
+exact keyword or entity match lift a chunk. The optional graph adds a PageRank
+boost on top, so a chunk one hop from a strong hit can still surface. But
+benchmarks showed similarity-graph reranking lowers precision on both single-hop
+and multi-hop retrieval, so it is off by default and opt-in for thematic queries;
+the graph still powers communities and the visualization. Everything here is
+measured on BEIR SciFact, NFCorpus, and MultiHop-RAG, with the honest accounting
+(including the changes the data did not support) in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 Embeddings are asymmetric: instruction-tuned models (the default EmbeddingGemma,
 and E5, BGE, Nomic) are fed the query and document prompts they were trained on,
 which is worth several points of nDCG@10 over embedding both as raw text.
+Embeddings can also be truncated to a smaller Matryoshka dimension to trade a
+little accuracy for a third of the vector memory.
 
 ## Two graph modes
 

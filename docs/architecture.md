@@ -104,33 +104,39 @@ change was a 1.8x build speedup.
 
 ```mermaid
 flowchart TB
-  Q[query] --> DENSE[HNSW dense hits]
+  Q[query] --> DENSE[HNSW dense hits, cosine]
   Q --> SPARSE[BM25 sparse hits]
-  DENSE --> RRF[reciprocal rank fusion k=60]
-  SPARSE --> RRF
-  RRF --> SEEDS[seed vector for PageRank]
-  SEEDS --> PPR[Personalized PageRank over similarity graph]
-  PPR --> BLEND[score: relevance + GraphMix * pagerank]
-  BLEND --> MMR[optional MMR diversity]
-  MMR --> OUT[ranked chunks]
+  DENSE --> REL[relevance = dense + LexicalWeight * bm25]
+  SPARSE --> REL
+  REL --> OUT[ranked chunks]
+  DENSE -. seed .-> PPR[optional: PageRank over similarity graph]
+  SPARSE -. seed .-> PPR
+  PPR -. GraphMix .-> OUT
 ```
 
-The similarity graph connects each chunk to its nearest neighbors (plus
-document-order edges). Seeding Personalized PageRank with the fused hits and
-propagating means a chunk relevant by association, one hop from a strong hit, is
-retrieved even with near-zero direct similarity. Communities are detected by label
-propagation and exposed for thematic or global queries.
+The direct relevance score adds the BM25 score to the dense cosine:
+`relevance = dense + LexicalWeight * bm25`, both normalized to their per-query
+max. This is an additive, score-based fusion on purpose. Reciprocal rank fusion
+(the usual hybrid) is rank-only: it discards the dense cosine magnitude, and when
+the dense model is much stronger than BM25 it flattens the good ranking and lets
+weaker lexical hits intrude, which measurably *lowered* nDCG on a dense-dominant
+benchmark. Keeping the dense magnitude and adding a bounded BM25 term instead
+preserves the strong ranking while letting an exact keyword or entity match lift a
+chunk. A small default weight improves both a dense-dominant benchmark (SciFact)
+and a keyword/entity-heavy one (MultiHop-RAG), so the lexical signal is on by
+default; `DisableLexical` or a negative weight turns it off.
 
-The graph signal is combined with direct relevance **additively**, not as a convex
-blend: the score is `relevance + GraphMix * pagerank`. This is deliberate. A
-convex blend (`mix * pagerank + (1-mix) * relevance`) makes PageRank centrality
-trade directly against relevance, and at any substantial mix a high-centrality but
-off-topic chunk displaces a genuinely relevant one, which collapses precision. The
-additive form keeps a strong direct hit at the top and lets the graph only *lift*
-associated chunks out of the tail, so it adds recall without sacrificing
-precision. `GraphMix` defaults to a modest `0.2`; a negative value opts out of the
-graph entirely for pure hybrid retrieval. This was measured on standard retrieval
-benchmarks; see [benchmarks.md](benchmarks.md).
+The optional similarity graph connects each chunk to its nearest neighbors (plus
+document-order edges). Seeding Personalized PageRank with the hits and propagating
+means a chunk relevant by association, one hop from a strong hit, can be retrieved
+even with near-zero direct similarity, and the score becomes
+`relevance + GraphMix * pagerank` (additive, so the graph can only *lift* a chunk,
+never demote a strong direct hit). But benchmarks showed that similarity-graph
+reranking lowers precision on standard single-hop *and* multi-hop retrieval, so it
+is **off by default** (`GraphMix` zero) and opt-in for thematic or associative
+queries. Communities are detected by label propagation and exposed for global
+queries and the visualization. The honest accounting is in
+[benchmarks.md](benchmarks.md).
 
 ## Asymmetric embeddings
 
@@ -144,6 +150,27 @@ store embeds the query with the query prompt at search time through the optional
 `QueryEmbedder` interface, falling back to the plain path for embedders that do
 not distinguish. On SciFact this prompt difference alone is worth several points
 of nDCG@10.
+
+### Matryoshka truncation
+
+Models like EmbeddingGemma are trained with Matryoshka Representation Learning, so
+a prefix of the embedding is itself a usable embedding. Setting `EmbedDim` on the
+client truncates every vector to its first N coordinates and renormalizes,
+trading a little accuracy for proportionally smaller and faster vectors (768 to
+256 costs about a point of MTEB while cutting the stored vectors to a third). It
+is off by default; pick a dimension the model documents (768/512/256/128).
+
+## Pseudo-relevance feedback (optional)
+
+`RetrieveParams.PRF` enables Rocchio-style feedback entirely in embedding space:
+an initial dense search returns the top PRF chunks, their unit vectors are
+averaged into the query (the original query stays at full weight), and the
+expanded query is renormalized and used for the real retrieval. It costs one
+extra ANN search and no model call, and it surfaces chunks that share the topic's
+vocabulary without repeating the query's exact words. The original query is never
+discarded, which limits query drift, but a noisy initial result set can still
+mislead it, so it is opt-in. Lexical (BM25) seeding always uses the original query
+text, so feedback only nudges the dense side.
 
 ## Entity knowledge graph (optional)
 

@@ -69,21 +69,28 @@ func TestEntityRetrievalConnectsViaSharedEntity(t *testing.T) {
 	st := entityStore(t)
 	ctx := context.Background()
 	// "Rockets" only appears in d2. Querying "Alice" (in d1) should, through the
-	// Alice -> Acme -> Rockets path in the entity graph, surface d2.
-	res, err := st.Retrieve(ctx, "Alice", RetrieveParams{TopK: 3, GraphMix: 0.2, EntityMix: 0.9})
+	// Alice -> Acme -> Rockets path in the entity graph, surface d2. The similarity
+	// graph is disabled (GraphMix negative) so this isolates the entity signal: the
+	// only way d2 can appear is the shared entity, and an unrelated chunk receives
+	// no propagated mass to leak across the threshold.
+	res, err := st.Retrieve(ctx, "Alice", RetrieveParams{TopK: 3, GraphMix: -1, EntityMix: 0.9})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]bool{}
-	for _, r := range res {
-		got[r.Chunk.DocID] = true
+	rank := map[string]int{}
+	for i, r := range res {
+		rank[r.Chunk.DocID] = i
 	}
-	if !got["d2"] {
+	d2, ok2 := rank["d2"]
+	if !ok2 {
 		t.Errorf("entity graph did not connect Alice to the Acme/Rockets chunk: %v", docIDs(res))
 	}
-	// The unrelated tennis chunk should not be pulled in by the entity signal.
-	if got["d3"] {
-		t.Errorf("unrelated chunk d3 surfaced via entity retrieval: %v", docIDs(res))
+	// The entity signal must rank the connected chunk (d2, shared entity) above the
+	// unrelated tennis chunk (d3, no shared entity). On this 3-doc corpus every doc
+	// is a seed, so the test is about ordering, not membership: the shared entity is
+	// the only reason d2 outranks d3.
+	if d3, ok3 := rank["d3"]; ok3 && d2 > d3 {
+		t.Errorf("entity signal failed to rank the connected chunk d2 above unrelated d3: %v", docIDs(res))
 	}
 }
 

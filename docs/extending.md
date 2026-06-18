@@ -140,9 +140,23 @@ how extraction happens, so you only implement the one method.
 - Search: `HNSW.M`, `HNSW.EfConstruction`, `EfSearch`.
 - Hybrid: `DisableLexical`, `RRFK`.
 
-Retrieval is tuned per call with `rag.RetrieveParams`: `TopK`, `SeedK`,
-`GraphMix` (graph boost added on top of relevance; 0 uses the default, negative
-disables the graph), `MMRLambda` (diversity), and `Filter`.
+Retrieval is tuned per call with `rag.RetrieveParams`:
+
+- `TopK`, `SeedK` (candidate pool), `Filter` (metadata predicate).
+- `LexicalWeight`: BM25 weight added to dense relevance. Zero uses
+  `DefaultLexicalWeight` (a small, benchmark-chosen value); negative forces pure
+  dense.
+- `GraphMix`: PageRank boost added on top of relevance. Off by default (zero);
+  similarity-graph reranking lowers precision on standard retrieval, so it is
+  opt-in for thematic or associative queries.
+- `EntityMix`: weight of the entity knowledge graph (built on demand).
+- `PRF`, `PRFWeight`: pseudo-relevance feedback (off by default; helps some
+  corpora, hurts multi-hop).
+- `MMRLambda`: diversity.
+
+The embedding dimension is a client knob: `ollama.Client.EmbedDim` truncates
+Matryoshka embeddings (768/512/256/128 for EmbeddingGemma) for smaller, faster
+vectors.
 
 ## Asymmetric embedding prompts
 

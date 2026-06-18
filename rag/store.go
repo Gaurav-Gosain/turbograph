@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"sync"
@@ -469,10 +470,11 @@ func (s *Store) rebuildGraph() {
 	s.comm = graph.DetectCommunities(s.g, graph.CommunityOpts{Seed: s.cfg.Seed})
 }
 
-// DefaultGraphMix is the graph boost applied when RetrieveParams.GraphMix is left
-// unset. It is deliberately modest: the graph augments retrieval, it does not
-// replace it. See RetrieveParams.GraphMix.
-const DefaultGraphMix = 0.2
+// DefaultLexicalWeight is the BM25 weight used when RetrieveParams.LexicalWeight
+// is unset and the store indexes BM25. It is deliberately small: a light lexical
+// boost on top of the dense ranking improves keyword and entity matching while
+// staying near-neutral on dense-dominant corpora. See docs/benchmarks.md.
+const DefaultLexicalWeight = 0.25
 
 // RetrieveParams controls a retrieval.
 type RetrieveParams struct {
@@ -481,12 +483,29 @@ type RetrieveParams struct {
 	// GraphMix is how strongly the personalized-PageRank graph signal is added on
 	// top of direct relevance. The score is relevance + GraphMix*pagerank, so the
 	// graph can lift an associated chunk (one hop from a strong hit) into the
-	// results without demoting a strong direct match. Larger values surface more
-	// graph-associated, less directly-relevant chunks. 0 selects DefaultGraphMix;
-	// a negative value opts out entirely for pure hybrid (dense+BM25) retrieval.
-	GraphMix  float32
-	MMRLambda float32          // MMR relevance/diversity tradeoff; 0 disables diversification
-	EntityMix float32          // weight of the entity-graph signal in [0,1]; 0 ignores it
+	// results without demoting a strong direct match. It is off by default (0):
+	// graph reranking measurably lowers precision on standard retrieval, so it is
+	// opt-in for thematic or associative queries. Negative is clamped to 0.
+	GraphMix float32
+	// LexicalWeight is how strongly the BM25 score is added to the dense cosine in
+	// the direct relevance term (relevance = dense + LexicalWeight*bm25, both
+	// normalized to their per-query max). It preserves the dense ranking and lets
+	// an exact lexical match lift a chunk, which helps on keyword- and entity-heavy
+	// corpora and is near-neutral where dense already dominates. 0 is pure dense; a
+	// negative value is treated as 0. Ignored when the store has lexical disabled.
+	LexicalWeight float32
+	MMRLambda     float32 // MMR relevance/diversity tradeoff; 0 disables diversification
+	EntityMix     float32 // weight of the entity-graph signal in [0,1]; 0 ignores it
+	// PRF enables pseudo-relevance feedback: an initial dense search of this many
+	// chunks is run, their vectors are averaged into the query (Rocchio in
+	// embedding space), and the expanded query drives retrieval. It surfaces
+	// chunks that share the topic's vocabulary but not the query's exact words,
+	// which helps recall on multi-hop and underspecified queries. 0 disables it.
+	PRF int
+	// PRFWeight is how strongly the feedback centroid is mixed into the query
+	// (Rocchio beta). The original query is always kept at full weight so feedback
+	// refines rather than replaces it. Defaults to 0.5 when PRF is set.
+	PRFWeight float32
 	Filter    func(Chunk) bool // optional metadata filter
 	PPR       graph.PPRParams
 }
@@ -511,11 +530,12 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	if p.SeedK <= 0 {
 		p.SeedK = 3 * p.TopK
 	}
-	switch {
-	case p.GraphMix == 0:
-		p.GraphMix = DefaultGraphMix // unset: a modest graph boost on top of relevance
-	case p.GraphMix < 0:
-		p.GraphMix = 0 // explicit opt-out: pure hybrid retrieval, no graph
+	// The graph is opt-in. Benchmarks (see docs/benchmarks.md) show similarity-graph
+	// reranking lowers retrieval precision on standard single-hop and multi-hop
+	// tasks, so the default (zero) ranks by hybrid relevance alone; a positive
+	// GraphMix adds the graph boost for thematic or associative use.
+	if p.GraphMix < 0 {
+		p.GraphMix = 0
 	}
 	if p.PPR.Damping == 0 {
 		p.PPR = graph.DefaultPPR()
@@ -526,19 +546,52 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		return nil, err
 	}
 
-	seeds, sim := s.seedScores(query, qv[0], p.SeedK)
-	ppr := s.g.PersonalizedPageRank(seeds, p.PPR)
+	// Pseudo-relevance feedback: expand the query vector toward the centroid of
+	// its top hits before the main retrieval. Lexical (BM25) seeding still uses the
+	// original query text, so feedback only nudges the dense side.
+	if p.PRF > 0 {
+		qv[0] = s.prfExpand(qv[0], p.PRF, p.PRFWeight)
+	}
 
-	pprMax := maxF(ppr)
-	var simMax float32
+	// Direct relevance blends the dense cosine (magnitude preserved) with the BM25
+	// score additively: relevance = dense + LexicalWeight * bm25. This keeps the
+	// strong dense ranking that rank fusion would flatten, while letting an exact
+	// lexical match lift a chunk. It is independent of the graph, so lexical
+	// matching contributes even with the graph off. seeds (RRF) is used only to
+	// seed PageRank; sim is also the Similarity field and abstention signal.
+	seeds, sim, bm25 := s.seedScores(query, qv[0], p.SeedK)
+	// Lexical fusion is on by default when the store indexes BM25: an unset (zero)
+	// LexicalWeight uses DefaultLexicalWeight, a modest value that helps keyword and
+	// entity-heavy corpora and is near-neutral where dense already dominates. A
+	// negative value forces pure dense; a store built with DisableLexical has no
+	// BM25 scores, so the term is inert regardless.
+	switch {
+	case p.LexicalWeight == 0 && !s.cfg.DisableLexical:
+		p.LexicalWeight = DefaultLexicalWeight
+	case p.LexicalWeight < 0:
+		p.LexicalWeight = 0
+	}
+	var simMax, bm25Max float32
 	for _, v := range sim {
 		if v > simMax {
 			simMax = v
 		}
 	}
+	for _, v := range bm25 {
+		if v > bm25Max {
+			bm25Max = v
+		}
+	}
 
-	// Optional entity-graph signal: query entities propagated over the knowledge
-	// graph and projected onto chunks.
+	// The graph boost is computed only when asked for: PageRank over the whole
+	// graph is the expensive part of retrieval, and the default path does not use
+	// it. The entity signal is likewise optional.
+	var ppr []float32
+	var pprMax float32
+	if p.GraphMix > 0 {
+		ppr = s.g.PersonalizedPageRank(seeds, p.PPR)
+		pprMax = maxF(ppr)
+	}
 	var escore map[int]float32
 	if p.EntityMix > 0 && s.entCSR != nil {
 		escore = s.entityChunkScores(query)
@@ -548,30 +601,54 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		ord int
 		val float32
 	}
-	scored := make([]sc, 0, len(s.chunks))
-	for i := range s.chunks {
-		if p.Filter != nil && !p.Filter(s.chunks[i]) {
-			continue
-		}
-		var g float32
-		if pprMax > 0 {
-			g = ppr[i] / pprMax
-		}
+	var scored []sc
+	rel := func(ord int) float32 {
 		var d float32
 		if simMax > 0 {
-			d = sim[i] / simMax
+			d = sim[ord] / simMax
 		}
-		// Additive, not convex: the graph adds an associative boost on top of direct
-		// relevance rather than trading relevance away for it. A strong direct hit
-		// (d near 1) keeps its rank; a graph-associated chunk (d small, g large) is
-		// lifted from the tail. A convex blend let high-centrality chunks displace
-		// genuinely relevant ones, which collapsed precision at higher mixes.
-		val := d + p.GraphMix*g
-		if escore != nil {
-			val = (1-p.EntityMix)*val + p.EntityMix*escore[i]
+		if p.LexicalWeight > 0 && bm25Max > 0 {
+			d += p.LexicalWeight * bm25[ord] / bm25Max
 		}
-		if val > 0 {
-			scored = append(scored, sc{i, val})
+		return d
+	}
+	if ppr == nil && escore == nil {
+		// Fast path: pure hybrid. Only seeds (dense or BM25 hits) have a nonzero
+		// score, so rank those directly and skip the full-corpus scan and the
+		// PageRank pass.
+		scored = make([]sc, 0, len(seeds))
+		for ord := range seeds {
+			if p.Filter != nil && !p.Filter(s.chunks[ord]) {
+				continue
+			}
+			if v := rel(ord); v > 0 {
+				scored = append(scored, sc{ord, v})
+			}
+		}
+	} else {
+		// Graph and/or entity signal active: every chunk can receive propagated
+		// mass, so scan the corpus and add the boosts on top of relevance.
+		scored = make([]sc, 0, len(s.chunks))
+		for i := range s.chunks {
+			if p.Filter != nil && !p.Filter(s.chunks[i]) {
+				continue
+			}
+			var g float32
+			if pprMax > 0 {
+				g = ppr[i] / pprMax
+			}
+			// Additive, not convex: the graph adds an associative boost on top of
+			// direct relevance rather than trading relevance away for it. A strong
+			// direct hit keeps its rank; a graph-associated chunk (low relevance, high
+			// g) is lifted from the tail. A convex blend let high-centrality chunks
+			// displace genuinely relevant ones, which collapsed precision.
+			val := rel(i) + p.GraphMix*g
+			if escore != nil {
+				val = (1-p.EntityMix)*val + p.EntityMix*escore[i]
+			}
+			if val > 0 {
+				scored = append(scored, sc{i, val})
+			}
 		}
 	}
 	sort.Slice(scored, func(a, b int) bool { return scored[a].val > scored[b].val })
@@ -613,12 +690,15 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	return out, nil
 }
 
-// seedScores produces the PageRank seed vector (ordinal -> mass) and a per-ordinal
-// direct similarity map. With hybrid enabled, dense and sparse rankings are fused
-// by reciprocal rank fusion; otherwise dense cosine seeds directly.
-func (s *Store) seedScores(query string, qv []float32, seedK int) (map[int]float32, map[int]float32) {
+// seedScores runs the dense and sparse searches and returns three things: the
+// RRF-fused seed vector for PageRank (ordinal -> mass), the per-ordinal dense
+// cosine similarity (the magnitude signal, kept for the relevance score and the
+// Similarity field), and the per-ordinal BM25 score (the lexical signal). Keeping
+// the dense cosine and BM25 separate lets the caller blend them by score, which
+// preserves the dense magnitude that rank fusion alone would discard.
+func (s *Store) seedScores(query string, qv []float32, seedK int) (seeds, sim, bm25 map[int]float32) {
 	dense := s.hnsw.Search(qv, seedK, maxInt(s.cfg.EfSearch, seedK))
-	sim := make(map[int]float32, len(dense))
+	sim = make(map[int]float32, len(dense))
 	for _, h := range dense {
 		if ord, ok := s.hnsw.Ord(h.ID); ok {
 			sim[ord] = h.Score
@@ -626,12 +706,18 @@ func (s *Store) seedScores(query string, qv []float32, seedK int) (map[int]float
 	}
 
 	var ranked []lexical.Result
+	bm25 = map[int]float32{}
 	if !s.cfg.DisableLexical {
 		denseR := make([]lexical.Result, len(dense))
 		for i, h := range dense {
 			denseR[i] = lexical.Result{ID: h.ID, Score: h.Score}
 		}
 		sparse := s.bm25.Search(query, seedK)
+		for _, r := range sparse {
+			if ord, ok := s.hnsw.Ord(r.ID); ok {
+				bm25[ord] = r.Score
+			}
+		}
 		ranked = lexical.RRF(s.cfg.RRFK, denseR, sparse)
 	} else {
 		ranked = make([]lexical.Result, len(dense))
@@ -640,13 +726,52 @@ func (s *Store) seedScores(query string, qv []float32, seedK int) (map[int]float
 		}
 	}
 
-	seeds := make(map[int]float32, len(ranked))
+	seeds = make(map[int]float32, len(ranked))
 	for _, r := range ranked {
 		if ord, ok := s.hnsw.Ord(r.ID); ok && r.Score > 0 {
 			seeds[ord] = r.Score
 		}
 	}
-	return seeds, sim
+	return seeds, sim, bm25
+}
+
+// prfExpand returns a unit query vector moved toward the centroid of its top-k
+// nearest chunks (Rocchio with the original query fixed at weight 1). It is a
+// pure vector operation, so it adds one extra ANN search and no model call. The
+// original query dominates unless weight is large, which keeps query drift in
+// check; a noisy top-k can still mislead it, so callers enable it deliberately.
+func (s *Store) prfExpand(q []float32, k int, weight float32) []float32 {
+	if weight <= 0 {
+		weight = 0.5
+	}
+	hits := s.hnsw.Search(q, k, maxInt(s.cfg.EfSearch, k))
+	if len(hits) == 0 {
+		return q
+	}
+	out := make([]float32, len(q))
+	copy(out, q)
+	scale := weight / float32(len(hits))
+	for _, h := range hits {
+		ord, ok := s.hnsw.Ord(h.ID)
+		if !ok {
+			continue
+		}
+		v := s.hnsw.Vector(ord) // normalized document vector
+		for i := range out {
+			out[i] += scale * v[i]
+		}
+	}
+	var n float64
+	for _, x := range out {
+		n += float64(x) * float64(x)
+	}
+	if n > 0 {
+		inv := float32(1 / math.Sqrt(n))
+		for i := range out {
+			out[i] *= inv
+		}
+	}
+	return out
 }
 
 func maxF(v []float32) float32 {

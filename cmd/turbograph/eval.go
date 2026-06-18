@@ -23,7 +23,7 @@ func cmdEval(args []string) error {
 	storePath := fs.String("store", "store.tg", "store path")
 	suitePath := fs.String("suite", "", "JSONL suite: one {query, relevant:[ids]} per line")
 	k := fs.Int("k", 10, "cut-off k for the metrics")
-	mix := fs.Float64("mix", 0.2, "graph boost added on top of relevance (0 uses the default, negative disables the graph)")
+	mix := fs.Float64("mix", 0, "graph boost added on top of relevance; 0 is off (graph is opt-in)")
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")

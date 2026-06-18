@@ -78,6 +78,7 @@ func cmdServe(args []string) error {
 	data := fs.String("data", "turbograph-data", "directory of buckets; each <name>.tg is a separate corpus")
 	addr := fs.String("addr", ":8080", "listen address")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	embedDim := fs.Int("embed-dim", 0, "truncate embeddings to this Matryoshka dimension for new buckets (0 = full; e.g. 256 or 512 for embeddinggemma)")
 	genModel := fs.String("gen-model", "", "default ollama model for chat (UI can override)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
@@ -92,6 +93,7 @@ func cmdServe(args []string) error {
 
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
+	client.EmbedDim = *embedDim
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}
@@ -187,6 +189,7 @@ func cmdIngest(args []string) error {
 	src := fs.String("src", "", "source file or directory to ingest")
 	out := fs.String("out", "store.tg", "store path; loaded and extended if it already exists")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	embedDim := fs.Int("embed-dim", 0, "truncate embeddings to this Matryoshka dimension (0 = full; e.g. 256 or 512 for embeddinggemma)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate (1-8)")
 	residual := fs.Int("residual", 32, "QJL residual projections (0-64)")
@@ -209,6 +212,7 @@ func cmdIngest(args []string) error {
 
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
+	client.EmbedDim = *embedDim
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}
@@ -415,9 +419,13 @@ func cmdQuery(args []string) error {
 	storePath := fs.String("store", "store.tg", "store path")
 	q := fs.String("q", "", "query text")
 	topk := fs.Int("topk", 8, "number of chunks to retrieve")
-	mix := fs.Float64("mix", 0.2, "graph boost added on top of relevance (0 uses the default, negative disables the graph)")
+	mix := fs.Float64("mix", 0, "graph boost added on top of relevance; 0 is off (graph is opt-in)")
+	lexWeight := fs.Float64("lexical-weight", 0, "BM25 weight added to dense relevance; 0 uses the default, negative forces pure dense")
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
+	prf := fs.Int("prf", 0, "pseudo-relevance feedback documents to expand the query with (0 disables)")
+	prfWeight := fs.Float64("prf-weight", 0.5, "how strongly PRF feedback is mixed into the query")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	embedDim := fs.Int("embed-dim", 0, "Matryoshka dimension the store was built with (must match ingest; 0 = full)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	genModel := fs.String("gen-model", "", "ollama model for answer synthesis (empty to only list context)")
 	showText := fs.Bool("show", true, "print retrieved chunk text")
@@ -434,6 +442,7 @@ func cmdQuery(args []string) error {
 
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
+	client.EmbedDim = *embedDim
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}
@@ -445,7 +454,10 @@ func cmdQuery(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	start := time.Now()
-	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{TopK: *topk, GraphMix: float32(*mix), MMRLambda: float32(*mmr)})
+	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{
+		TopK: *topk, GraphMix: float32(*mix), MMRLambda: float32(*mmr),
+		PRF: *prf, PRFWeight: float32(*prfWeight), LexicalWeight: float32(*lexWeight),
+	})
 	if err != nil {
 		return err
 	}
