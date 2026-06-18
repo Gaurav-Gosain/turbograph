@@ -19,7 +19,12 @@ var indexHTML []byte
 
 const chatSystemPrompt = "You are a precise assistant answering from the provided context. " +
 	"Use only the context. If it does not contain the answer, say so plainly. " +
+	"Cite the passages you rely on with bracketed numbers that match the numbered context, like [1] or [2]. " +
 	"Do not use emojis or em dashes."
+
+const rewriteSystem = "Rewrite the user's latest message into a single standalone search query " +
+	"using the conversation so far to resolve pronouns and references. " +
+	"Reply with only the rewritten query on one line, no quotes, no explanation."
 
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -242,13 +247,21 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"saved": true, "bucket": bucket, "path": s.mgr.Path(bucket)})
 }
 
+type chatTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type chatRequest struct {
-	Query     string  `json:"query"`
-	TopK      int     `json:"top_k"`
-	GraphMix  float32 `json:"graph_mix"`
-	MMRLambda float32 `json:"mmr_lambda"`
-	EntityMix float32 `json:"entity_mix"`
-	Model     string  `json:"model"`
+	Query     string     `json:"query"`
+	TopK      int        `json:"top_k"`
+	GraphMix  float32    `json:"graph_mix"`
+	MMRLambda float32    `json:"mmr_lambda"`
+	EntityMix float32    `json:"entity_mix"`
+	MinSim    float32    `json:"min_sim"` // abstain if the top hit's cosine is below this
+	Rerank    bool       `json:"rerank"`  // pointwise LLM reranking of candidates
+	History   []chatTurn `json:"history"` // recent turns, for query rewriting
+	Model     string     `json:"model"`
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -287,28 +300,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.TopK <= 0 {
 		req.TopK = 6
 	}
-	res, err := st.Retrieve(r.Context(), req.Query, rag.RetrieveParams{
-		TopK:      req.TopK,
-		GraphMix:  req.GraphMix,
-		MMRLambda: req.MMRLambda,
-		EntityMix: req.EntityMix,
-	})
-	if err != nil {
-		send("error", map[string]string{"error": err.Error()})
-		return
-	}
-	send("sources", map[string]any{"sources": toQueryResults(res)})
-
-	if s.oll == nil {
-		send("error", map[string]string{"error": "no language model configured"})
-		return
-	}
 	model := req.Model
 	if model == "" {
 		model = s.genModel
 	}
-	if model == "" {
-		send("error", map[string]string{"error": "no model selected"})
+
+	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model)
+	if err != nil {
+		send("error", map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Evidence-sufficiency gate: if the best hit is too weak, abstain rather than
+	// answer from the model's parametric memory.
+	if abstain {
+		send("abstain", map[string]string{"message": "I could not find anything relevant in this corpus to answer that."})
+		send("done", map[string]bool{"done": true})
+		return
+	}
+
+	send("sources", map[string]any{"sources": toQueryResults(res)})
+
+	if s.oll == nil || model == "" {
+		send("error", map[string]string{"error": "no language model configured"})
 		return
 	}
 
@@ -322,6 +336,45 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	send("done", map[string]bool{"done": true})
+}
+
+// retrieveForChat runs the augmented retrieval pipeline shared by the web chat
+// and the OpenAI-compatible endpoint: optional conversational query rewriting,
+// over-retrieval when reranking, the evidence-sufficiency abstention gate, and
+// optional pointwise LLM reranking. It returns the final ranked results, whether
+// the gate fired, and any retrieval error. Each stage is independently optional,
+// so the cheap default path is identical to plain retrieval.
+func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatRequest, model string) ([]rag.Retrieved, bool, error) {
+	// Rewrite an elliptical follow-up into a standalone query for retrieval only;
+	// the original question is still what the model answers.
+	retrievalQuery := s.rewriteQuery(ctx, req.History, req.Query, model)
+
+	// Over-retrieve when reranking so the reranker has candidates to reorder.
+	candK := req.TopK
+	if req.Rerank {
+		candK = req.TopK * 4
+		if candK < 20 {
+			candK = 20
+		}
+	}
+	res, err := st.Retrieve(ctx, retrievalQuery, rag.RetrieveParams{
+		TopK:      candK,
+		GraphMix:  req.GraphMix,
+		MMRLambda: req.MMRLambda,
+		EntityMix: req.EntityMix,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if rag.ShouldAbstain(res, req.MinSim) {
+		return nil, true, nil
+	}
+	if req.Rerank && model != "" && s.oll != nil {
+		res = rag.Rerank(ctx, genAdapter{c: s.oll, model: model}, retrievalQuery, res, req.TopK)
+	} else if len(res) > req.TopK {
+		res = res[:req.TopK]
+	}
+	return res, false, nil
 }
 
 func toQueryResults(res []rag.Retrieved) []queryResult {
@@ -338,14 +391,59 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 	return out
 }
 
+// buildChatPrompt numbers the passages [1..k] so the model can cite them with the
+// same numbers the UI shows. The numbers, not chunk ids, are the citation tokens.
 func buildChatPrompt(query string, res []rag.Retrieved) string {
 	var sb strings.Builder
 	sb.WriteString("Context:\n")
-	for _, r := range res {
-		fmt.Fprintf(&sb, "[%s] %s\n", r.Chunk.ID, r.Chunk.Text)
+	for i, r := range res {
+		fmt.Fprintf(&sb, "[%d] %s\n", i+1, r.Chunk.Text)
 	}
 	sb.WriteString("\nQuestion: ")
 	sb.WriteString(query)
 	sb.WriteString("\nAnswer:")
 	return sb.String()
+}
+
+// rewriteQuery turns an elliptical follow-up into a standalone search query using
+// the recent conversation. It only fires when there is history and the message
+// looks dependent (short, or contains a pronoun or reference), and it falls back
+// to the original on any weak or malformed rewrite, so it can only help.
+func (s *Server) rewriteQuery(ctx context.Context, history []chatTurn, query string, model string) string {
+	if s.oll == nil || model == "" || len(history) == 0 || !looksDependent(query) {
+		return query
+	}
+	var sb strings.Builder
+	sb.WriteString("Conversation:\n")
+	for _, t := range history {
+		fmt.Fprintf(&sb, "%s: %s\n", t.Role, t.Content)
+	}
+	fmt.Fprintf(&sb, "user: %s\n\nStandalone query:", query)
+	out, err := s.oll.Generate(ctx, model, rewriteSystem, sb.String())
+	if err != nil {
+		return query
+	}
+	out = strings.TrimSpace(out)
+	if i := strings.IndexByte(out, '\n'); i >= 0 {
+		out = strings.TrimSpace(out[:i])
+	}
+	out = strings.Trim(out, `"`)
+	// Reject empty, overlong, or degenerate rewrites.
+	if out == "" || len(out) > 4*len(query)+120 {
+		return query
+	}
+	return out
+}
+
+func looksDependent(q string) bool {
+	if len(strings.Fields(q)) <= 4 {
+		return true
+	}
+	ql := " " + strings.ToLower(q) + " "
+	for _, p := range []string{" it ", " its ", " they ", " them ", " their ", " that ", " those ", " these ", " this ", " he ", " she ", " his ", " her ", " one ", " ones "} {
+		if strings.Contains(ql, p) {
+			return true
+		}
+	}
+	return false
 }

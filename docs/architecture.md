@@ -15,7 +15,9 @@ flowchart TB
   graph[graph<br/>CSR, PageRank, communities]
   ollama[ollama<br/>embeddings and generation]
   extract[extract<br/>pluggable parsers]
-  server[server<br/>JSON API and embedded UI]
+  server[server<br/>JSON API, OpenAI /v1, embedded UI]
+  mcp[mcp<br/>MCP stdio JSON-RPC]
+  eval[eval<br/>retrieval metrics]
   cmd[cmd/turbograph<br/>CLI]
 
   rag --> quant
@@ -30,7 +32,13 @@ flowchart TB
   cmd --> rag
   cmd --> server
   cmd --> extract
+  cmd --> mcp
+  cmd --> eval
+  eval --> rag
 ```
+
+`mcp` and `eval` are standalone too: `mcp` is a transport (it knows nothing about
+retrieval; the CLI registers the tools), and `eval` scores any `retrieve` func.
 
 `quant`, `index`, `graph`, and `lexical` have no dependency on `rag` or on each
 other (except `index`, which encodes vectors with `quant`). They are usable as
@@ -137,6 +145,41 @@ It is opt-in because extraction is one model call per chunk. Extracted entities
 and relations are persisted in the snapshot, so the expensive step runs once. The
 chunk-similarity graph is always available; the entity graph is an additional
 signal, not a replacement.
+
+## Grounding the answer
+
+Retrieval produces ranked chunks; four optional steps sit between those chunks
+and the generated answer. Each is independently switchable and the default path
+runs none of them, so enabling one is a deliberate trade of latency for quality.
+
+```mermaid
+flowchart TB
+  H[history + query] --> RW[rewrite elliptical follow-up<br/>retrieval query only]
+  RW --> RET[retrieve candidates]
+  RET --> GATE{top cosine >= floor?}
+  GATE -- no --> ABS[abstain]
+  GATE -- yes --> RR[optional pointwise LLM rerank<br/>blend model and retrieval score]
+  RR --> NUM[number passages 1..k]
+  NUM --> GEN[generate with cite instruction]
+  GEN --> CITE[link n in answer to source n]
+```
+
+- **Query rewriting** (`rag` via the server) turns "what about its height?" into
+  a standalone query using the recent turns, but only for retrieval; the model
+  still answers the original message. It fires only when there is history and the
+  message looks dependent, and falls back to the original on any weak rewrite.
+- **The abstention gate** (`rag.ShouldAbstain`) compares the top hit's raw cosine
+  similarity, an objective signal that is comparable across queries, against a
+  floor. Below it, turbograph declines rather than answer from parametric memory.
+- **Reranking** (`rag.Rerank`) issues one pointwise LLM call to score the
+  candidates, then blends the normalized model score with the normalized
+  retrieval score so the model refines rather than overrides. It is fail-open:
+  any error or unparseable reply returns the base ranking, so it cannot regress.
+- **Numbered citations** number the passages `[1..k]` in the prompt so the model
+  cites positions the UI can resolve, rather than opaque chunk ids.
+
+The same pipeline backs both the web chat and the OpenAI-compatible endpoint;
+they share one helper so the two surfaces can never drift.
 
 ## The store
 

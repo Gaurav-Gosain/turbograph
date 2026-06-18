@@ -120,6 +120,23 @@
     border:1px solid var(--border);border-radius:5px;padding:3px 7px;cursor:pointer;transition:.12s}
   .chip:hover{border-color:var(--accent);color:var(--accent)}
   .chip b{color:var(--faint);font-weight:400;margin-left:5px}
+  .chip .cn{color:var(--bg);background:var(--accent);font-weight:600;margin:0 6px 0 0;
+    border-radius:3px;padding:0 4px;display:inline-block;min-width:14px;text-align:center}
+  .cite{color:var(--accent);background:var(--panel2);border:1px solid var(--border);
+    border-radius:4px;font-size:.78em;font-weight:600;padding:0 4px;margin:0 1px;cursor:pointer;
+    vertical-align:1px;line-height:1.5}
+  .cite:hover{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+  .msg.bot.abstain .body{border-left-color:var(--warn);color:var(--muted)}
+  #srcPreview{position:absolute;left:12px;right:12px;bottom:64px;z-index:16;display:none;
+    background:var(--panel2);border:1px solid var(--accent);border-radius:9px;padding:13px 14px;
+    box-shadow:0 10px 30px rgba(0,0,0,.45);max-height:46%;overflow-y:auto}
+  #srcPreview.open{display:block;animation:pop .12s ease-out}
+  #srcPreview .sp-head{display:flex;justify-content:space-between;align-items:center;
+    font-size:11px;color:var(--muted);margin-bottom:8px}
+  #srcPreview .sp-head b{color:var(--accent);font-weight:600}
+  #srcPreview .sp-text{font-size:12px;line-height:1.6;color:var(--text);white-space:pre-wrap}
+  #srcPreview .x{cursor:pointer;color:var(--faint)}
+  #srcPreview .x:hover{color:var(--accent)}
 
   #panel-chat{position:relative}
   .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -140,6 +157,8 @@
   .po-row .lab{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:7px}
   .po-row .lab b{color:var(--accent);font-weight:500}
   .po-row small{display:block;color:var(--faint);font-size:10px;margin-top:6px;line-height:1.4}
+  .po-row .tg-check{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);cursor:pointer}
+  .po-row .tg-check input{width:auto;cursor:pointer}
   .popover>button{width:100%;margin-top:2px}
   input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;padding:0;
     background:var(--border);border:0;border-radius:3px;cursor:pointer}
@@ -299,6 +318,16 @@
           <input id="pEnt" type="range" min="0" max="1" step="0.05" value="0">
           <small>weight of the entity knowledge graph; build it from the entities view first</small>
         </div>
+        <div class="po-row">
+          <div class="lab">grounding floor <b id="vMinSim">0.00</b></div>
+          <input id="pMinSim" type="range" min="0" max="1" step="0.05" value="0">
+          <small>abstain when the best match is weaker than this cosine; 0 always answers</small>
+        </div>
+        <div class="po-row">
+          <div class="lab">rerank <b id="vRerank">off</b></div>
+          <label class="tg-check"><input id="pRerank" type="checkbox"> re-score candidates with the model</label>
+          <small>sharper ordering at the cost of one extra model call per query</small>
+        </div>
         <button id="resetSettings">reset to defaults</button>
       </div>
       <div id="messages">
@@ -307,6 +336,10 @@
           <div class="sub">answers cite the chunks they use and light them up</div>
           <div class="sub"><kbd>Ctrl K</kbd> commands &middot; <span class="lnk" id="emptyHelp">how it works</span></div>
         </div>
+      </div>
+      <div id="srcPreview">
+        <div class="sp-head"><span>source <b id="spNum"></b> <span id="spDoc"></span></span><span class="x" id="spClose">close</span></div>
+        <div class="sp-text" id="spText"></div>
       </div>
       <div id="composer">
         <textarea id="input" placeholder="ask the graph" rows="1"></textarea>
@@ -399,15 +432,17 @@ const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false};
 
 // ---------- settings persistence + popover ----------
-const SETTINGS=["pTopK","pMix","pMMR","pEnt"];
+const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim"];
 function loadSettings(){
   try{const s=JSON.parse(localStorage.getItem("tg.settings")||"{}");
     for(const id of SETTINGS)if(s[id]!=null)$("#"+id).value=s[id];
+    if(s.pRerank!=null)$("#pRerank").checked=s.pRerank;
     if(s.model)G.model=s.model;}catch(e){}
   syncReadouts();
 }
 function saveSettings(){
   const s={model:G.model};for(const id of SETTINGS)s[id]=$("#"+id).value;
+  s.pRerank=$("#pRerank").checked;
   localStorage.setItem("tg.settings",JSON.stringify(s));
 }
 function syncReadouts(){
@@ -415,12 +450,15 @@ function syncReadouts(){
   $("#vMix").textContent=(+$("#pMix").value).toFixed(2);
   $("#vMMR").textContent=(+$("#pMMR").value).toFixed(2);
   $("#vEnt").textContent=(+$("#pEnt").value).toFixed(2);
+  $("#vMinSim").textContent=(+$("#pMinSim").value).toFixed(2);
+  $("#vRerank").textContent=$("#pRerank").checked?"on":"off";
 }
 SETTINGS.forEach(id=>$("#"+id).addEventListener("input",()=>{syncReadouts();saveSettings()}));
+$("#pRerank").addEventListener("change",()=>{syncReadouts();saveSettings()});
 const settingsEl=$("#settings");
 $("#settingsBtn").onclick=e=>{e.stopPropagation();settingsEl.classList.toggle("open")};
 $("#settingsClose").onclick=()=>settingsEl.classList.remove("open");
-$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0.6;$("#pMMR").value=0;$("#pEnt").value=0;syncReadouts();saveSettings()};
+$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0.6;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;syncReadouts();saveSettings()};
 document.addEventListener("click",e=>{
   if(settingsEl.classList.contains("open")&&!settingsEl.contains(e.target)&&e.target.id!=="settingsBtn")
     settingsEl.classList.remove("open");
@@ -766,7 +804,7 @@ const messages=$("#messages");
 let chatAbort=null;
 function nearBottom(){return messages.scrollHeight-messages.scrollTop-messages.clientHeight<80}
 function updateEmpty(){$("#chatEmpty").style.display=messages.querySelector(".msg")?"none":"flex"}
-function clearMessages(){messages.querySelectorAll(".msg").forEach(m=>m.remove());updateEmpty()}
+function clearMessages(){messages.querySelectorAll(".msg").forEach(m=>m.remove());$("#srcPreview").classList.remove("open");updateEmpty()}
 function addUser(text){
   const d=document.createElement("div");d.className="msg user";
   d.innerHTML='<div class="who">you</div><div class="body"></div>';
@@ -782,9 +820,21 @@ function addBot(){
 function setGenerating(on){
   $("#send").style.display=on?"none":"";$("#stop").style.display=on?"":"none";
 }
+// chatHistory snapshots the recent turns so the server can rewrite an elliptical
+// follow-up into a standalone query. Capture it before the new turn is appended.
+function chatHistory(){
+  const out=[];
+  messages.querySelectorAll(".msg").forEach(m=>{
+    const b=m.querySelector(".body");if(!b)return;
+    const t=b.textContent.trim();if(!t)return;
+    out.push({role:m.classList.contains("user")?"user":"assistant",content:t});
+  });
+  return out.slice(-6);
+}
 async function sendChat(){
   const text=$("#input").value.trim();if(!text||chatAbort)return;
   $("#input").value="";autoGrow();
+  const history=chatHistory();
   addUser(text);
   const msgEl=addBot();const body=msgEl.querySelector(".body");
   let answer="";chatAbort=new AbortController();setGenerating(true);
@@ -793,7 +843,8 @@ async function sendChat(){
   let nb=true;
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
-      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,model:G.model})});
+      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
+        min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,history,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
       const {value,done}=await reader.read();if(done)break;
@@ -803,6 +854,8 @@ async function sendChat(){
         if(ev.event==="sources"){highlightIDs(ev.data.sources.map(s=>s.id));renderSources(msgEl,ev.data.sources)}
         else if(ev.event==="token"){answer+=ev.data.text;nb=nearBottom();
           if(!renderQueued){renderQueued=true;requestAnimationFrame(flush)}}
+        else if(ev.event==="abstain"){msgEl.classList.add("abstain");answer=ev.data.message;
+          body.classList.remove("typing");body.innerHTML=renderMarkdown(answer);cleanupChat(msgEl,answer);return}
         else if(ev.event==="error"){body.classList.remove("typing");msgEl.classList.add("err");
           body.innerHTML=esc((answer?answer+"\n\n":"")+"error: "+ev.data.error);cleanupChat(msgEl,answer);return}
       }
@@ -812,6 +865,7 @@ async function sendChat(){
     else{msgEl.classList.add("err");body.textContent="error: "+e.message}
   }
   body.innerHTML=renderMarkdown(answer);body.classList.remove("typing");
+  linkCitations(body,msgEl);
   cleanupChat(msgEl,answer);
 }
 function cleanupChat(msgEl,answer){
@@ -830,18 +884,56 @@ function parseSSE(raw){
 }
 function renderSources(msgEl,sources){
   if(!sources||!sources.length||msgEl.querySelector(".sources"))return;
+  msgEl._sources=sources;
   const wrap=document.createElement("div");wrap.className="sources";
-  for(const s of sources){
+  sources.forEach((s,i)=>{
     const c=document.createElement("span");c.className="chip";
-    c.innerHTML=esc(s.id)+(s.score!=null?'<b>'+s.score.toFixed(2)+'</b>':"");
+    c.innerHTML='<b class="cn">'+(i+1)+'</b>'+esc(s.doc_id||s.id)+(s.score!=null?'<b>'+s.score.toFixed(2)+'</b>':"");
     c.title=s.text||"";
     const idx=G.idIndex.get(s.id);
     c.onmouseenter=()=>{if(idx!=null){G.pulse=idx;dirty=true}};
     c.onmouseleave=()=>{G.pulse=-1;dirty=true};
-    c.onclick=()=>{if(idx!=null){selectNode(idx);G.highlight=new Set([idx]);fit(G.highlight)}};
+    c.onclick=()=>openSource(msgEl,i);
     wrap.appendChild(c);
-  }
+  });
   msgEl.appendChild(wrap);
+}
+// openSource focuses the cited chunk's node in the graph (when present) and shows
+// its full text in a preview, so a citation is one click from its evidence.
+function openSource(msgEl,i){
+  const s=msgEl._sources&&msgEl._sources[i];if(!s)return;
+  const idx=G.idIndex.get(s.id);
+  if(idx!=null){selectNode(idx);G.highlight=new Set([idx]);fit(G.highlight)}
+  $("#spNum").textContent="["+(i+1)+"]";
+  $("#spDoc").textContent=s.doc_id||s.id;
+  $("#spText").textContent=s.text||"(no text)";
+  $("#srcPreview").classList.add("open");
+}
+$("#spClose").onclick=()=>$("#srcPreview").classList.remove("open");
+// linkCitations turns bracketed numbers in the answer into clickable chips that
+// map to the numbered sources, skipping code spans and out-of-range numbers.
+function linkCitations(body,msgEl){
+  const srcs=msgEl._sources;if(!srcs||!srcs.length)return;
+  const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);
+  const targets=[];let node;
+  while(node=walker.nextNode()){
+    if(!/\[\d+\]/.test(node.nodeValue))continue;
+    let p=node.parentNode,skip=false;
+    while(p&&p!==body){if(p.nodeName==="PRE"||p.nodeName==="CODE"){skip=true;break}p=p.parentNode}
+    if(!skip)targets.push(node);
+  }
+  for(const t of targets){
+    const s=t.nodeValue,frag=document.createDocumentFragment(),re=/\[(\d+)\]/g;
+    let last=0,m,used=false;
+    while(m=re.exec(s)){
+      const n=+m[1];if(n<1||n>srcs.length)continue;
+      frag.appendChild(document.createTextNode(s.slice(last,m.index)));
+      const a=document.createElement("span");a.className="cite";a.textContent=n;
+      a.title=srcs[n-1].text||"";a.onclick=()=>openSource(msgEl,n-1);
+      frag.appendChild(a);last=m.index+m[0].length;used=true;
+    }
+    if(used){frag.appendChild(document.createTextNode(s.slice(last)));t.parentNode.replaceChild(frag,t)}
+  }
 }
 $("#send").onclick=sendChat;
 $("#stop").onclick=()=>{if(chatAbort)chatAbort.abort()};
@@ -922,6 +1014,7 @@ document.addEventListener("keydown",e=>{
     if(cmdkOpen()){closeCmdk();return}
     if(helpEl.classList.contains("open")){helpEl.classList.remove("open");return}
     if(settingsEl.classList.contains("open")){settingsEl.classList.remove("open");return}
+    if($("#srcPreview").classList.contains("open")){$("#srcPreview").classList.remove("open");return}
     if(chatAbort)chatAbort.abort();
     return;
   }

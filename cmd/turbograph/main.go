@@ -41,6 +41,10 @@ func main() {
 		err = cmdStats(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
+	case "eval":
+		err = cmdEval(os.Args[2:])
+	case "mcp":
+		err = cmdMCP(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -62,6 +66,8 @@ usage:
   turbograph query  --store <store> --q "<question>" [flags]
   turbograph serve  --data <dir> --addr :8080 [flags]
   turbograph stats  --store <store>
+  turbograph eval   --store <store> --suite <suite.jsonl> [flags]
+  turbograph mcp    --store <store> [--gen-model M]
 
 run a subcommand with -h for its flags.
 `)

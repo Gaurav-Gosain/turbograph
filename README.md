@@ -23,8 +23,15 @@ swappable without touching the rest.
   optional entity-relationship knowledge graph (GraphRAG style) on top.
 - Retrieves by fusing dense and sparse hits, seeding Personalized PageRank, and
   optionally diversifying with MMR.
+- Grounds answers with numbered inline citations, an evidence-sufficiency
+  abstention gate, optional pointwise LLM reranking, and conversational query
+  rewriting, each independently switchable.
 - Serves a streaming chat UI with an interactive graph visualization, a command
   palette, and full keyboard control.
+- Speaks an OpenAI-compatible chat endpoint and serves the corpus over MCP, so
+  existing clients and agents connect without changes.
+- Ships a deterministic eval harness (recall, precision, MRR, NDCG, context
+  precision) for regression-gating retrieval quality.
 - Ingests at volume: parallel, resumable, crash-tolerant, with pluggable parsers
   including PDF and OCR.
 - Dedupes by content hash and versions documents: re-uploading a changed document
@@ -181,10 +188,33 @@ JavaScript, no build step). It lets you:
 - explore the similarity graph as an interactive force-directed map colored by
   community, with pan, zoom, drag, hover previews, and per-node detail.
 
+Answers carry numbered citations: each `[n]` in the text is clickable, maps to
+the matching source chip, focuses that chunk's node in the graph, and opens a
+preview of the passage it rests on. When retrieval is too weak to ground an
+answer, the assistant abstains instead of guessing.
+
 It is built to be both approachable and fast to drive. Press `Ctrl K` for a
 command palette, `/` to search the graph, `?` for help, and `Esc` to close or
-stop. Retrieval settings live in a popover with plain-language explanations, and
-a built-in "how it works" guide explains the pipeline.
+stop. Retrieval settings live in a popover with plain-language explanations,
+including a grounding floor (abstain below a cosine threshold) and a rerank
+toggle (re-score candidates with the model), and a built-in "how it works" guide
+explains the pipeline.
+
+## Grounding
+
+Four refinements sit between retrieval and the answer, each off by default and
+independently switchable, so the cheap path stays identical to plain retrieval:
+
+- **Numbered citations.** Passages are numbered `[1..k]` in the prompt and the
+  model is asked to cite them; the UI links each `[n]` back to its source.
+- **Abstention gate.** If the top hit's cosine similarity is below the grounding
+  floor, turbograph abstains rather than answer from the model's memory.
+- **Reranking.** A single pointwise LLM call re-scores the candidates and blends
+  the model score with the retrieval score. It is fail-open: any error or
+  unparseable reply falls back to the base ranking, so it can never do harm.
+- **Query rewriting.** An elliptical follow-up ("what about its height?") is
+  rewritten into a standalone query for retrieval only, using the recent turns,
+  and falls back to the original on any weak rewrite.
 
 ## Storage
 
@@ -211,11 +241,47 @@ turbograph ingest --src <dir|file> --out store.tg [flags]   # parallel, resumabl
 turbograph query  --store store.tg --q "..." [--gen-model M] # retrieve or answer
 turbograph serve  --store store.tg --addr :8080 [--gen-model M]
 turbograph stats  --store store.tg
+turbograph eval   --store store.tg --suite suite.jsonl [--k 10]  # score retrieval
+turbograph mcp    --store store.tg [--gen-model M]          # serve over MCP stdio
 ```
 
 Run any subcommand with `-h` for its flags. Ingestion highlights:
 `--workers` (concurrency), `--checkpoint` (crash-recovery interval),
 `--pdf-cmd` and `--ocr-cmd` (swap parsers).
+
+## Integrations
+
+### OpenAI-compatible API
+
+`serve` exposes `POST /v1/chat/completions` (streaming and non-streaming). It
+accepts the standard request shape, so existing OpenAI clients and SDKs point at
+turbograph unchanged; every answer is retrieval-augmented from the selected
+bucket. The last user message is the question and the earlier messages become
+history for query rewriting. Retrieval knobs (`top_k`, `graph_mix`, `rerank`,
+`min_sim`, ...) are accepted as extra fields and ignored by stock clients.
+
+```
+curl -s localhost:8080/v1/chat/completions -d '{
+  "model": "qwen3.5:2b",
+  "messages": [{"role": "user", "content": "what does the corpus say about X?"}]
+}'
+```
+
+### MCP server
+
+`turbograph mcp --store store.tg` serves the corpus to MCP hosts (editors,
+agents, Claude Desktop) over stdio as line-delimited JSON-RPC. It registers a
+`search` tool (returns the top chunks as JSON) and, with `--gen-model`, an
+`answer` tool (a grounded, cited answer). Add it to a host's MCP config as a
+command entry; no network port is opened.
+
+### Evaluation
+
+`turbograph eval --store store.tg --suite suite.jsonl` scores retrieval against a
+labeled suite (JSONL, one `{"query":..., "relevant":[chunk ids]}` per line) and
+reports recall, precision, MRR, NDCG, and context precision at a cut-off `k`. It
+is deterministic for a fixed store and embedder, so it gates retrieval
+regressions in CI; `--json` emits the full per-case report.
 
 ## PDF and OCR
 

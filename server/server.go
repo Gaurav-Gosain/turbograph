@@ -57,6 +57,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ingest", s.handleIngest)
 	mux.HandleFunc("POST /query", s.handleQuery)
 
+	// OpenAI-compatible chat completions, retrieval-augmented.
+	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
+
 	// Web UI and its API.
 	mux.HandleFunc("GET /", s.handleUI)
 	mux.HandleFunc("GET /api/graph", s.handleGraph)
