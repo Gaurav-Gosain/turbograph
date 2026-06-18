@@ -132,7 +132,18 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"chunks": st.Len()})
+	saved, saveErr := s.persist(bucketOf(r))
+	writeJSON(w, http.StatusOK, map[string]any{"chunks": st.Len(), "saved": saved, "save_error": saveErr})
+}
+
+// persist saves a bucket after a mutation. It is a no-op success for an in-memory
+// server. A save error is returned to the caller rather than failing the request,
+// since the in-memory result is already correct and the caller can surface it.
+func (s *Server) persist(bucket string) (bool, string) {
+	if err := s.mgr.Save(bucket); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
 }
 
 type queryRequest struct {

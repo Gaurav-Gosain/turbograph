@@ -102,10 +102,13 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	saved, saveErr := s.persist(bucketOf(r))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"chunks":  st.Len(),
-		"indexed": len(docs),
-		"failed":  failed,
+		"chunks":     st.Len(),
+		"indexed":    len(docs),
+		"failed":     failed,
+		"saved":      saved,
+		"save_error": saveErr,
 	})
 }
 

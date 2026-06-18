@@ -163,7 +163,11 @@ a built-in "how it works" guide explains the pipeline.
 ## Storage
 
 Buckets persist to the local filesystem by default (`serve --data <dir>`), or to
-any S3-compatible service (AWS S3, MinIO, Cloudflare R2):
+any S3-compatible service (AWS S3, MinIO, Cloudflare R2). The server saves a
+bucket automatically after each ingest, so uploads are durable without a manual
+step. The data directory is relative to where you launch `serve` unless you pass
+an absolute path, and a bucket file appears only once it has content (an empty
+bucket has nothing to write).
 
 ```
 export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
