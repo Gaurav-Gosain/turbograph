@@ -14,6 +14,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/graph"
 	"github.com/Gaurav-Gosain/turbograph/index"
 	"github.com/Gaurav-Gosain/turbograph/lexical"
@@ -99,6 +100,14 @@ type Store struct {
 	needsRebuild bool // vector and lexical indexes are stale (a document was removed)
 	g            *graph.Graph
 	comm         *graph.Communities
+
+	// Optional entity-relationship knowledge graph (GraphRAG style). Built on
+	// demand from an LLM extractor; nil until BuildEntityGraph runs.
+	eg       *entity.Graph
+	entList  []entity.Entity // sorted, index == node id
+	entIndex map[string]int  // canonical entity name -> node id
+	entCSR   *graph.Graph
+	entComm  *graph.Communities
 }
 
 type edgeRec struct {
@@ -448,6 +457,7 @@ type RetrieveParams struct {
 	SeedK     int              // dense/sparse hits used to seed PageRank (default 3*TopK)
 	GraphMix  float32          // weight of PageRank vs direct similarity in [0,1] (default 0.6)
 	MMRLambda float32          // MMR relevance/diversity tradeoff; 0 disables diversification
+	EntityMix float32          // weight of the entity-graph signal in [0,1]; 0 ignores it
 	Filter    func(Chunk) bool // optional metadata filter
 	PPR       graph.PPRParams
 }
@@ -495,6 +505,13 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		}
 	}
 
+	// Optional entity-graph signal: query entities propagated over the knowledge
+	// graph and projected onto chunks.
+	var escore map[int]float32
+	if p.EntityMix > 0 && s.entCSR != nil {
+		escore = s.entityChunkScores(query)
+	}
+
 	type sc struct {
 		ord int
 		val float32
@@ -513,6 +530,9 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 			d = sim[i] / simMax
 		}
 		val := p.GraphMix*g + (1-p.GraphMix)*d
+		if escore != nil {
+			val = (1-p.EntityMix)*val + p.EntityMix*escore[i]
+		}
 		if val > 0 {
 			scored = append(scored, sc{i, val})
 		}

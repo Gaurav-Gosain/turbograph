@@ -113,6 +113,31 @@ propagating means a chunk relevant by association, one hop from a strong hit, is
 retrieved even with near-zero direct similarity. Communities are detected by label
 propagation and exposed for thematic or global queries.
 
+## Entity knowledge graph (optional)
+
+The default graph connects chunks by similarity, which is fast and deterministic
+but partly redundant with vector search. The `entity` package adds the GraphRAG
+alternative: a language model extracts typed entities and relationships per chunk,
+they are merged by name across chunks, and the result is an entity graph where
+edges mean a stated relationship rather than similarity.
+
+```mermaid
+flowchart LR
+  CH[chunks] --> EX[LLM extraction]
+  EX --> MERGE[merge entities by name]
+  MERGE --> EG[entity graph]
+  Q[query] --> QE[match query entities]
+  QE --> PPR[Personalized PageRank over entity graph]
+  EG --> PPR
+  PPR --> MAP[project entity scores onto chunks]
+  MAP --> BLEND[blend with the base score by entity_mix]
+```
+
+It is opt-in because extraction is one model call per chunk. Extracted entities
+and relations are persisted in the snapshot, so the expensive step runs once. The
+chunk-similarity graph is always available; the entity graph is an additional
+signal, not a replacement.
+
 ## The store
 
 `rag.Store` is the orchestrator. It owns the quantizer, the HNSW index, the BM25

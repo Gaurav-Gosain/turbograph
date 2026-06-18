@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/extract"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
@@ -182,6 +183,8 @@ func cmdIngest(args []string) error {
 	checkpoint := fs.Int("checkpoint", 200, "save the store every N documents for crash recovery (0 = only at end)")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for input path")
 	ocrCmd := fs.String("ocr-cmd", "", "OCR command for scanned pdfs and images, e.g. a PaddleOCR PP-OCRv6 wrapper")
+	entities := fs.Bool("entities", false, "after indexing, extract an entity-relationship knowledge graph (GraphRAG style)")
+	entModel := fs.String("gen-model", "", "model used to extract entities when --entities is set")
 	fs.Parse(args)
 
 	if *src == "" {
@@ -265,7 +268,41 @@ func cmdIngest(args []string) error {
 		fmt.Fprintf(os.Stderr, "paused. re-run the same command to resume from %s.journal\n", *out)
 		return nil
 	}
-	return ingErr
+	if ingErr != nil {
+		return ingErr
+	}
+
+	if *entities {
+		if *entModel == "" {
+			return fmt.Errorf("--entities requires --gen-model for extraction")
+		}
+		fmt.Fprintf(os.Stderr, "extracting entity graph with %s ...\n", *entModel)
+		ex := entity.NewLLMExtractor(cliGenerator{c: client, model: *entModel})
+		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
+			OnProgress: func(p rag.EntityProgress) {
+				fmt.Fprintf(os.Stderr, "\rextracting %d/%d  entities %d  relations %d", p.Done, p.Total, p.Entities, p.Relations)
+			},
+		})
+		fmt.Fprintln(os.Stderr)
+		if eerr != nil {
+			return eerr
+		}
+		if err := saveStore(store, *out); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "entity graph: %d entities, saved to %s\n", store.EntityCount(), *out)
+	}
+	return nil
+}
+
+// cliGenerator binds a model to the Ollama client for entity extraction.
+type cliGenerator struct {
+	c     *ollama.Client
+	model string
+}
+
+func (g cliGenerator) Generate(ctx context.Context, system, prompt string) (string, error) {
+	return g.c.Generate(ctx, g.model, system, prompt)
 }
 
 // buildRegistry assembles the extractor registry with optional command overrides.

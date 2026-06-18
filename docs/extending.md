@@ -114,6 +114,22 @@ hits := ix.Search("query terms", 10)
 fused := lexical.RRF(60, denseHits, sparseHits) // reciprocal rank fusion
 ```
 
+## Swap the entity extractor
+
+The optional knowledge graph is built through one interface:
+
+```go
+type Extractor interface {
+    Extract(ctx context.Context, text string) (entity.Extraction, error)
+}
+```
+
+The bundled extractor prompts a language model and parses a line-delimited
+format, but anything that returns entities and relations works: a different
+model, a rules or NLP pipeline, or a spaCy or GLiNER service behind an HTTP call.
+The `entity` package (graph accumulation, merge, persistence) is independent of
+how extraction happens, so you only implement the one method.
+
 ## Tune the store
 
 `rag.Config` exposes every knob with sensible defaults:

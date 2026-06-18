@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
@@ -35,6 +37,73 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st.GraphView())
+}
+
+func (s *Server) handleEntityGraph(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st.EntityGraphView())
+}
+
+// genAdapter binds a model to the Ollama client so it satisfies entity.Generator.
+type genAdapter struct {
+	c     *ollama.Client
+	model string
+}
+
+func (g genAdapter) Generate(ctx context.Context, system, prompt string) (string, error) {
+	return g.c.Generate(ctx, g.model, system, prompt)
+}
+
+// handleBuildEntities extracts the entity-relationship graph with the language
+// model, streaming progress over server-sent events. This is the GraphRAG-style
+// indexing pass; it is on demand because it is much more expensive than the
+// similarity graph.
+func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
+	if s.oll == nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("no language model configured"))
+		return
+	}
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	model := r.URL.Query().Get("model")
+	if model == "" {
+		model = s.genModel
+	}
+	if model == "" {
+		writeErr(w, http.StatusBadRequest, errEmpty("model"))
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	send := func(event string, v any) {
+		b, _ := json.Marshal(v)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		flusher.Flush()
+	}
+	ex := entity.NewLLMExtractor(genAdapter{c: s.oll, model: model})
+	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
+		OnProgress: func(p rag.EntityProgress) {
+			send("progress", map[string]int{"done": p.Done, "total": p.Total, "entities": p.Entities, "relations": p.Relations})
+		},
+	})
+	if err != nil {
+		send("error", map[string]string{"error": err.Error()})
+		return
+	}
+	s.persist(bucketOf(r))
+	send("done", map[string]int{"entities": st.EntityCount()})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +247,7 @@ type chatRequest struct {
 	TopK      int     `json:"top_k"`
 	GraphMix  float32 `json:"graph_mix"`
 	MMRLambda float32 `json:"mmr_lambda"`
+	EntityMix float32 `json:"entity_mix"`
 	Model     string  `json:"model"`
 }
 
@@ -221,6 +291,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		TopK:      req.TopK,
 		GraphMix:  req.GraphMix,
 		MMRLambda: req.MMRLambda,
+		EntityMix: req.EntityMix,
 	})
 	if err != nil {
 		send("error", map[string]string{"error": err.Error()})

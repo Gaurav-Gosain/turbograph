@@ -48,6 +48,11 @@
   .overlay{position:absolute;z-index:5}
   #searchBar{top:12px;left:12px;display:flex;gap:6px;align-items:center}
   #searchBar input{width:240px;background:rgba(21,24,30,.92);backdrop-filter:blur(4px)}
+  #graphMode{top:12px;right:12px;border:1px solid var(--border);border-radius:6px;overflow:hidden;
+    display:flex;background:rgba(21,24,30,.9);backdrop-filter:blur(4px)}
+  .seg button{border:0;border-radius:0;background:transparent;color:var(--muted);padding:6px 11px;font-size:11px}
+  .seg button.on{background:var(--panel2);color:var(--accent)}
+  .seg button:hover{color:var(--text)}
   .hint{position:absolute;top:14px;left:50%;transform:translateX(-50%);
     color:var(--muted);font-size:12px;background:rgba(15,17,22,.8);padding:6px 12px;
     border:1px solid var(--border);border-radius:6px;pointer-events:none}
@@ -226,6 +231,7 @@
   <div class="brand">turbo<b>graph</b></div>
   <button id="cmdkBtn" class="cmdkBtn" title="command palette"><kbd>Ctrl K</kbd> commands</button>
   <div class="stat">chunks <b id="sChunks">0</b></div>
+  <div class="stat">entities <b id="sEnt">0</b></div>
   <div class="stat">communities <b id="sComm">0</b></div>
   <div class="stat">edges <b id="sEdges">0</b></div>
   <div class="spacer"></div>
@@ -242,6 +248,10 @@
     <div id="searchBar" class="overlay">
       <input id="search" placeholder="search the graph" autocomplete="off">
       <button id="searchClear" title="clear">clear</button>
+    </div>
+    <div id="graphMode" class="overlay seg">
+      <button data-m="chunks" class="on">chunks</button>
+      <button data-m="entities" title="entity-relationship knowledge graph">entities</button>
     </div>
     <div id="legend" class="overlay"></div>
     <div id="controls" class="overlay">
@@ -283,6 +293,11 @@
           <div class="lab">diversity <b id="vMMR">0.00</b></div>
           <input id="pMMR" type="range" min="0" max="1" step="0.05" value="0">
           <small>0 is off, higher trades relevance for variety</small>
+        </div>
+        <div class="po-row">
+          <div class="lab">entity graph <b id="vEnt">0.00</b></div>
+          <input id="pEnt" type="range" min="0" max="1" step="0.05" value="0">
+          <small>weight of the entity knowledge graph; build it from the entities view first</small>
         </div>
         <button id="resetSettings">reset to defaults</button>
       </div>
@@ -381,10 +396,10 @@ const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",bucket:"default",docs:new Map(),pdfSupported:false};
+  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false};
 
 // ---------- settings persistence + popover ----------
-const SETTINGS=["pTopK","pMix","pMMR"];
+const SETTINGS=["pTopK","pMix","pMMR","pEnt"];
 function loadSettings(){
   try{const s=JSON.parse(localStorage.getItem("tg.settings")||"{}");
     for(const id of SETTINGS)if(s[id]!=null)$("#"+id).value=s[id];
@@ -399,12 +414,13 @@ function syncReadouts(){
   $("#vTopK").textContent=$("#pTopK").value;
   $("#vMix").textContent=(+$("#pMix").value).toFixed(2);
   $("#vMMR").textContent=(+$("#pMMR").value).toFixed(2);
+  $("#vEnt").textContent=(+$("#pEnt").value).toFixed(2);
 }
 SETTINGS.forEach(id=>$("#"+id).addEventListener("input",()=>{syncReadouts();saveSettings()}));
 const settingsEl=$("#settings");
 $("#settingsBtn").onclick=e=>{e.stopPropagation();settingsEl.classList.toggle("open")};
 $("#settingsClose").onclick=()=>settingsEl.classList.remove("open");
-$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0.6;$("#pMMR").value=0;syncReadouts();saveSettings()};
+$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0.6;$("#pMMR").value=0;$("#pEnt").value=0;syncReadouts();saveSettings()};
 document.addEventListener("click",e=>{
   if(settingsEl.classList.contains("open")&&!settingsEl.contains(e.target)&&e.target.id!=="settingsBtn")
     settingsEl.classList.remove("open");
@@ -575,7 +591,7 @@ function showTip(i,cx,cy){
 
 // ---------- data ----------
 async function loadGraph(keepView){
-  const v=await api(bk("/api/graph"));
+  const v=await api(bk(G.graphMode==="entities"?"/api/entity-graph":"/api/graph"));
   G.nodes=v.nodes||[];G.edges=v.edges||[];
   G.idIndex=new Map(G.nodes.map((n,i)=>[n.id,i]));
   G.adj=G.nodes.map(()=>[]);
@@ -587,13 +603,17 @@ async function loadGraph(keepView){
   }
   $("#sEdges").textContent=G.edges.length;
   $("#hint").style.display=G.nodes.length?"none":"block";
+  if(!G.nodes.length){
+    $("#hint").innerHTML=G.graphMode==="entities"?'no entity graph yet. <span class="lnk" id="buildEnt">build it from your documents</span>':"upload documents to build the graph";
+    const be=$("#buildEnt");if(be)be.onclick=runBuildEntities;
+  }
   buildLegend();
   if(G.nodes.length){reheat(1);if(!keepView)setTimeout(()=>fit(null),350)}
   dirty=true;
 }
 async function loadStats(){
   const s=await api(bk("/stats"));
-  $("#sChunks").textContent=s.chunks||0;$("#sComm").textContent=s.communities||0;
+  $("#sChunks").textContent=s.chunks||0;$("#sComm").textContent=s.communities||0;$("#sEnt").textContent=s.entities||0;
 }
 async function loadModels(){
   try{
@@ -684,7 +704,7 @@ async function graphSearch(q){
   if(!q.trim())return;
   try{
     const r=await api(bk("/query"),{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({query:q,top_k:+$("#pTopK").value||8,graph_mix:+$("#pMix").value})});
+      body:JSON.stringify({query:q,top_k:+$("#pTopK").value||8,graph_mix:+$("#pMix").value,entity_mix:+$("#pEnt").value})});
     highlightIDs((r.results||[]).map(x=>x.id));
     if(!G.highlight.size)toast("no matches");
   }catch(e){toast(e.message,true)}
@@ -773,7 +793,7 @@ async function sendChat(){
   let nb=true;
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
-      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,model:G.model})});
+      body:JSON.stringify({query:text,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
       const {value,done}=await reader.read();if(done)break;
@@ -852,6 +872,9 @@ function commands(){
         $("#docNote").textContent="pulled "+name;toast("pulled "+name);await loadModels()}
       catch(e){toast(e.message,true)}
     }},
+    {label:"Build entity graph",hint:"llm",run:runBuildEntities},
+    {label:"View entity graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=entities]').click()},
+    {label:"View chunk graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=chunks]').click()},
     {label:"How turbograph works",hint:"help",run:showHelp},
   ];
   for(const o of $("#bucket").options)if(o.value&&o.value!==G.bucket)
@@ -1015,6 +1038,40 @@ function showTab(name){
 document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 
 // ---------- boot ----------
+// ---------- graph source toggle + entity graph build ----------
+document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
+  if(G.graphMode===b.dataset.m)return;
+  G.graphMode=b.dataset.m;
+  document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x===b));
+  G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;loadGraph();
+});
+async function buildEntities(onProg){
+  const resp=await fetch(bk("/api/build-entities"),{method:"POST"});
+  const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
+  while(true){
+    const {value,done}=await reader.read();if(done)break;
+    buf+=dec.decode(value,{stream:true});let i;
+    while((i=buf.indexOf("\n\n"))>=0){
+      const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
+      if(ev.event==="progress"){if(onProg)onProg(ev.data)}
+      else if(ev.event==="error")throw new Error(ev.data.error);
+      else if(ev.event==="done")return ev.data;
+    }
+  }
+}
+async function runBuildEntities(){
+  const hint=$("#hint");hint.style.display="block";
+  toast("extracting entities with the model...");
+  try{
+    await buildEntities(p=>{hint.textContent="extracting entities "+p.done+"/"+p.total+" ("+p.entities+" found)"});
+    toast("entity graph built");
+    G.graphMode="entities";
+    document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
+    G.pos=[];await loadStats();await loadGraph();
+    if(+$("#pEnt").value===0){$("#pEnt").value=0.5;syncReadouts();saveSettings()}
+  }catch(e){toast(e.message,true);hint.textContent="entity extraction failed"}
+}
+
 resize();loadSettings();updateEmpty();loadModels();
 loadBuckets().then(()=>{loadStats();loadGraph()});
 </script>

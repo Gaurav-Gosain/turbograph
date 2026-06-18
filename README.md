@@ -19,7 +19,8 @@ swappable without touching the rest.
 - Quantizes embeddings with TurboQuant for compact storage and fast estimation.
 - Indexes them in an HNSW graph for sublinear nearest-neighbor search.
 - Indexes the text with BM25 for exact and rare-term matching.
-- Connects chunks into a similarity graph and detects communities.
+- Connects chunks into a similarity graph and detects communities, with an
+  optional entity-relationship knowledge graph (GraphRAG style) on top.
 - Retrieves by fusing dense and sparse hits, seeding Personalized PageRank, and
   optionally diversifying with MMR.
 - Serves a streaming chat UI with an interactive graph visualization, a command
@@ -98,6 +99,26 @@ flowchart LR
 The graph step is the point: a chunk that is one hop from a strong hit, but not
 directly similar to the query, still receives mass and can be retrieved. That is
 what makes it graph RAG rather than plain nearest-neighbor search.
+
+## Two graph modes
+
+turbograph ships two kinds of graph, and you can use either or both.
+
+- The **chunk-similarity graph** is built automatically and for free: nodes are
+  chunks, edges are embedding similarity. It is deterministic and fast, and it
+  reinforces clusters of related passages.
+- The **entity-relationship knowledge graph** is the classic GraphRAG structure
+  and is opt-in. A language model extracts typed entities (people, places,
+  concepts) and relationships from each chunk; nodes are entities and edges are
+  relationships. Two passages can then be connected because they mention the same
+  thing, not because they read alike. Query entities are propagated over this
+  graph with Personalized PageRank and projected back onto chunks.
+
+Build the knowledge graph from the web UI (the "entities" toggle on the graph, or
+the command palette), or during ingestion with `--entities --gen-model <model>`.
+It is extra work because it calls the model per chunk, so it stays off by
+default; the similarity path keeps working regardless. At query time the
+`entity_mix` control (UI slider or API field) blends the entity signal in.
 
 ## Ingestion pipeline
 

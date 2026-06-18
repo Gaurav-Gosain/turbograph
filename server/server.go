@@ -65,6 +65,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/save", s.handleSave)
 	mux.HandleFunc("POST /api/ingest/files", s.handleIngestFiles)
 	mux.HandleFunc("POST /api/pull", s.handlePull)
+	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
+	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
 
 	// Bucket management.
 	mux.HandleFunc("GET /api/buckets", s.handleBuckets)
@@ -96,7 +98,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	resp := map[string]any{"chunks": st.Len(), "documents": st.DocCount()}
+	resp := map[string]any{"chunks": st.Len(), "documents": st.DocCount(), "entities": st.EntityCount()}
 	if c := st.Communities(); c != nil {
 		resp["communities"] = c.NumCommunities()
 	}
@@ -152,6 +154,7 @@ type queryRequest struct {
 	TopK      int     `json:"top_k"`
 	GraphMix  float32 `json:"graph_mix"`
 	MMRLambda float32 `json:"mmr_lambda"`
+	EntityMix float32 `json:"entity_mix"`
 }
 
 type queryResult struct {
@@ -181,6 +184,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		TopK:      req.TopK,
 		GraphMix:  req.GraphMix,
 		MMRLambda: req.MMRLambda,
+		EntityMix: req.EntityMix,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

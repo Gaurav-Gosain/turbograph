@@ -4,6 +4,8 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+
+	"github.com/Gaurav-Gosain/turbograph/entity"
 )
 
 // snapshot is the on-disk representation of a Store. Only the inputs that are
@@ -20,6 +22,10 @@ type snapshot struct {
 	// survives a reload. Absent in older snapshots, in which case dedup falls back
 	// to ids until the documents are seen again.
 	Hashes map[string][32]byte
+	// Entities and Relations persist the entity-relationship graph, which is
+	// expensive to extract (it uses an LLM), so it is not rebuilt on load.
+	Entities  []entity.Entity
+	Relations []entity.Relation
 }
 
 // Save serializes the store to w.
@@ -30,6 +36,10 @@ func (s *Store) Save(w io.Writer) error {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
 	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash}
+	if s.eg != nil {
+		snap.Entities = s.eg.Entities()
+		snap.Relations = s.eg.Relations()
+	}
 	return gob.NewEncoder(w).Encode(&snap)
 }
 
@@ -55,6 +65,10 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	}
 	for id, h := range snap.Hashes {
 		s.recordHashLocked(id, h)
+	}
+	if len(snap.Entities) > 0 {
+		s.eg = entity.Restore(snap.Entities, snap.Relations)
+		s.rebuildEntityLocked()
 	}
 	s.reindexLocked()
 	return s, nil
