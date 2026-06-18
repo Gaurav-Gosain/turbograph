@@ -59,7 +59,7 @@ func usage() {
 usage:
   turbograph ingest --src <dir|file> --out <store> [flags]
   turbograph query  --store <store> --q "<question>" [flags]
-  turbograph serve  --store <store> --addr :8080
+  turbograph serve  --data <dir> --addr :8080 [flags]
   turbograph stats  --store <store>
 
 run a subcommand with -h for its flags.
