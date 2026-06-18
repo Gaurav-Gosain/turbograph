@@ -21,9 +21,27 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/quant"
 )
 
-// Embedder produces embeddings for a batch of texts, preserving order.
+// Embedder produces embeddings for a batch of texts, preserving order. These are
+// document embeddings: the source-of-truth vectors that are indexed.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// QueryEmbedder is an optional extension of Embedder for asymmetric, instruction
+// tuned models that encode a query differently from a document. When the store's
+// embedder implements it, retrieval embeds the query through EmbedQuery instead
+// of Embed; otherwise the same Embed path is used for both, so plain embedders
+// keep working unchanged.
+type QueryEmbedder interface {
+	EmbedQuery(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// embedQuery routes a query through EmbedQuery when the embedder supports it.
+func embedQuery(ctx context.Context, e Embedder, texts []string) ([][]float32, error) {
+	if qe, ok := e.(QueryEmbedder); ok {
+		return qe.EmbedQuery(ctx, texts)
+	}
+	return e.Embed(ctx, texts)
 }
 
 // Config parameterizes the store. Zero values select sensible defaults.
@@ -451,11 +469,22 @@ func (s *Store) rebuildGraph() {
 	s.comm = graph.DetectCommunities(s.g, graph.CommunityOpts{Seed: s.cfg.Seed})
 }
 
+// DefaultGraphMix is the graph boost applied when RetrieveParams.GraphMix is left
+// unset. It is deliberately modest: the graph augments retrieval, it does not
+// replace it. See RetrieveParams.GraphMix.
+const DefaultGraphMix = 0.2
+
 // RetrieveParams controls a retrieval.
 type RetrieveParams struct {
-	TopK      int              // number of chunks to return
-	SeedK     int              // dense/sparse hits used to seed PageRank (default 3*TopK)
-	GraphMix  float32          // weight of PageRank vs direct similarity in [0,1] (default 0.6)
+	TopK  int // number of chunks to return
+	SeedK int // dense/sparse hits used to seed PageRank (default 3*TopK)
+	// GraphMix is how strongly the personalized-PageRank graph signal is added on
+	// top of direct relevance. The score is relevance + GraphMix*pagerank, so the
+	// graph can lift an associated chunk (one hop from a strong hit) into the
+	// results without demoting a strong direct match. Larger values surface more
+	// graph-associated, less directly-relevant chunks. 0 selects DefaultGraphMix;
+	// a negative value opts out entirely for pure hybrid (dense+BM25) retrieval.
+	GraphMix  float32
 	MMRLambda float32          // MMR relevance/diversity tradeoff; 0 disables diversification
 	EntityMix float32          // weight of the entity-graph signal in [0,1]; 0 ignores it
 	Filter    func(Chunk) bool // optional metadata filter
@@ -482,14 +511,17 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	if p.SeedK <= 0 {
 		p.SeedK = 3 * p.TopK
 	}
-	if p.GraphMix == 0 {
-		p.GraphMix = 0.6
+	switch {
+	case p.GraphMix == 0:
+		p.GraphMix = DefaultGraphMix // unset: a modest graph boost on top of relevance
+	case p.GraphMix < 0:
+		p.GraphMix = 0 // explicit opt-out: pure hybrid retrieval, no graph
 	}
 	if p.PPR.Damping == 0 {
 		p.PPR = graph.DefaultPPR()
 	}
 
-	qv, err := s.embedder.Embed(ctx, []string{query})
+	qv, err := embedQuery(ctx, s.embedder, []string{query})
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +561,12 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		if simMax > 0 {
 			d = sim[i] / simMax
 		}
-		val := p.GraphMix*g + (1-p.GraphMix)*d
+		// Additive, not convex: the graph adds an associative boost on top of direct
+		// relevance rather than trading relevance away for it. A strong direct hit
+		// (d near 1) keeps its rank; a graph-associated chunk (d small, g large) is
+		// lifted from the tail. A convex blend let high-centrality chunks displace
+		// genuinely relevant ones, which collapsed precision at higher mixes.
+		val := d + p.GraphMix*g
 		if escore != nil {
 			val = (1-p.EntityMix)*val + p.EntityMix*escore[i]
 		}
@@ -544,8 +581,17 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		pool := minInt(len(scored), maxInt(p.TopK*4, p.TopK))
 		rel := make([]float32, pool)
 		vecs := make([][]float32, pool)
+		// MMR trades relevance against a cosine redundancy term in [0,1]. Normalize
+		// the relevance to the same scale so MMRLambda means the same thing
+		// regardless of the blend's absolute magnitude (the additive graph boost can
+		// push val above 1).
+		relMax := scored[0].val
 		for i := 0; i < pool; i++ {
-			rel[i] = scored[i].val
+			r := scored[i].val
+			if relMax > 0 {
+				r /= relMax
+			}
+			rel[i] = r
 			vecs[i] = s.hnsw.Vector(scored[i].ord) // normalized
 		}
 		order := mmrRerank(rel, vecs, p.MMRLambda, p.TopK)

@@ -34,7 +34,7 @@ func cmdMCP(args []string) error {
 	defer f.Close()
 
 	client := ollama.New()
-	client.EmbedModel = *embedModel
+	client.SetEmbedModel(*embedModel)
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}

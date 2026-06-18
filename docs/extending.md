@@ -141,7 +141,18 @@ how extraction happens, so you only implement the one method.
 - Hybrid: `DisableLexical`, `RRFK`.
 
 Retrieval is tuned per call with `rag.RetrieveParams`: `TopK`, `SeedK`,
-`GraphMix` (graph vs direct similarity), `MMRLambda` (diversity), and `Filter`.
+`GraphMix` (graph boost added on top of relevance; 0 uses the default, negative
+disables the graph), `MMRLambda` (diversity), and `Filter`.
+
+## Asymmetric embedding prompts
+
+Instruction-tuned embedding models encode queries and documents differently. The
+`ollama.Client` applies a `QueryPrefix` and `DocPrefix`, set from the model name
+by `SetEmbedModel` with presets for EmbeddingGemma, E5, BGE, and Nomic. A custom
+embedder can opt into the same split by implementing `rag.QueryEmbedder`
+(`EmbedQuery`) alongside `Embed`; the store routes queries through it and falls
+back to `Embed` for embedders that do not. Override `QueryPrefix`/`DocPrefix`
+directly for a model the presets do not cover.
 
 ## Add a storage backend
 

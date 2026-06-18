@@ -110,7 +110,7 @@ flowchart TB
   SPARSE --> RRF
   RRF --> SEEDS[seed vector for PageRank]
   SEEDS --> PPR[Personalized PageRank over similarity graph]
-  PPR --> BLEND[blend: GraphMix * pagerank + (1-GraphMix) * similarity]
+  PPR --> BLEND[score: relevance + GraphMix * pagerank]
   BLEND --> MMR[optional MMR diversity]
   MMR --> OUT[ranked chunks]
 ```
@@ -120,6 +120,30 @@ document-order edges). Seeding Personalized PageRank with the fused hits and
 propagating means a chunk relevant by association, one hop from a strong hit, is
 retrieved even with near-zero direct similarity. Communities are detected by label
 propagation and exposed for thematic or global queries.
+
+The graph signal is combined with direct relevance **additively**, not as a convex
+blend: the score is `relevance + GraphMix * pagerank`. This is deliberate. A
+convex blend (`mix * pagerank + (1-mix) * relevance`) makes PageRank centrality
+trade directly against relevance, and at any substantial mix a high-centrality but
+off-topic chunk displaces a genuinely relevant one, which collapses precision. The
+additive form keeps a strong direct hit at the top and lets the graph only *lift*
+associated chunks out of the tail, so it adds recall without sacrificing
+precision. `GraphMix` defaults to a modest `0.2`; a negative value opts out of the
+graph entirely for pure hybrid retrieval. This was measured on standard retrieval
+benchmarks; see [benchmarks.md](benchmarks.md).
+
+## Asymmetric embeddings
+
+Modern embedding models are instruction-tuned and asymmetric: they are trained to
+encode a search query and a stored passage with different prompts, and feeding
+both the raw text leaves a large amount of retrieval quality unrealized. The
+`ollama.Client` carries a `QueryPrefix` and a `DocPrefix`, set automatically from
+the model name (`SetEmbedModel`) with documented presets for EmbeddingGemma, E5,
+BGE, and Nomic. Documents are embedded with the document prompt at ingest; the
+store embeds the query with the query prompt at search time through the optional
+`QueryEmbedder` interface, falling back to the plain path for embedders that do
+not distinguish. On SciFact this prompt difference alone is worth several points
+of nDCG@10.
 
 ## Entity knowledge graph (optional)
 

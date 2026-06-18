@@ -91,7 +91,7 @@ func cmdServe(args []string) error {
 	fs.Parse(args)
 
 	client := ollama.New()
-	client.EmbedModel = *embedModel
+	client.SetEmbedModel(*embedModel)
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}
@@ -160,10 +160,20 @@ type batchingEmbedder struct {
 }
 
 func (b *batchingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return b.batched(ctx, texts, b.c.Embed)
+}
+
+// EmbedQuery forwards to the client's query path so a store created or queried
+// through this wrapper keeps the asymmetric query/document embedding.
+func (b *batchingEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	return b.batched(ctx, texts, b.c.EmbedQuery)
+}
+
+func (b *batchingEmbedder) batched(ctx context.Context, texts []string, embed func(context.Context, []string) ([][]float32, error)) ([][]float32, error) {
 	out := make([][]float32, 0, len(texts))
 	for i := 0; i < len(texts); i += b.batch {
 		end := min(i+b.batch, len(texts))
-		vecs, err := b.c.Embed(ctx, texts[i:end])
+		vecs, err := embed(ctx, texts[i:end])
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +208,7 @@ func cmdIngest(args []string) error {
 	}
 
 	client := ollama.New()
-	client.EmbedModel = *embedModel
+	client.SetEmbedModel(*embedModel)
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}
@@ -405,7 +415,7 @@ func cmdQuery(args []string) error {
 	storePath := fs.String("store", "store.tg", "store path")
 	q := fs.String("q", "", "query text")
 	topk := fs.Int("topk", 8, "number of chunks to retrieve")
-	mix := fs.Float64("mix", 0.6, "graph vs similarity blend in [0,1]")
+	mix := fs.Float64("mix", 0.2, "graph boost added on top of relevance (0 uses the default, negative disables the graph)")
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
@@ -423,7 +433,7 @@ func cmdQuery(args []string) error {
 	defer f.Close()
 
 	client := ollama.New()
-	client.EmbedModel = *embedModel
+	client.SetEmbedModel(*embedModel)
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
 	}

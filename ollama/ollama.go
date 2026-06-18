@@ -23,6 +23,15 @@ type Client struct {
 	BaseURL    string
 	EmbedModel string
 	HTTP       *http.Client
+
+	// QueryPrefix and DocPrefix are instruction prompts prepended to queries and
+	// to documents respectively before embedding. Modern embedding models are
+	// asymmetric and instruction-tuned: they encode a query and a passage
+	// differently, and feeding both the raw text leaves a large amount of
+	// retrieval quality unrealized. These default to the documented prompts for
+	// the configured model (see SetEmbedModel) and can be overridden directly.
+	QueryPrefix string
+	DocPrefix   string
 }
 
 // New returns a client honoring the OLLAMA_HOST environment variable, falling
@@ -32,10 +41,42 @@ func New() *Client {
 	if base == "" {
 		base = "http://127.0.0.1:11434"
 	}
-	return &Client{
-		BaseURL:    base,
-		EmbedModel: DefaultEmbedModel,
-		HTTP:       &http.Client{Timeout: 5 * time.Minute},
+	c := &Client{
+		BaseURL: base,
+		HTTP:    &http.Client{Timeout: 5 * time.Minute},
+	}
+	c.SetEmbedModel(DefaultEmbedModel)
+	return c
+}
+
+// SetEmbedModel selects the embedding model and applies the documented
+// query/document prompts for it when known. Selecting the model this way (rather
+// than assigning EmbedModel directly) is what enables asymmetric embedding; an
+// unknown model gets no prompts, which is the safe, model-agnostic fallback.
+// Assign QueryPrefix/DocPrefix after this call to override.
+func (c *Client) SetEmbedModel(model string) {
+	c.EmbedModel = model
+	c.QueryPrefix, c.DocPrefix = EmbedPrompts(model)
+}
+
+// EmbedPrompts returns the documented query and document instruction prompts for
+// a known embedding-model family, or empty strings if the model is unknown. They
+// come from each model's published usage, where the wrong prompt (or none)
+// measurably degrades retrieval. Matching is by substring so tags and namespaces
+// (for example "embeddinggemma:latest") are handled.
+func EmbedPrompts(model string) (query, doc string) {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "embeddinggemma"):
+		return "task: search result | query: ", "title: none | text: "
+	case strings.Contains(m, "nomic-embed"):
+		return "search_query: ", "search_document: "
+	case strings.Contains(m, "e5"): // intfloat e5 / multilingual-e5
+		return "query: ", "passage: "
+	case strings.Contains(m, "bge"):
+		return "Represent this sentence for searching relevant passages: ", ""
+	default:
+		return "", ""
 	}
 }
 
@@ -48,13 +89,32 @@ type embedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
 }
 
-// Embed returns one embedding per input string in order. It uses the batch
-// endpoint so a whole chunk set is embedded in a single request.
+// Embed returns one embedding per input string in order, encoding them as
+// documents (the DocPrefix is applied). It uses the batch endpoint so a whole
+// chunk set is embedded in a single request.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return c.embed(ctx, texts, c.DocPrefix)
+}
+
+// EmbedQuery embeds search queries, applying the QueryPrefix. The store calls
+// this for the query side of retrieval so an asymmetric model sees the prompt it
+// was trained on; clients that only implement Embed still work.
+func (c *Client) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	return c.embed(ctx, texts, c.QueryPrefix)
+}
+
+func (c *Client) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	body, err := json.Marshal(embedRequest{Model: c.EmbedModel, Input: texts})
+	input := texts
+	if prefix != "" {
+		input = make([]string, len(texts))
+		for i, t := range texts {
+			input[i] = prefix + t
+		}
+	}
+	body, err := json.Marshal(embedRequest{Model: c.EmbedModel, Input: input})
 	if err != nil {
 		return nil, err
 	}

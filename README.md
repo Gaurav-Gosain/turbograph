@@ -98,14 +98,22 @@ flowchart LR
   S --> F
   F --> SEED[seed Personalized PageRank]
   SEED --> PR[propagate over similarity graph]
-  PR --> BL[blend PageRank with direct similarity]
+  PR --> BL[add graph boost on top of relevance]
   BL --> M[optional MMR diversity]
   M --> R[ranked chunks]
 ```
 
 The graph step is the point: a chunk that is one hop from a strong hit, but not
 directly similar to the query, still receives mass and can be retrieved. That is
-what makes it graph RAG rather than plain nearest-neighbor search.
+what makes it graph RAG rather than plain nearest-neighbor search. The graph score
+is added on top of direct relevance rather than blended into it, so it lifts
+associated chunks without ever demoting a strong direct match; the boost defaults
+to a modest level and can be turned off for pure retrieval. This is measured, not
+assumed, on BEIR SciFact and NFCorpus; see [docs/benchmarks.md](docs/benchmarks.md).
+
+Embeddings are asymmetric: instruction-tuned models (the default EmbeddingGemma,
+and E5, BGE, Nomic) are fed the query and document prompts they were trained on,
+which is worth several points of nDCG@10 over embedding both as raw text.
 
 ## Two graph modes
 
