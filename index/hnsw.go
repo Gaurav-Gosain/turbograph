@@ -1,0 +1,366 @@
+package index
+
+import (
+	"math"
+	"sort"
+	"sync"
+
+	"github.com/Gaurav-Gosain/turbograph/quant"
+)
+
+// HNSW is a Hierarchical Navigable Small World graph for sublinear approximate
+// nearest-neighbor search. It is the standard structure used by production vector
+// databases (FAISS, Qdrant, Weaviate, hnswlib) because it gives high recall at a
+// small fraction of a flat scan's cost once a corpus grows past a few thousand
+// vectors.
+//
+// Vectors are stored L2-normalized, so cosine similarity is a plain inner product
+// and distance is 1 - dot. Search and build use exact float distance, which is
+// SIMD-friendly and gives the best graph quality. The original (un-normalized)
+// vectors are quantized with the supplied TurboQuant quantizer and retained as
+// codes so a caller can also run the compact asymmetric estimator if desired.
+type HNSW struct {
+	mu sync.RWMutex
+
+	dim    int
+	m      int     // max neighbors per node on upper layers
+	m0     int     // max neighbors on layer 0
+	efCons int     // search width during construction
+	mL     float64 // level generation factor, 1/ln(M)
+	rng    *quant.PCG
+
+	data  []float32 // flat normalized vectors, row-major
+	ids   []string
+	idOrd map[string]int32
+	nodes []hnswNode
+
+	q     *quant.Quantizer
+	codes []quant.Code
+
+	entry int32 // entry point node, -1 if empty
+	top   int   // current top level
+}
+
+type hnswNode struct {
+	level   int
+	friends [][]int32 // friends[l] is the neighbor list at level l
+}
+
+// HNSWConfig parameterizes graph construction. Zero fields take sensible
+// defaults matching common library settings.
+type HNSWConfig struct {
+	M              int    // neighbor degree (default 16)
+	EfConstruction int    // build-time search width (default 200)
+	Seed           uint64 // determinism
+}
+
+// NewHNSW creates an empty graph. q is used only to quantize inserted vectors
+// into retained codes; distances always use the exact normalized vectors.
+func NewHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig) *HNSW {
+	if cfg.M <= 0 {
+		cfg.M = 16
+	}
+	if cfg.EfConstruction <= 0 {
+		cfg.EfConstruction = 200
+	}
+	return &HNSW{
+		dim:    dim,
+		m:      cfg.M,
+		m0:     2 * cfg.M,
+		efCons: cfg.EfConstruction,
+		mL:     1.0 / math.Log(float64(cfg.M)),
+		rng:    quant.NewPCG(cfg.Seed),
+		q:      q,
+		idOrd:  make(map[string]int32),
+		entry:  -1,
+	}
+}
+
+// Len returns the number of indexed vectors.
+func (h *HNSW) Len() int { return len(h.ids) }
+
+// Ord returns the ordinal for an id.
+func (h *HNSW) Ord(id string) (int, bool) {
+	o, ok := h.idOrd[id]
+	return int(o), ok
+}
+
+// Vector returns the stored normalized vector for an ordinal (read-only).
+func (h *HNSW) Vector(ord int) []float32 {
+	return h.data[ord*h.dim : ord*h.dim+h.dim]
+}
+
+// Code returns the TurboQuant code for an ordinal.
+func (h *HNSW) Code(ord int) quant.Code { return h.codes[ord] }
+
+func normalize(dst, src []float32) {
+	var n float64
+	for _, v := range src {
+		n += float64(v) * float64(v)
+	}
+	n = math.Sqrt(n)
+	if n == 0 {
+		copy(dst, src)
+		return
+	}
+	inv := float32(1.0 / n)
+	for i, v := range src {
+		dst[i] = v * inv
+	}
+}
+
+// dotf returns the inner product of two equal-length vectors. It is the single
+// hottest function in the index. Its implementation is selected at build time:
+// an AVX kernel on amd64 (see dotf_amd64.go), and a portable Go version
+// everywhere else (see dotf.go). Both are exercised by the same tests.
+
+// distToNode returns 1 - cosine between the query (normalized) and node i.
+func (h *HNSW) distToNode(query []float32, i int32) float32 {
+	v := h.data[int(i)*h.dim : int(i)*h.dim+h.dim]
+	return 1 - dotf(query, v)
+}
+
+// randomLevel draws an exponentially distributed level.
+func (h *HNSW) randomLevel() int {
+	u := h.rng.Float64()
+	if u < 1e-300 {
+		u = 1e-300
+	}
+	return int(-math.Log(u) * h.mL)
+}
+
+// Add inserts a vector under id and returns its ordinal. It is safe to call
+// concurrently with reads but not with other Adds.
+func (h *HNSW) Add(id string, vec []float32) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cur := int32(len(h.ids))
+	norm := make([]float32, h.dim)
+	normalize(norm, vec)
+	h.data = append(h.data, norm...)
+	h.ids = append(h.ids, id)
+	h.idOrd[id] = cur
+	h.codes = append(h.codes, h.q.Encode(vec))
+
+	level := h.randomLevel()
+	node := hnswNode{level: level, friends: make([][]int32, level+1)}
+	h.nodes = append(h.nodes, node)
+
+	if h.entry == -1 {
+		h.entry = cur
+		h.top = level
+		return int(cur)
+	}
+
+	q := norm
+	ep := h.entry
+	// Descend from the top to just above the new node's level, greedily.
+	for l := h.top; l > level; l-- {
+		ep = h.greedyDescend(q, ep, l)
+	}
+	// Insert into every level the node participates in.
+	start := min(level, h.top)
+	for l := start; l >= 0; l-- {
+		cands := h.searchLayer(q, ep, h.efCons, l)
+		maxConn := h.m
+		if l == 0 {
+			maxConn = h.m0
+		}
+		neighbors := h.selectNeighbors(q, cands, maxConn)
+		h.nodes[cur].friends[l] = neighbors
+		// Add reverse links and prune over-full neighbors.
+		for _, nb := range neighbors {
+			h.nodes[nb].friends[l] = append(h.nodes[nb].friends[l], cur)
+			if len(h.nodes[nb].friends[l]) > maxConn {
+				h.nodes[nb].friends[l] = h.pruneConnections(nb, l, maxConn)
+			}
+		}
+		if len(cands) > 0 {
+			ep = cands[0].id
+		}
+	}
+	if level > h.top {
+		h.top = level
+		h.entry = cur
+	}
+	return int(cur)
+}
+
+// greedyDescend walks one layer toward the query, returning the closest node.
+func (h *HNSW) greedyDescend(query []float32, ep int32, level int) int32 {
+	best := ep
+	bestD := h.distToNode(query, ep)
+	for {
+		improved := false
+		for _, nb := range h.nodes[best].friends[level] {
+			d := h.distToNode(query, nb)
+			if d < bestD {
+				bestD, best, improved = d, nb, true
+			}
+		}
+		if !improved {
+			return best
+		}
+	}
+}
+
+type candidate struct {
+	id   int32
+	dist float32
+}
+
+// searchLayer runs the HNSW ef-search at one level from entry point ep, returning
+// the ef closest nodes sorted ascending by distance.
+func (h *HNSW) searchLayer(query []float32, ep int32, ef, level int) []candidate {
+	return h.searchLayerFiltered(query, ep, ef, level, nil)
+}
+
+// searchLayerFiltered is searchLayer with an optional accept predicate. When
+// accept is non-nil, the traversal still expands through every node (so graph
+// connectivity is preserved) but only accepted nodes enter the result set. This
+// is the integrated pre-filtering used by production vector databases: it keeps
+// recall high for moderately selective filters without fragmenting the graph.
+func (h *HNSW) searchLayerFiltered(query []float32, ep int32, ef, level int, accept func(int32) bool) []candidate {
+	visited := h.acquireVisited()
+	defer h.releaseVisited(visited)
+
+	d0 := h.distToNode(query, ep)
+	visited.mark(int(ep))
+	cand := &minHeap{{ep, d0}}
+	result := &maxHeap{}
+	if accept == nil || accept(ep) {
+		*result = append(*result, candidate{ep, d0})
+	}
+
+	for cand.Len() > 0 {
+		c := cand.pop()
+		// Stop once the nearest unexplored candidate is farther than the current
+		// worst result and the result set is already full.
+		if result.Len() >= ef && c.dist > (*result)[0].dist {
+			break
+		}
+		for _, nb := range h.nodes[c.id].friends[level] {
+			if visited.seen(int(nb)) {
+				continue
+			}
+			visited.mark(int(nb))
+			d := h.distToNode(query, nb)
+			// Expand through nb for connectivity regardless of the filter.
+			if result.Len() < ef || d < (*result)[0].dist {
+				cand.push(candidate{nb, d})
+				if accept == nil || accept(nb) {
+					result.push(candidate{nb, d})
+					if result.Len() > ef {
+						result.pop()
+					}
+				}
+			}
+		}
+	}
+	out := make([]candidate, result.Len())
+	copy(out, *result)
+	sort.Slice(out, func(a, b int) bool { return out[a].dist < out[b].dist })
+	return out
+}
+
+// selectNeighbors applies the HNSW heuristic: keep a candidate only if it is
+// closer to the query than to any already-selected neighbor. This spreads links
+// across directions and avoids clustering them on one side, which is what gives
+// HNSW its good long-range connectivity.
+func (h *HNSW) selectNeighbors(query []float32, cands []candidate, m int) []int32 {
+	selected := make([]int32, 0, m)
+	for _, c := range cands {
+		if len(selected) >= m {
+			break
+		}
+		good := true
+		cv := h.data[int(c.id)*h.dim : int(c.id)*h.dim+h.dim]
+		for _, s := range selected {
+			sv := h.data[int(s)*h.dim : int(s)*h.dim+h.dim]
+			if 1-dotf(cv, sv) < c.dist {
+				good = false
+				break
+			}
+		}
+		if good {
+			selected = append(selected, c.id)
+		}
+	}
+	return selected
+}
+
+// pruneConnections re-selects an over-full neighbor list down to m using the same
+// heuristic, keeping the most useful links.
+func (h *HNSW) pruneConnections(node int32, level, m int) []int32 {
+	nv := h.data[int(node)*h.dim : int(node)*h.dim+h.dim]
+	friends := h.nodes[node].friends[level]
+	cands := make([]candidate, len(friends))
+	for i, f := range friends {
+		fv := h.data[int(f)*h.dim : int(f)*h.dim+h.dim]
+		cands[i] = candidate{f, 1 - dotf(nv, fv)}
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].dist < cands[b].dist })
+	return h.selectNeighbors(nv, cands, m)
+}
+
+// Search returns the top-k ids for query at the given search width ef. Larger ef
+// trades latency for recall. If ef < k it is raised to k.
+func (h *HNSW) Search(query []float32, k, ef int) []Result {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.entry == -1 || k <= 0 {
+		return nil
+	}
+	if ef < k {
+		ef = k
+	}
+	norm := make([]float32, h.dim)
+	normalize(norm, query)
+
+	ep := h.entry
+	for l := h.top; l > 0; l-- {
+		ep = h.greedyDescend(norm, ep, l)
+	}
+	cands := h.searchLayer(norm, ep, ef, 0)
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	out := make([]Result, len(cands))
+	for i, c := range cands {
+		out[i] = Result{ID: h.ids[c.id], Score: 1 - c.dist}
+	}
+	return out
+}
+
+// SearchFiltered is Search restricted to ids for which accept returns true. The
+// predicate is evaluated by ordinal. For very selective filters, prefer a flat
+// scan over the matching subset; this method is best when a meaningful fraction
+// of the corpus passes.
+func (h *HNSW) SearchFiltered(query []float32, k, ef int, accept func(id string) bool) []Result {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.entry == -1 || k <= 0 {
+		return nil
+	}
+	if ef < k {
+		ef = k
+	}
+	norm := make([]float32, h.dim)
+	normalize(norm, query)
+	pred := func(ord int32) bool { return accept(h.ids[ord]) }
+
+	ep := h.entry
+	for l := h.top; l > 0; l-- {
+		ep = h.greedyDescend(norm, ep, l)
+	}
+	cands := h.searchLayerFiltered(norm, ep, ef, 0, pred)
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+	out := make([]Result, len(cands))
+	for i, c := range cands {
+		out[i] = Result{ID: h.ids[c.id], Score: 1 - c.dist}
+	}
+	return out
+}

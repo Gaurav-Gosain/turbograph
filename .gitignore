@@ -1,0 +1,11 @@
+# build artifacts
+bin/
+/turbograph
+*.test
+*.prof
+
+# generated stores, journals, and data directories
+*.tg
+*.tg.journal
+turbograph-data/
+testdata/corpus/
