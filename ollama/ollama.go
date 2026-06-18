@@ -10,11 +10,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
-// DefaultEmbedModel is a compact, high-quality embedding model.
-const DefaultEmbedModel = "nomic-embed-text"
+// DefaultEmbedModel is a compact, high-quality embedding model (Google's
+// EmbeddingGemma).
+const DefaultEmbedModel = "embeddinggemma"
 
 // Client talks to an Ollama server.
 type Client struct {
@@ -206,6 +208,58 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		names[i] = m.Name
 	}
 	return names, nil
+}
+
+// PullProgress is a single progress update from a model pull.
+type PullProgress struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+}
+
+// Pull downloads a model, invoking onProgress for each streamed update. It blocks
+// until the pull finishes or fails. onProgress returning an error stops the pull.
+func (c *Client) Pull(ctx context.Context, model string, onProgress func(PullProgress) error) error {
+	body, err := json.Marshal(map[string]any{"model": model, "stream": true})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// A model download can take a long time; do not let the client's timeout cut
+	// it off.
+	cl := &http.Client{Timeout: 0}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama pull: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
+		return fmt.Errorf("ollama pull: status %d: %s", resp.StatusCode, msg)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var p PullProgress
+		if err := dec.Decode(&p); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if strings.HasPrefix(strings.ToLower(p.Status), "error") {
+			return fmt.Errorf("ollama pull: %s", p.Status)
+		}
+		if onProgress != nil {
+			if err := onProgress(p); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // Ping reports whether the server is reachable.

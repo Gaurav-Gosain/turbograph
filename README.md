@@ -127,12 +127,17 @@ command to resume.
 Requires [Go](https://go.dev) 1.22+ and a running [Ollama](https://ollama.com).
 
 ```
-ollama pull nomic-embed-text          # an embedding model
+ollama pull embeddinggemma            # the default embedding model
 go build -o bin/turbograph ./cmd/turbograph
 
 bin/turbograph serve --gen-model qwen3.5:2b
 # open http://localhost:8080, drop in some .txt/.md/.pdf files, and chat
 ```
+
+If the embedding model is not installed, the web UI shows a one-click pull with
+progress, so you do not have to leave the page. Point at a remote Ollama with
+`--ollama-url http://host:11434` (or the `OLLAMA_HOST` environment variable);
+change the embedding model with `--embed-model`.
 
 Or install the binary directly:
 

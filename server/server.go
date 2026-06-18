@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/save", s.handleSave)
 	mux.HandleFunc("POST /api/ingest/files", s.handleIngestFiles)
+	mux.HandleFunc("POST /api/pull", s.handlePull)
 
 	// Bucket management.
 	mux.HandleFunc("GET /api/buckets", s.handleBuckets)

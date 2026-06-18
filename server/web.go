@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
 
@@ -47,7 +48,56 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models, "default": s.genModel, "pdf": pdf})
+	embed := s.oll.EmbedModel
+	embedReady := false
+	for _, m := range models {
+		if m == embed || strings.HasPrefix(m, embed+":") {
+			embedReady = true
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":      models,
+		"default":     s.genModel,
+		"pdf":         pdf,
+		"embed_model": embed,
+		"embed_ready": embedReady,
+	})
+}
+
+// handlePull streams the download of a model over server-sent events. It emits
+// "progress" events with a status line and byte counts, then "done" or "error".
+func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
+	if s.oll == nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("no ollama server configured"))
+		return
+	}
+	model := r.URL.Query().Get("model")
+	if model == "" {
+		writeErr(w, http.StatusBadRequest, errEmpty("model"))
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	send := func(event string, v any) {
+		b, _ := json.Marshal(v)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		flusher.Flush()
+	}
+	err := s.oll.Pull(r.Context(), model, func(p ollama.PullProgress) error {
+		send("progress", map[string]any{"status": p.Status, "completed": p.Completed, "total": p.Total})
+		return nil
+	})
+	if err != nil {
+		send("error", map[string]string{"error": err.Error()})
+		return
+	}
+	send("done", map[string]bool{"done": true})
 }
 
 type ingestFile struct {

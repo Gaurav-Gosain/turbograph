@@ -72,6 +72,7 @@ func cmdServe(args []string) error {
 	addr := fs.String("addr", ":8080", "listen address")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
 	genModel := fs.String("gen-model", "", "default ollama model for chat (UI can override)")
+	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk for new buckets")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for the input path (default: pdftotext if present)")
@@ -84,6 +85,9 @@ func cmdServe(args []string) error {
 
 	client := ollama.New()
 	client.EmbedModel = *embedModel
+	if *ollamaURL != "" {
+		client.BaseURL = *ollamaURL
+	}
 
 	cfg := rag.Config{Bits: *bits, GraphKNN: *knn}
 	var mgr *rag.Manager
@@ -166,6 +170,7 @@ func cmdIngest(args []string) error {
 	src := fs.String("src", "", "source file or directory to ingest")
 	out := fs.String("out", "store.tg", "store path; loaded and extended if it already exists")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate (1-8)")
 	residual := fs.Int("residual", 32, "QJL residual projections (0-64)")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk in the graph")
@@ -185,6 +190,9 @@ func cmdIngest(args []string) error {
 
 	client := ollama.New()
 	client.EmbedModel = *embedModel
+	if *ollamaURL != "" {
+		client.BaseURL = *ollamaURL
+	}
 	emb := &batchingEmbedder{c: client, batch: *batch}
 
 	// Cancel on the first interrupt so ingestion stops cleanly after checkpointing.
@@ -357,6 +365,7 @@ func cmdQuery(args []string) error {
 	mix := fs.Float64("mix", 0.6, "graph vs similarity blend in [0,1]")
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	genModel := fs.String("gen-model", "", "ollama model for answer synthesis (empty to only list context)")
 	showText := fs.Bool("show", true, "print retrieved chunk text")
 	fs.Parse(args)
@@ -372,6 +381,9 @@ func cmdQuery(args []string) error {
 
 	client := ollama.New()
 	client.EmbedModel = *embedModel
+	if *ollamaURL != "" {
+		client.BaseURL = *ollamaURL
+	}
 	store, err := rag.Load(client, f)
 	if err != nil {
 		return err

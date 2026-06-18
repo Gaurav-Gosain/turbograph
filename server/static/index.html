@@ -199,6 +199,12 @@
   .row button{flex:1}
   .note{color:var(--muted);font-size:11px;min-height:15px}
   .note.err{color:var(--danger)}
+  .notice-pull{display:none;flex-direction:column;gap:9px;padding:12px;border-radius:8px;
+    border:1px solid var(--warn);background:rgba(229,193,123,.07)}
+  .notice-pull .np-text{font-size:11.5px;color:var(--text);line-height:1.5}
+  .notice-pull .np-text b{color:var(--warn)}
+  .notice-pull .np-row{display:flex;align-items:center;gap:10px}
+  .notice-pull .np-prog{font-size:11px;color:var(--muted)}
 
   #nodeBody{padding:14px;overflow-y:auto;flex:1}
   #nodeBody .meta{color:var(--muted);font-size:11px;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap}
@@ -296,6 +302,11 @@
 
     <div class="panel" id="panel-docs">
       <div class="scroll">
+        <div id="embedNotice" class="notice-pull">
+          <div class="np-text">embedding model <b id="embedName"></b> is not installed. it is
+          required to index documents.</div>
+          <div class="np-row"><button id="embedPull">pull it</button><span id="embedProg" class="np-prog"></span></div>
+        </div>
         <div id="drop">drop files here, or click to choose
           <small id="dropTypes">.txt .md, .pdf</small>
         </div>
@@ -588,6 +599,10 @@ async function loadModels(){
   try{
     const m=await api("/api/models");
     if(m.pdf!=null){G.pdfSupported=m.pdf;$("#dropTypes").textContent=m.pdf?".txt .md .pdf":".txt .md"}
+    // Surface a missing embedding model: it is required to index anything.
+    G.embedModel=m.embed_model||"";
+    $("#embedName").textContent=G.embedModel;
+    $("#embedNotice").style.display=(m.embed_ready===false&&G.embedModel)?"flex":"none";
     const sel=$("#model");sel.innerHTML="";
     if(!m.models||!m.models.length){sel.innerHTML='<option value="">no model</option>';return}
     for(const name of m.models){const o=document.createElement("option");o.value=name;o.textContent=name;sel.appendChild(o)}
@@ -596,6 +611,31 @@ async function loadModels(){
   }catch(e){}
 }
 $("#model").onchange=e=>{G.model=e.target.value;saveSettings()};
+
+// ---------- model pulling ----------
+async function pullModel(name,onProg){
+  const resp=await fetch("/api/pull?model="+encodeURIComponent(name),{method:"POST"});
+  const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
+  while(true){
+    const {value,done}=await reader.read();if(done)break;
+    buf+=dec.decode(value,{stream:true});let i;
+    while((i=buf.indexOf("\n\n"))>=0){
+      const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
+      if(ev.event==="progress"){if(onProg)onProg(ev.data)}
+      else if(ev.event==="error")throw new Error(ev.data.error);
+      else if(ev.event==="done")return;
+    }
+  }
+}
+function pullPct(p){return p.total?Math.floor(p.completed/p.total*100):0}
+$("#embedPull").onclick=async()=>{
+  const btn=$("#embedPull"),prog=$("#embedProg");btn.disabled=true;
+  try{
+    await pullModel(G.embedModel,p=>{prog.textContent=p.status+(p.total?" "+pullPct(p)+"%":"")});
+    prog.textContent="done";toast("pulled "+G.embedModel);await loadModels();
+  }catch(e){prog.textContent="";toast(e.message,true)}
+  btn.disabled=false;
+};
 
 // ---------- buckets (isolated corpora) ----------
 async function loadBuckets(){
@@ -805,6 +845,13 @@ function commands(){
     {label:"Retrieval settings",run:()=>settingsEl.classList.add("open")},
     {label:"Save store",hint:"persist",run:()=>$("#saveBtn").click()},
     {label:"New bucket",run:()=>$("#newBucket").onclick()},
+    {label:"Pull a model",hint:"ollama",run:async()=>{
+      const name=prompt("ollama model to pull (e.g. embeddinggemma, qwen3.5:2b)");if(!name)return;
+      showTab("docs");toast("pulling "+name+"...");
+      try{await pullModel(name,p=>{$("#docNote").textContent="pulling "+name+" "+(p.total?pullPct(p)+"%":p.status)});
+        $("#docNote").textContent="pulled "+name;toast("pulled "+name);await loadModels()}
+      catch(e){toast(e.message,true)}
+    }},
     {label:"How turbograph works",hint:"help",run:showHelp},
   ];
   for(const o of $("#bucket").options)if(o.value&&o.value!==G.bucket)
