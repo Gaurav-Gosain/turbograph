@@ -15,25 +15,25 @@ import (
 // rebuilt on load, which keeps the format small, forward-compatible, and immune
 // to index-internal layout changes.
 type snapshot struct {
-	Cfg    Config
-	Dim    int
-	Chunks []Chunk
-	Embeds [][]float32
+	Cfg    Config      `json:"config"`
+	Dim    int         `json:"dim"`
+	Chunks []Chunk     `json:"chunks"`
+	Embeds [][]float32 `json:"embeds"`
 	// Hashes maps document id to content hash, persisted so content-level dedup
 	// survives a reload. Absent in older snapshots, in which case dedup falls back
 	// to ids until the documents are seen again.
-	Hashes map[string][32]byte
+	Hashes map[string][32]byte `json:"hashes"`
 	// Entities and Relations persist the entity-relationship graph, which is
 	// expensive to extract (it uses an LLM), so it is not rebuilt on load.
-	Entities  []entity.Entity
-	Relations []entity.Relation
+	Entities  []entity.Entity   `json:"entities"`
+	Relations []entity.Relation `json:"relations"`
 	// Versions persists each document's content history. Absent in older
 	// snapshots, in which case a document has no recorded history until its next
 	// update.
-	Versions map[string][]docVersion
+	Versions map[string][]docVersion `json:"versions"`
 	// DocMeta persists arbitrary per-document metadata as raw JSON. Absent in
 	// older snapshots.
-	DocMeta map[string]json.RawMessage
+	DocMeta map[string]json.RawMessage `json:"doc_meta"`
 }
 
 // Save serializes the store to w.
@@ -50,6 +50,29 @@ func (s *Store) Save(w io.Writer) error {
 		snap.Relations = s.eg.Relations()
 	}
 	return gob.NewEncoder(w).Encode(&snap)
+}
+
+// ExportJSON reads a gob-encoded .tg snapshot from r and writes an equivalent,
+// indented JSON document to w. The on-disk format is Go gob, which is
+// Go-specific; this is the supported interop path for other languages and tools,
+// producing a plain JSON view of the same data (config, chunks with their
+// document offsets, embeddings, per-document metadata, version history, and the
+// entity graph). Set includeVectors to false to omit the embeddings, which
+// dominate the size, when only the text and structure are needed.
+func ExportJSON(r io.Reader, w io.Writer, includeVectors bool) error {
+	var snap snapshot
+	if err := gob.NewDecoder(r).Decode(&snap); err != nil {
+		return fmt.Errorf("rag: decode: %w", err)
+	}
+	if !includeVectors {
+		snap.Embeds = nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(snap); err != nil {
+		return fmt.Errorf("rag: encode json: %w", err)
+	}
+	return nil
 }
 
 // Load reconstructs a store from r, attaching the given embedder for queries.

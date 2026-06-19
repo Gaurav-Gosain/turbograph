@@ -109,6 +109,8 @@ func main() {
 		err = cmdQuery(os.Args[2:])
 	case "stats":
 		err = cmdStats(os.Args[2:])
+	case "export":
+		err = cmdExport(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "eval":
@@ -138,6 +140,7 @@ usage:
   turbograph query  --store <store> --q "<question>" [flags]
   turbograph serve  --data <dir> --addr :8080 [flags]
   turbograph stats  --store <store>
+  turbograph export --store <store> [--out <file.json>] [--no-vectors]   # JSON view for interop
   turbograph eval   --store <store> --suite <suite.jsonl> [flags]
   turbograph mcp    --store <store> [--gen-model M]
   turbograph quant  bench [flags]                             # benchmark the codec
@@ -668,6 +671,38 @@ func cmdStats(args []string) error {
 		return err
 	}
 	fmt.Printf("chunks: %d\n", store.Len())
+	return nil
+}
+
+// cmdExport transcodes a .tg store (Go gob) to JSON, the interop format other
+// languages and tools can read. It streams straight from the file without
+// rebuilding any indexes, so no embedder is needed.
+func cmdExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	storePath := fs.String("store", "store.tg", "store path")
+	out := fs.String("out", "", "output file (default: stdout)")
+	noVectors := fs.Bool("no-vectors", false, "omit embeddings (much smaller)")
+	fs.Parse(args)
+	f, err := os.Open(*storePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := os.Stdout
+	if *out != "" {
+		of, err := os.Create(*out)
+		if err != nil {
+			return err
+		}
+		defer of.Close()
+		w = of
+	}
+	if err := rag.ExportJSON(f, w, !*noVectors); err != nil {
+		return err
+	}
+	if *out != "" {
+		fmt.Fprintf(os.Stderr, "exported %s -> %s\n", *storePath, *out)
+	}
 	return nil
 }
 

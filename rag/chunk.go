@@ -4,17 +4,17 @@ import "strings"
 
 // Chunk is a unit of retrievable text with provenance.
 type Chunk struct {
-	ID    string // stable identifier, "doc#pos"
-	DocID string
-	Pos   int // ordinal within the document
-	Text  string
+	ID    string `json:"id"` // stable identifier, "doc#pos"
+	DocID string `json:"doc_id"`
+	Pos   int    `json:"pos"` // ordinal within the document
+	Text  string `json:"text"`
 	// Start and End are the [start,end) rune offsets of this chunk's body within
 	// the original document text, giving an exact document-to-chunk mapping that
 	// callers use to preview a document with its retrieved chunks highlighted.
 	// They are best-effort: both are -1 when a chunk's text cannot be located
 	// verbatim in the source (for example a custom Chunker that rewrites text).
-	Start int
-	End   int
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 // ChunkConfig controls how documents are split.
