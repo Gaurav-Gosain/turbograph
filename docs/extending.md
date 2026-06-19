@@ -65,7 +65,7 @@ Each algorithm is a library with no dependency on the rest.
 ```mermaid
 flowchart LR
   quant[quant<br/>TurboQuant codec] -.-> index[index<br/>HNSW + flat ANN]
-  graph[graph<br/>PageRank + communities]
+  graphpkg[graph<br/>PageRank + communities]
   lexical[lexical<br/>BM25 + RRF]
 ```
 

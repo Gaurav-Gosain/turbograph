@@ -12,7 +12,7 @@ flowchart TB
   quant[quant<br/>TurboQuant codec]
   index[index<br/>HNSW and flat ANN]
   lexical[lexical<br/>BM25 and RRF]
-  graph[graph<br/>CSR, PageRank, communities]
+  graphpkg[graph<br/>CSR, PageRank, communities]
   ollama[ollama<br/>embeddings and generation]
   extract[extract<br/>pluggable parsers]
   server[server<br/>JSON API, OpenAI /v1, embedded UI]
@@ -23,7 +23,7 @@ flowchart TB
   rag --> quant
   rag --> index
   rag --> lexical
-  rag --> graph
+  rag --> graphpkg
   index --> quant
   rag --> ollama
   server --> rag
@@ -53,7 +53,7 @@ data-oblivious vector quantizer with near-optimal distortion and no training.
 flowchart LR
   V[vector] --> R[randomized Hadamard rotation]
   R --> N[store norm separately]
-  R --> S[standardize to N(0,1)]
+  R --> S["standardize to N(0,1)"]
   S --> Q[Lloyd-Max scalar quantizer]
   Q --> C[per-coordinate code]
   Q --> RES[QJL 1-bit residual sketch]
