@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +27,9 @@ type Options struct {
 	CORSOrigin string
 	// Metrics exposes process and request counters at /debug/vars (expvar).
 	Metrics bool
+	// Version is reported by the health endpoint so a deployment can be confirmed
+	// with a single probe. Empty defaults to "dev".
+	Version string
 }
 
 // DefaultMaxBodyBytes bounds request bodies (uploads use a dedicated larger limit
@@ -39,8 +41,14 @@ var (
 	metricRequests = expvar.NewInt("turbograph_requests_total")
 	metricErrors   = expvar.NewInt("turbograph_responses_5xx_total")
 	metricInflight = expvar.NewInt("turbograph_requests_in_flight")
-	metricStarted  int64
+	startTime      = time.Now()
 )
+
+func init() {
+	expvar.Publish("turbograph_uptime_seconds", expvar.Func(func() any {
+		return int64(time.Since(startTime).Seconds())
+	}))
+}
 
 // chain applies the hardening middleware in the right order around next:
 // recover (outermost, so a panic anywhere becomes a 500), then metrics, CORS,
@@ -66,12 +74,12 @@ func chain(next http.Handler, opt Options) http.Handler {
 // daemon. It writes a 500 only if the handler had not started the response.
 func recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sw := &statusWriter{ResponseWriter: w, status: 0}
+		sw := asStatus(w)
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("panic serving %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
 				if sw.status == 0 {
-					writeErr(w, http.StatusInternalServerError, fmt.Errorf("internal error"))
+					writeErr(sw, http.StatusInternalServerError, fmt.Errorf("internal error"))
 				}
 			}
 		}()
@@ -153,21 +161,14 @@ func cors(next http.Handler, origin string) http.Handler {
 // withMetrics counts requests, in-flight requests, and 5xx responses into expvar
 // so /debug/vars exposes basic operational telemetry with no dependency.
 func withMetrics(next http.Handler) http.Handler {
-	if atomic.CompareAndSwapInt64(&metricStarted, 0, 1) {
-		expvar.Publish("turbograph_uptime_seconds", expvar.Func(func() any {
-			return int64(time.Since(startTime).Seconds())
-		}))
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metricRequests.Add(1)
 		metricInflight.Add(1)
 		defer metricInflight.Add(-1)
-		sw := &statusWriter{ResponseWriter: w, status: 0}
+		sw := asStatus(w)
 		next.ServeHTTP(sw, r)
 		if sw.status >= 500 {
 			metricErrors.Add(1)
 		}
 	})
 }
-
-var startTime = time.Now()

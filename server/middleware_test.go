@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -118,6 +119,21 @@ func TestMetricsEndpoint(t *testing.T) {
 	body.ReadFrom(resp.Body)
 	if !strings.Contains(body.String(), "turbograph_requests_total") {
 		t.Fatalf("expvar metrics missing turbograph counters")
+	}
+}
+
+func TestHealthReportsVersion(t *testing.T) {
+	ts := newOptServer(t, Options{Version: "v9.9.9"})
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]string
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out["version"] != "v9.9.9" {
+		t.Fatalf("health should report the configured version, got %q", out["version"])
 	}
 }
 

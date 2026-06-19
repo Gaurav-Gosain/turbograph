@@ -21,16 +21,13 @@ import (
 // DefaultBucket is used when a request does not name one.
 const DefaultBucket = "default"
 
-// Version is reported by the health endpoint. The CLI sets it from its build-time
-// version so an operator can confirm what is deployed with a single probe.
-var Version = "dev"
-
 // Server serves a set of buckets managed by a rag.Manager.
 type Server struct {
 	mgr      *rag.Manager
 	oll      *ollama.Client
 	genModel string
 	extract  *extract.Registry
+	version  string
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -64,6 +61,10 @@ func (s *Server) Handler() http.Handler {
 
 // HandlerWithOptions returns the routes wrapped in the configured middleware.
 func (s *Server) HandlerWithOptions(opt Options) http.Handler {
+	s.version = opt.Version
+	if s.version == "" {
+		s.version = "dev"
+	}
 	return chain(s.routes(opt), opt)
 }
 
@@ -73,7 +74,7 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	if opt.Metrics {
-		mux.Handle("GET /debug/vars", expvarHandler())
+		mux.Handle("GET /debug/vars", expvar.Handler())
 	}
 	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("POST /ingest", s.handleIngest)
@@ -114,7 +115,7 @@ func (s *Server) store(r *http.Request) (*rag.Store, error) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": Version})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
 }
 
 // handleReady is a readiness probe: the process is up (liveness) and its
@@ -131,9 +132,6 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
-
-// expvarHandler serves the standard expvar metrics page.
-func expvarHandler() http.Handler { return expvar.Handler() }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store(r)
@@ -301,7 +299,7 @@ func (e errEmpty) Error() string { return string(e) + " is required" }
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: 0}
+		sw := asStatus(w)
 		next.ServeHTTP(sw, r)
 		status := sw.status
 		if status == 0 {
@@ -314,6 +312,16 @@ func logging(next http.Handler) http.Handler {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+// asStatus returns w as a *statusWriter, wrapping it only if it is not already
+// one. recoverPanic is the outermost middleware and installs the wrapper, so the
+// inner layers (metrics, logging) reuse it instead of each allocating their own.
+func asStatus(w http.ResponseWriter) *statusWriter {
+	if s, ok := w.(*statusWriter); ok {
+		return s
+	}
+	return &statusWriter{ResponseWriter: w}
 }
 
 func (s *statusWriter) WriteHeader(code int) {

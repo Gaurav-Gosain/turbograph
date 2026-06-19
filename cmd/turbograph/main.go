@@ -123,7 +123,6 @@ func cmdServe(args []string) error {
 		*apiKey = os.Getenv("TURBOGRAPH_API_KEY")
 	}
 
-	server.Version = resolvedVersion()
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
 	client.EmbedDim = *embedDim
@@ -178,6 +177,7 @@ func cmdServe(args []string) error {
 		CORSOrigin:   *cors,
 		Metrics:      *metrics,
 		MaxBodyBytes: *maxBody,
+		Version:      resolvedVersion(),
 	})
 	httpSrv := &http.Server{
 		Addr:              *addr,
