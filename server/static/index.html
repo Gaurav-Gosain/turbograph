@@ -183,8 +183,13 @@
   .cmdk-item .ic{color:var(--muted);font-size:11px;width:16px;text-align:center}
   .cmdk-item .lbl{flex:1}
   .cmdk-item .hint{color:var(--faint);font-size:11px}
+  .cmdk-item .chev{color:var(--faint);font-size:14px;margin-left:2px}
   .cmdk-item.sel{background:var(--panel2)}
-  .cmdk-item.sel .ic{color:var(--accent)}
+  .cmdk-item.sel .ic,.cmdk-item.sel .chev{color:var(--accent)}
+  .cmdk-sec{padding:8px 11px 3px;color:var(--faint);font-size:9.5px;letter-spacing:.7px;text-transform:uppercase}
+  .cmdk-back{padding:8px 11px;color:var(--muted);font-size:12px;cursor:pointer;
+    border-bottom:1px solid var(--border);margin-bottom:4px}
+  .cmdk-back:hover{color:var(--accent)}
   .cmdk-empty{padding:18px;text-align:center;color:var(--muted);font-size:12px}
   .cmdk-foot{display:flex;gap:14px;justify-content:flex-end;padding:8px 12px;
     border-top:1px solid var(--border);color:var(--faint);font-size:10px}
@@ -1009,6 +1014,7 @@ async function loadModels(){
     for(const name of m.models){const o=document.createElement("option");o.value=name;o.textContent=name;sel.appendChild(o)}
     if(!G.model||!m.models.includes(G.model))G.model=m.default&&m.models.includes(m.default)?m.default:m.models[0];
     sel.value=G.model;
+    if(cmdkOpen())renderCmdk(cmdkInput.value); // keep the palette's model count and list live
   }catch(e){}
 }
 $("#model").onchange=e=>{G.model=e.target.value;saveSettings()};
@@ -1409,18 +1415,41 @@ $("#cfgSave").onclick=async()=>{
 const cmdkEl=$("#cmdk"),cmdkInput=$("#cmdkInput"),cmdkList=$("#cmdkList");
 let cmdkItems=[],cmdkSel=0;
 function cmdkOpen(){return cmdkEl.classList.contains("open")}
+let cmdkPath=[]; // drilldown stack of {label, src} submenus; empty == root
+function optlist(sel){return [...$(sel).options].filter(o=>o.value)}
+function modelFamily(v){return v.split(/[:/]/)[0]}
+// The full model list lives in a submenu, grouped by family, so a big Ollama
+// install does not flood the root palette.
+function modelCommands(){
+  const opts=optlist("#model").slice().sort((a,b)=>
+    modelFamily(a.value).localeCompare(modelFamily(b.value))||a.value.localeCompare(b.value));
+  return opts.map(o=>({label:o.value,section:modelFamily(o.value),
+    hint:o.value===G.model?"active":"",
+    run:()=>{G.model=o.value;$("#model").value=o.value;saveSettings();toast("model: "+o.value)}}));
+}
+function bucketCommands(){
+  return optlist("#bucket").map(o=>({label:o.value,hint:o.value===G.bucket?"current":"",
+    run:async()=>{if(o.value===G.bucket)return;G.bucket=o.value;$("#bucket").value=o.value;await switchBucket()}}));
+}
 function commands(){
+  const models=optlist("#model").length,buckets=optlist("#bucket").length;
   const c=[
     {label:"Ask a question",hint:"chat",run:()=>{showTab("chat");$("#input").focus()}},
     {label:"Search the graph",hint:"/",run:()=>$("#search").focus()},
     {label:"Upload documents",hint:"docs",run:()=>{showTab("docs");$("#file").click()}},
-    {label:"Go to chat",run:()=>showTab("chat")},
-    {label:"Go to documents",run:()=>showTab("docs")},
+    {label:"Switch model",hint:models+" available",sub:modelCommands},
+  ];
+  if(buckets>1)c.push({label:"Switch bucket",hint:buckets+" buckets",sub:bucketCommands});
+  c.push(
+    {label:"Pipeline editor",hint:"pipeline",run:openFlow},
+    {label:"Retrieval settings",run:()=>settingsEl.classList.add("open")},
+    {label:"Settings & configuration",hint:"backends, chunking, S3",run:openConfig},
+    {label:"Build entity graph",hint:"llm",run:runBuildEntities},
+    {label:"View entity graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=entities]').click()},
+    {label:"View chunk graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=chunks]').click()},
     {label:"Fit graph to view",run:()=>fit(G.highlight.size?G.highlight:null)},
     {label:"Clear graph highlight",run:()=>{G.highlight=new Set();dirty=true}},
     {label:"Clear chat",run:()=>$("#clearChat").click()},
-    {label:"Retrieval settings",run:()=>settingsEl.classList.add("open")},
-    {label:"Settings & configuration",hint:"backends, chunking, S3",run:openConfig},
     {label:"Save store",hint:"persist",run:()=>$("#saveBtn").click()},
     {label:"New bucket",run:()=>$("#newBucket").onclick()},
     {label:"Pull a model",hint:"ollama",run:async()=>{
@@ -1430,28 +1459,35 @@ function commands(){
         $("#docNote").textContent="pulled "+name;toast("pulled "+name);await loadModels()}
       catch(e){toast(e.message,true)}
     }},
-    {label:"Build entity graph",hint:"llm",run:runBuildEntities},
-    {label:"View entity graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=entities]').click()},
-    {label:"View chunk graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=chunks]').click()},
     {label:"How turbograph works",hint:"help",run:showHelp},
-  ];
-  for(const o of $("#bucket").options)if(o.value&&o.value!==G.bucket)
-    c.push({label:"Switch to bucket: "+o.value,run:async()=>{G.bucket=o.value;$("#bucket").value=o.value;await switchBucket()}});
-  for(const o of $("#model").options)if(o.value&&o.value!==G.model)
-    c.push({label:"Use model: "+o.value,run:()=>{G.model=o.value;$("#model").value=o.value;saveSettings()}});
+  );
   return c;
 }
-function openCmdk(){cmdkEl.classList.add("open");cmdkInput.value="";renderCmdk("");cmdkInput.focus()}
+function curItems(){return cmdkPath.length?cmdkPath[cmdkPath.length-1].src():commands()}
+function openCmdk(){cmdkEl.classList.add("open");cmdkPath=[];cmdkInput.value="";renderCmdk("");cmdkInput.focus()}
 function closeCmdk(){cmdkEl.classList.remove("open")}
 function toggleCmdk(){cmdkOpen()?closeCmdk():openCmdk()}
+function pushSub(c){cmdkPath.push({label:c.label,src:c.sub});cmdkInput.value="";renderCmdk("");cmdkInput.focus()}
+function popCmdk(){cmdkPath.pop();cmdkInput.value="";renderCmdk("");cmdkInput.focus()}
 function renderCmdk(q){
-  const all=commands(),ql=q.toLowerCase().trim();
-  cmdkItems=ql?all.filter(c=>c.label.toLowerCase().includes(ql)):all;
+  const all=curItems(),ql=q.toLowerCase().trim();
+  cmdkItems=ql?all.filter(c=>c.label.toLowerCase().includes(ql)||(c.section||"").toLowerCase().includes(ql)):all;
   cmdkSel=0;
-  if(!cmdkItems.length){cmdkList.innerHTML='<div class="cmdk-empty">no matching commands</div>';return}
-  cmdkList.innerHTML=cmdkItems.map((c,i)=>'<div class="cmdk-item'+(i===0?" sel":"")+'" data-i="'+i+'">'+
-    '<span class="ic">&gt;</span><span class="lbl">'+esc(c.label)+'</span>'+
-    (c.hint?'<span class="hint">'+esc(c.hint)+'</span>':"")+'</div>').join("");
+  cmdkInput.placeholder=cmdkPath.length?cmdkPath.map(p=>p.label.toLowerCase()).join(" / ")+"...":"type a command...";
+  let html=cmdkPath.length?'<div class="cmdk-back" data-back="1">&lsaquo; back</div>':"";
+  if(!cmdkItems.length){cmdkList.innerHTML=html+'<div class="cmdk-empty">no matches</div>';bindCmdk();return}
+  let sec=null;
+  cmdkItems.forEach((c,i)=>{
+    if(c.section!=null&&c.section!==sec){sec=c.section;html+='<div class="cmdk-sec">'+esc(sec)+'</div>'}
+    html+='<div class="cmdk-item'+(i===cmdkSel?" sel":"")+'" data-i="'+i+'">'+
+      '<span class="ic">'+(c.sub?"#":"&gt;")+'</span><span class="lbl">'+esc(c.label)+'</span>'+
+      (c.hint?'<span class="hint">'+esc(c.hint)+'</span>':"")+
+      (c.sub?'<span class="chev">&rsaquo;</span>':"")+'</div>';
+  });
+  cmdkList.innerHTML=html;bindCmdk();
+}
+function bindCmdk(){
+  const back=cmdkList.querySelector(".cmdk-back");if(back)back.onclick=popCmdk;
   cmdkList.querySelectorAll(".cmdk-item").forEach(el=>{
     el.onmouseenter=()=>setCmdkSel(+el.dataset.i);
     el.onclick=()=>runCmdk(+el.dataset.i);
@@ -1459,7 +1495,9 @@ function renderCmdk(q){
 }
 function setCmdkSel(i){cmdkSel=i;cmdkList.querySelectorAll(".cmdk-item").forEach((el,j)=>el.classList.toggle("sel",j===i));
   const el=cmdkList.querySelector(".cmdk-item.sel");if(el)el.scrollIntoView({block:"nearest"})}
-function runCmdk(i){const c=cmdkItems[i];if(!c)return;closeCmdk();try{c.run()}catch(e){toast(e.message,true)}}
+function runCmdk(i){const c=cmdkItems[i];if(!c)return;
+  if(c.sub){pushSub(c);return}
+  closeCmdk();try{c.run()}catch(e){toast(e.message,true)}}
 cmdkInput.addEventListener("input",()=>renderCmdk(cmdkInput.value));
 $("#cmdkBtn").onclick=openCmdk;
 cmdkEl.addEventListener("click",e=>{if(e.target===cmdkEl)closeCmdk()});
@@ -1477,7 +1515,7 @@ document.addEventListener("keydown",e=>{
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(tag);
   if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();toggleCmdk();return}
   if(e.key==="Escape"){
-    if(cmdkOpen()){closeCmdk();return}
+    if(cmdkOpen()){if(cmdkPath.length)popCmdk();else closeCmdk();return}
     if(helpEl.classList.contains("open")){helpEl.classList.remove("open");return}
     if(settingsEl.classList.contains("open")){settingsEl.classList.remove("open");return}
     if(flowEl.classList.contains("open")){closeFlow();return}
@@ -1492,6 +1530,7 @@ document.addEventListener("keydown",e=>{
     if(e.key==="ArrowDown"){e.preventDefault();setCmdkSel(Math.min(cmdkSel+1,cmdkItems.length-1))}
     else if(e.key==="ArrowUp"){e.preventDefault();setCmdkSel(Math.max(cmdkSel-1,0))}
     else if(e.key==="Enter"){e.preventDefault();runCmdk(cmdkSel)}
+    else if(e.key==="Backspace"&&!cmdkInput.value&&cmdkPath.length){e.preventDefault();popCmdk()}
     return;
   }
   if(!typing){
@@ -2072,7 +2111,9 @@ loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);
   if(h==="pipeline"||h==="free"){openFlow();setMode(h==="free"?"free":"pipeline")}
-  else if(h==="config")openConfig();}
+  else if(h==="config")openConfig();
+  else if(h==="cmdk")openCmdk();
+  else if(h==="models"){openCmdk();pushSub({label:"Switch model",sub:modelCommands})}}
 window.addEventListener("hashchange",applyHash);applyHash();
 </script>
 </body>
