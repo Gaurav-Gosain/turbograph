@@ -8,6 +8,13 @@ type Chunk struct {
 	DocID string
 	Pos   int // ordinal within the document
 	Text  string
+	// Start and End are the [start,end) rune offsets of this chunk's body within
+	// the original document text, giving an exact document-to-chunk mapping that
+	// callers use to preview a document with its retrieved chunks highlighted.
+	// They are best-effort: both are -1 when a chunk's text cannot be located
+	// verbatim in the source (for example a custom Chunker that rewrites text).
+	Start int
+	End   int
 }
 
 // ChunkConfig controls how documents are split.
@@ -38,17 +45,29 @@ func (s *Store) chunkDoc(docID, text string) []Chunk {
 		ch = NewChunker(s.cfg.Chunk)
 	}
 	pieces := ch.Split(text)
+	runes := []rune(text)
 	out := make([]Chunk, 0, len(pieces))
+	cursor := 0
 	for i, p := range pieces {
 		t := p.Text
 		if len(p.Headings) > 0 {
 			t = strings.Join(p.Headings, " > ") + "\n" + t
+		}
+		// Map the piece body back to its span in the original text. The chunkers
+		// normalize whitespace, so the match is whitespace-insensitive; the search
+		// runs forward from the previous piece's start so overlapping pieces resolve
+		// in document order.
+		start, end := locateSpan(runes, p.Text, cursor)
+		if start >= 0 {
+			cursor = start
 		}
 		out = append(out, Chunk{
 			ID:    docID + "#" + itoa(i),
 			DocID: docID,
 			Pos:   i,
 			Text:  t,
+			Start: start,
+			End:   end,
 		})
 	}
 	return out

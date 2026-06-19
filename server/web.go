@@ -47,6 +47,38 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"documents": st.Documents()})
 }
 
+// handleDocument returns a document's full text, metadata, and the span of each
+// of its chunks (GET), or deletes the document and its chunks (DELETE). The span
+// list lets a client render the whole document with retrieved chunks highlighted.
+func (s *Server) handleDocument(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	doc := r.URL.Query().Get("doc")
+	if doc == "" {
+		writeErr(w, http.StatusBadRequest, errEmpty("doc"))
+		return
+	}
+	if r.Method == http.MethodDelete {
+		removed := st.DeleteDocument(doc)
+		if removed == 0 {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("no document %q", doc))
+			return
+		}
+		s.persist(bucketOf(r))
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": doc, "chunks": removed})
+		return
+	}
+	view, ok := st.DocumentView(doc)
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no document %q (or its text was not retained)", doc))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 // handleVersions lists a document's content history, oldest first.
 func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store(r)
@@ -262,8 +294,9 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 }
 
 type ingestFile struct {
-	ID  string `json:"id"`
-	B64 string `json:"b64"`
+	ID   string         `json:"id"`
+	B64  string         `json:"b64"`
+	Meta map[string]any `json:"meta,omitempty"` // arbitrary metadata stored with the document
 }
 
 type ingestFailure struct {
@@ -305,7 +338,7 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, ingestFailure{f.ID, xerr.Error()})
 			continue
 		}
-		docs = append(docs, rag.Document{ID: f.ID, Text: text})
+		docs = append(docs, rag.Document{ID: f.ID, Text: text, Meta: f.Meta})
 	}
 	if len(docs) > 0 {
 		if err := st.AddDocuments(r.Context(), docs); err != nil {
@@ -349,6 +382,7 @@ type chatRequest struct {
 	Rerank    bool       `json:"rerank"`  // pointwise LLM reranking of candidates
 	History   []chatTurn `json:"history"` // recent turns, for query rewriting
 	Model     string     `json:"model"`
+	MetaKeys  []string   `json:"meta_keys"` // document metadata keys to include in each passage
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -413,7 +447,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildChatPrompt(req.Query, res)
+	prompt := buildChatPrompt(req.Query, res, req.MetaKeys)
 	streamErr := s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
 		send("token", map[string]string{"text": tok})
 		return nil
@@ -473,6 +507,9 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 			Score:      r.Score,
 			Similarity: r.Similarity,
 			Text:       r.Chunk.Text,
+			Start:      r.Chunk.Start,
+			End:        r.Chunk.End,
+			Meta:       r.Meta,
 		}
 	}
 	return out
@@ -480,16 +517,42 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 
 // buildChatPrompt numbers the passages [1..k] so the model can cite them with the
 // same numbers the UI shows. The numbers, not chunk ids, are the citation tokens.
-func buildChatPrompt(query string, res []rag.Retrieved) string {
+// When metaKeys is non-empty, the selected document-metadata fields are prefixed
+// to each passage, so callers can feed structured metadata to the model verbatim.
+func buildChatPrompt(query string, res []rag.Retrieved, metaKeys []string) string {
 	var sb strings.Builder
 	sb.WriteString("Context:\n")
 	for i, r := range res {
-		fmt.Fprintf(&sb, "[%d] %s\n", i+1, r.Chunk.Text)
+		fmt.Fprintf(&sb, "[%d] ", i+1)
+		if meta := selectMeta(r.Meta, metaKeys); meta != "" {
+			fmt.Fprintf(&sb, "(%s) ", meta)
+		}
+		fmt.Fprintf(&sb, "%s\n", r.Chunk.Text)
 	}
 	sb.WriteString("\nQuestion: ")
 	sb.WriteString(query)
 	sb.WriteString("\nAnswer:")
 	return sb.String()
+}
+
+// selectMeta renders the chosen keys from a document's JSON metadata as a compact
+// "key: value" list, skipping keys that are absent. It returns "" when there is
+// nothing to include.
+func selectMeta(raw json.RawMessage, keys []string) string {
+	if len(raw) == 0 || len(keys) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // rewriteQuery turns an elliptical follow-up into a standalone search query using

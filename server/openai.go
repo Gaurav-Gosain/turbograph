@@ -139,7 +139,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildChatPrompt(req.Query, res)
+	prompt := buildChatPrompt(req.Query, res, nil)
 	if oreq.Stream {
 		s.streamCompletion(w, id, model, created, func(emit func(string)) error {
 			return s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {

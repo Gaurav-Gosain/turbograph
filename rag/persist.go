@@ -2,6 +2,7 @@ package rag
 
 import (
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -30,6 +31,9 @@ type snapshot struct {
 	// snapshots, in which case a document has no recorded history until its next
 	// update.
 	Versions map[string][]docVersion
+	// DocMeta persists arbitrary per-document metadata as raw JSON. Absent in
+	// older snapshots.
+	DocMeta map[string]json.RawMessage
 }
 
 // Save serializes the store to w.
@@ -39,7 +43,7 @@ func (s *Store) Save(w io.Writer) error {
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions}
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
@@ -72,6 +76,7 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 		s.recordHashLocked(id, h)
 	}
 	s.versions = snap.Versions
+	s.docMeta = snap.DocMeta
 	if len(snap.Entities) > 0 {
 		s.eg = entity.Restore(snap.Entities, snap.Relations)
 		s.rebuildEntityLocked()

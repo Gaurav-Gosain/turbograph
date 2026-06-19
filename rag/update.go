@@ -11,7 +11,8 @@ import (
 type prepared struct {
 	id     string
 	hash   [32]byte
-	text   string // original document text, kept for the version history
+	text   string         // original document text, kept for the version history
+	meta   map[string]any // user metadata to attach to the document
 	chunks []Chunk
 	vecs   [][]float32
 }
@@ -48,7 +49,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 	h := contentHash(d.Text)
 	chunks := s.ChunkDocument(d)
 	if len(chunks) == 0 {
-		return prepared{id: d.ID, hash: h, text: d.Text}, nil
+		return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta}, nil
 	}
 	reuse := s.docEmbeddings(d.ID) // empty for a new document
 	vecs := make([][]float32, len(chunks))
@@ -74,7 +75,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 			vecs[idx] = embedded[k]
 		}
 	}
-	return prepared{id: d.ID, hash: h, text: d.Text, chunks: chunks, vecs: vecs}, nil
+	return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta, chunks: chunks, vecs: vecs}, nil
 }
 
 // removeDocLocked deletes all chunks of a document from the source-of-truth
@@ -99,6 +100,21 @@ func (s *Store) removeDocLocked(id string) int {
 	if h, ok := s.idHash[id]; ok {
 		delete(s.hashes, h)
 		delete(s.idHash, id)
+	}
+	return removed
+}
+
+// DeleteDocument removes a document and all of its chunks from the store,
+// dropping its metadata and version history, and rebuilds the indexes. It returns
+// the number of chunks removed (0 if the document was not present).
+func (s *Store) DeleteDocument(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := s.removeDocLocked(id)
+	delete(s.docMeta, id)
+	delete(s.versions, id)
+	if removed > 0 {
+		s.reindexLocked()
 	}
 	return removed
 }
@@ -154,6 +170,9 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 		s.appendToArraysLocked(p.chunks, p.vecs)
 		s.recordHashLocked(p.id, p.hash)
 		s.recordVersionLocked(p.id, p.hash, p.text, len(p.chunks))
+		if len(p.meta) > 0 { // a content update keeps existing metadata unless new is given
+			s.recordMetaLocked(p.id, p.meta)
+		}
 		return true
 	}
 	// New document. Skip the incremental index add if a rebuild is already pending
@@ -166,6 +185,9 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 	}
 	s.recordHashLocked(p.id, p.hash)
 	s.recordVersionLocked(p.id, p.hash, p.text, len(p.chunks))
+	if len(p.meta) > 0 {
+		s.recordMetaLocked(p.id, p.meta)
+	}
 	return true
 }
 

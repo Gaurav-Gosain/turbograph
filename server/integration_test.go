@@ -222,3 +222,59 @@ func getJSON(t *testing.T, url string, dst any) {
 		t.Fatal(err)
 	}
 }
+
+func TestDocumentViewAndDelete(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05})
+	ctx := context.Background()
+	if err := store.Build(ctx, []rag.Document{
+		{ID: "a.md", Text: "alpha beta gamma delta epsilon zeta", Meta: map[string]any{"source": "unit", "page": float64(3)}},
+		{ID: "b.md", Text: "one two three four five six"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(store).Handler())
+	defer ts.Close()
+
+	// GET full document view: text, meta, and chunk spans.
+	var view struct {
+		ID    string          `json:"id"`
+		Text  string          `json:"text"`
+		Meta  json.RawMessage `json:"meta"`
+		Spans []struct {
+			Start int `json:"start"`
+			End   int `json:"end"`
+		} `json:"spans"`
+	}
+	getJSON(t, ts.URL+"/api/document?doc=a.md", &view)
+	if view.Text == "" || len(view.Spans) == 0 {
+		t.Fatalf("empty view: %+v", view)
+	}
+	if !strings.Contains(string(view.Meta), `"source":"unit"`) {
+		t.Fatalf("meta missing: %s", view.Meta)
+	}
+	for _, sp := range view.Spans {
+		if sp.Start < 0 || sp.End > len([]rune(view.Text)) || sp.Start >= sp.End {
+			t.Fatalf("bad span %+v", sp)
+		}
+	}
+
+	// DELETE removes it.
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/document?doc=b.md", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete status %d", resp.StatusCode)
+	}
+	var docs struct {
+		Documents []struct {
+			ID string `json:"id"`
+		} `json:"documents"`
+	}
+	getJSON(t, ts.URL+"/api/documents", &docs)
+	if len(docs.Documents) != 1 || docs.Documents[0].ID != "a.md" {
+		t.Fatalf("after delete: %+v", docs.Documents)
+	}
+}

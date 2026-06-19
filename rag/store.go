@@ -9,6 +9,7 @@ package rag
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"math"
 	"runtime"
@@ -118,7 +119,8 @@ type Store struct {
 	hashes map[[32]byte]string // content hash -> owning doc id, for content-level dedup
 	idHash map[string][32]byte // doc id -> content hash, persisted so dedup survives reload
 
-	versions map[string][]docVersion // doc id -> content history, oldest first
+	versions map[string][]docVersion    // doc id -> content history, oldest first
+	docMeta  map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
 
 	edges        []edgeRec
 	indexedUpTo  int  // chunks for which similarity edges have been discovered
@@ -144,6 +146,11 @@ type edgeRec struct {
 type Document struct {
 	ID   string
 	Text string
+	// Meta is arbitrary user metadata attached to the document. It is stored as
+	// canonical JSON, propagated to every chunk of the document, and returned with
+	// each retrieved result, so callers can decide how to use it (parse it, filter
+	// on it, or feed selected fields to the model). nil means no metadata.
+	Meta map[string]any
 }
 
 // New creates an empty store.
@@ -206,6 +213,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	s.hashes = make(map[[32]byte]string)
 	s.idHash = make(map[string][32]byte)
 	s.versions = make(map[string][]docVersion)
+	s.docMeta = make(map[string]json.RawMessage)
 	if err := s.appendChunksLocked(chunks, vecs); err != nil {
 		return err
 	}
@@ -217,6 +225,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 		h := contentHash(d.Text)
 		s.recordHashLocked(d.ID, h)
 		s.recordVersionLocked(d.ID, h, d.Text, perDoc[d.ID])
+		s.recordMetaLocked(d.ID, d.Meta)
 	}
 	s.reindexLocked()
 	return nil
@@ -563,8 +572,9 @@ type RetrieveParams struct {
 // Retrieved is a scored chunk.
 type Retrieved struct {
 	Chunk      Chunk
-	Score      float32 // blended retrieval score
-	Similarity float32 // direct cosine similarity to the query (0 if not a seed)
+	Score      float32         // blended retrieval score
+	Similarity float32         // direct cosine similarity to the query (0 if not a seed)
+	Meta       json.RawMessage // the source document's metadata, if any
 }
 
 // Retrieve runs hybrid graph retrieval for the query.
@@ -725,7 +735,8 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		out := make([]Retrieved, len(order))
 		for i, idx := range order {
 			ord := scored[idx].ord
-			out[i] = Retrieved{Chunk: s.chunks[ord], Score: scored[idx].val, Similarity: sim[ord]}
+			c := s.chunks[ord]
+			out[i] = Retrieved{Chunk: c, Score: scored[idx].val, Similarity: sim[ord], Meta: s.docMeta[c.DocID]}
 		}
 		return out, nil
 	}
@@ -735,7 +746,8 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	out := make([]Retrieved, len(scored))
 	for i, e := range scored {
-		out[i] = Retrieved{Chunk: s.chunks[e.ord], Score: e.val, Similarity: sim[e.ord]}
+		c := s.chunks[e.ord]
+		out[i] = Retrieved{Chunk: c, Score: e.val, Similarity: sim[e.ord], Meta: s.docMeta[c.DocID]}
 	}
 	return out, nil
 }

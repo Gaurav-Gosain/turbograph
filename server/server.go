@@ -127,6 +127,8 @@ func (s *Server) routes(opt Options) http.Handler {
 	// Web UI and its API.
 	mux.HandleFunc("GET /", s.handleUI)
 	mux.HandleFunc("GET /api/documents", s.handleDocuments)
+	mux.HandleFunc("GET /api/document", s.handleDocument)
+	mux.HandleFunc("DELETE /api/document", s.handleDocument)
 	mux.HandleFunc("GET /api/versions", s.handleVersions)
 	mux.HandleFunc("GET /api/version", s.handleVersionText)
 	mux.HandleFunc("POST /api/restore", s.handleRestore)
@@ -287,11 +289,14 @@ type queryRequest struct {
 }
 
 type queryResult struct {
-	ID         string  `json:"id"`
-	DocID      string  `json:"doc_id"`
-	Score      float32 `json:"score"`
-	Similarity float32 `json:"similarity"`
-	Text       string  `json:"text"`
+	ID         string          `json:"id"`
+	DocID      string          `json:"doc_id"`
+	Score      float32         `json:"score"`
+	Similarity float32         `json:"similarity"`
+	Text       string          `json:"text"`
+	Start      int             `json:"start"` // rune offset of this chunk in its document
+	End        int             `json:"end"`
+	Meta       json.RawMessage `json:"meta,omitempty"` // the source document's metadata
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
