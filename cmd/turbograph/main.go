@@ -35,9 +35,10 @@ func orEnv(v, env string) string {
 }
 
 // buildEmbedder builds the document/query embedder for the chosen backend.
-// "openai" targets any OpenAI-compatible /v1/embeddings endpoint; anything else
-// uses Ollama. Both satisfy rag.Embedder (and the asymmetric QueryEmbedder).
-func buildEmbedder(api, baseURL, key, model, ollamaURL string, dim int) rag.Embedder {
+// "openai" targets any OpenAI-compatible /v1/embeddings endpoint at baseURL;
+// anything else uses Ollama (baseURL overrides its default when set). Both satisfy
+// rag.Embedder and the asymmetric QueryEmbedder.
+func buildEmbedder(api, baseURL, key, model string, dim int) rag.Embedder {
 	if api == "openai" {
 		c := oai.New(baseURL, key, model)
 		c.EmbedDim = dim
@@ -46,8 +47,8 @@ func buildEmbedder(api, baseURL, key, model, ollamaURL string, dim int) rag.Embe
 	c := ollama.New()
 	c.SetEmbedModel(model)
 	c.EmbedDim = dim
-	if ollamaURL != "" {
-		c.BaseURL = ollamaURL
+	if baseURL != "" {
+		c.BaseURL = baseURL
 	}
 	return c
 }
@@ -62,14 +63,14 @@ func pingBackend(ctx context.Context, e any) error {
 	return nil
 }
 
-// buildBackend builds the generation backend for the chosen provider.
-func buildBackend(api, baseURL, key, ollamaURL string) server.Backend {
+// buildBackend builds the generation backend for the chosen provider at baseURL.
+func buildBackend(api, baseURL, key string) server.Backend {
 	if api == "openai" {
 		return oai.New(baseURL, key, "")
 	}
 	c := ollama.New()
-	if ollamaURL != "" {
-		c.BaseURL = ollamaURL
+	if baseURL != "" {
+		c.BaseURL = baseURL
 	}
 	return c
 }
@@ -175,27 +176,57 @@ func cmdServe(args []string) error {
 	pprofOn := fs.Bool("pprof", false, "expose the runtime profiler at /debug/pprof/ (behind --api-key when set)")
 	maxBody := fs.Int64("max-body", server.DefaultMaxBodyBytes, "max JSON/query request body in bytes (0 uses the default, negative disables)")
 	maxUpload := fs.Int64("max-upload", server.DefaultMaxUploadBytes, "max file-upload request body in bytes (0 uses the default, negative disables)")
+	configPath := fs.String("config", "", "persisted settings JSON, editable in the UI (default <data>/config.json)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
 		*apiKey = os.Getenv("TURBOGRAPH_API_KEY")
 	}
-	embedKeyVal := orEnv(*embedKey, "OPENAI_API_KEY")
-	llmKeyVal := orEnv(*llmKey, "OPENAI_API_KEY")
 
-	embedder := buildEmbedder(*embedAPI, *embedURL, embedKeyVal, *embedModel, *ollamaURL, *embedDim)
-	backend := buildBackend(*llmAPI, *llmURL, llmKeyVal, *ollamaURL)
+	// Assemble the runtime config from flags, then let a saved config file (the
+	// UI's persisted edits) take precedence so settings survive restarts.
+	rc := server.RuntimeConfig{
+		GenAPI: *llmAPI, GenURL: *llmURL, GenKey: orEnv(*llmKey, "OPENAI_API_KEY"), GenModel: *genModel,
+		EmbedAPI: *embedAPI, EmbedURL: *embedURL, EmbedKey: orEnv(*embedKey, "OPENAI_API_KEY"), EmbedModel: *embedModel, EmbedDim: *embedDim,
+		OllamaURL:     *ollamaURL,
+		ChunkStrategy: *chunkStrategy,
+		S3Endpoint:    *s3Endpoint, S3Bucket: *s3Bucket, S3Region: *s3Region, S3Prefix: *s3Prefix,
+	}
+	cfgFile := *configPath
+	if cfgFile == "" && *data != "" {
+		cfgFile = filepath.Join(*data, "config.json")
+	}
+	if loaded, ok, lerr := server.LoadConfig(cfgFile); lerr != nil {
+		return lerr
+	} else if ok {
+		rc = loaded
+		rc.GenKey = orEnv(rc.GenKey, "OPENAI_API_KEY")
+		rc.EmbedKey = orEnv(rc.EmbedKey, "OPENAI_API_KEY")
+		fmt.Fprintf(os.Stderr, "loaded settings from %s\n", cfgFile)
+	}
 
-	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{Strategy: *chunkStrategy}}
+	embedBase, genBase := rc.OllamaURL, rc.OllamaURL
+	if rc.EmbedAPI == "openai" {
+		embedBase = rc.EmbedURL
+	}
+	if rc.GenAPI == "openai" {
+		genBase = rc.GenURL
+	}
+	embedder := buildEmbedder(rc.EmbedAPI, embedBase, rc.EmbedKey, rc.EmbedModel, rc.EmbedDim)
+	backend := buildBackend(rc.GenAPI, genBase, rc.GenKey)
+
+	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{
+		Strategy: rc.ChunkStrategy, TargetWords: rc.ChunkWords, OverlapWords: rc.ChunkOverlap,
+	}}
 	var mgr *rag.Manager
 	var err error
-	if *s3Bucket != "" {
+	if rc.S3Bucket != "" {
 		// Credentials come from the environment to keep them off the command line.
 		blob, berr := storage.NewS3(storage.S3Config{
-			Endpoint:  *s3Endpoint,
-			Bucket:    *s3Bucket,
-			Region:    *s3Region,
-			Prefix:    *s3Prefix,
+			Endpoint:  rc.S3Endpoint,
+			Bucket:    rc.S3Bucket,
+			Region:    rc.S3Region,
+			Prefix:    rc.S3Prefix,
 			AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 		})
@@ -214,13 +245,19 @@ func cmdServe(args []string) error {
 		return err
 	}
 	source := *data
-	if *s3Bucket != "" {
-		source = "s3://" + *s3Bucket
+	if rc.S3Bucket != "" {
+		source = "s3://" + rc.S3Bucket
 	}
 	fmt.Fprintf(os.Stderr, "serving %d bucket(s) from %s\n", len(mgr.List()), source)
 
 	srv := server.NewManager(mgr)
-	srv.SetGenerator(backend, *genModel, *embedModel)
+	srv.SetGenerator(backend, rc.GenModel, rc.EmbedModel)
+	srv.EnableConfig(rc, cfgFile, server.Factories{
+		Backend: func(api, url, key string) server.Backend { return buildBackend(api, url, key) },
+		Embedder: func(api, url, key, model string, dim int) rag.Embedder {
+			return buildEmbedder(api, url, key, model, dim)
+		},
+	})
 
 	reg := buildRegistry(*pdfCmd, *ocrCmd)
 	srv.SetExtractor(reg)
@@ -344,7 +381,11 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("--src is required")
 	}
 
-	embedder := buildEmbedder(*embedAPI, *embedURL, orEnv(*embedKey, "OPENAI_API_KEY"), *embedModel, *ollamaURL, *embedDim)
+	embedBase := *ollamaURL
+	if *embedAPI == "openai" {
+		embedBase = *embedURL
+	}
+	embedder := buildEmbedder(*embedAPI, embedBase, orEnv(*embedKey, "OPENAI_API_KEY"), *embedModel, *embedDim)
 	emb := &batchingEmbedder{inner: embedder, batch: *batch}
 
 	// Cancel on the first interrupt so ingestion stops cleanly after checkpointing.
@@ -426,7 +467,7 @@ func cmdIngest(args []string) error {
 			return fmt.Errorf("--entities requires --gen-model for extraction")
 		}
 		fmt.Fprintf(os.Stderr, "extracting entity graph with %s ...\n", *entModel)
-		gen := buildBackend("ollama", "", "", *ollamaURL)
+		gen := buildBackend("ollama", *ollamaURL, "")
 		ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: *entModel})
 		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 			OnProgress: func(p rag.EntityProgress) {

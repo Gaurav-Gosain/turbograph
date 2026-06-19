@@ -29,6 +29,31 @@ type Manager struct {
 	stores   map[string]*Store
 }
 
+// SetConfig updates the configuration used when new buckets are created (for
+// example to change the chunking strategy). Existing buckets keep the config they
+// were built with. Safe for concurrent use.
+func (m *Manager) SetConfig(cfg Config) {
+	m.mu.Lock()
+	m.cfg = cfg
+	m.mu.Unlock()
+}
+
+// Config returns the manager's current new-bucket configuration.
+func (m *Manager) Config() Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg
+}
+
+// SetEmbedder swaps the embedder used for new buckets. Existing buckets keep
+// theirs, since their stored vectors come from the original embedder; changing
+// the embedding model for a populated bucket would mix incompatible vectors.
+func (m *Manager) SetEmbedder(e Embedder) {
+	m.mu.Lock()
+	m.embedder = e
+	m.mu.Unlock()
+}
+
 const storeExt = ".tg"
 
 var bucketName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)

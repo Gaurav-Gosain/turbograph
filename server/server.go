@@ -45,6 +45,11 @@ type Server struct {
 	genModel   string
 	embedModel string
 	extract    *extract.Registry
+
+	// Runtime configuration, editable over /api/config when EnableConfig was called.
+	cfg       RuntimeConfig
+	cfgPath   string
+	factories Factories
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -123,6 +128,10 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("POST /api/pull", s.handlePull)
 	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
 	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
+
+	// Runtime configuration.
+	mux.HandleFunc("GET /api/config", s.handleGetConfig)
+	mux.HandleFunc("POST /api/config", s.handlePostConfig)
 
 	// Bucket management.
 	mux.HandleFunc("GET /api/buckets", s.handleBuckets)
