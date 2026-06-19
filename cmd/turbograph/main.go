@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
@@ -45,6 +46,8 @@ func main() {
 		err = cmdEval(os.Args[2:])
 	case "mcp":
 		err = cmdMCP(os.Args[2:])
+	case "quant":
+		err = cmdQuant(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -68,6 +71,7 @@ usage:
   turbograph stats  --store <store>
   turbograph eval   --store <store> --suite <suite.jsonl> [flags]
   turbograph mcp    --store <store> [--gen-model M]
+  turbograph quant  bench [flags]                             # benchmark the codec
 
 run a subcommand with -h for its flags.
 `)
@@ -89,7 +93,15 @@ func cmdServe(args []string) error {
 	s3Endpoint := fs.String("s3-endpoint", "", "S3 endpoint, e.g. https://s3.us-east-1.amazonaws.com or http://localhost:9000")
 	s3Region := fs.String("s3-region", "us-east-1", "S3 region")
 	s3Prefix := fs.String("s3-prefix", "", "optional key prefix within the bucket")
+	apiKey := fs.String("api-key", "", "require this key on all requests (Authorization: Bearer, X-API-Key, or ?api_key=); also via $TURBOGRAPH_API_KEY")
+	cors := fs.String("cors", "", "Access-Control-Allow-Origin to send (e.g. * or https://app.example.com); empty disables CORS")
+	metrics := fs.Bool("metrics", false, "expose expvar metrics at /debug/vars")
+	maxBody := fs.Int64("max-body", server.DefaultMaxBodyBytes, "max request body in bytes (negative disables the limit)")
 	fs.Parse(args)
+
+	if *apiKey == "" {
+		*apiKey = os.Getenv("TURBOGRAPH_API_KEY")
+	}
 
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
@@ -140,8 +152,43 @@ func cmdServe(args []string) error {
 		fmt.Fprintln(os.Stderr, "pdf extraction enabled")
 	}
 
+	handler := srv.HandlerWithOptions(server.Options{
+		APIKey:       *apiKey,
+		CORSOrigin:   *cors,
+		Metrics:      *metrics,
+		MaxBodyBytes: *maxBody,
+	})
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		// No write timeout: chat and ingest stream for a long time. Idle and
+		// read-header timeouts still bound slow-loris style abuse.
+		IdleTimeout: 120 * time.Second,
+	}
+	if *apiKey != "" {
+		fmt.Fprintln(os.Stderr, "API key authentication enabled")
+	}
 	fmt.Fprintf(os.Stderr, "turbograph UI on %s\n", uiURL(*addr))
-	return http.ListenAndServe(*addr, srv.Handler())
+
+	// Serve until interrupted, then drain in-flight requests before exiting.
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		return err
+	case <-sig:
+		fmt.Fprintln(os.Stderr, "\nshutting down, draining in-flight requests...")
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return httpSrv.Shutdown(ctx)
+	}
 }
 
 func uiURL(a string) string {

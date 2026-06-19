@@ -418,6 +418,16 @@
 
 <script>
 "use strict";
+// API-key support: when the server is started with --api-key, open the UI with
+// ?api_key=KEY once; the key is remembered and attached to every request.
+(function(){
+  try{
+    const u=new URL(location.href);
+    let k=u.searchParams.get("api_key");
+    if(k){localStorage.setItem("tg.apikey",k);}else{k=localStorage.getItem("tg.apikey");}
+    if(k){const f=window.fetch.bind(window);window.fetch=(url,opt)=>{opt=opt||{};opt.headers=Object.assign({},opt.headers,{"X-API-Key":k});return f(url,opt);};}
+  }catch(e){}
+})();
 const PALETTE=["#5ad1c8","#7aa2f7","#e5c07b","#c8a2e8","#e06c91","#9ece6a",
   "#56b6c2","#d19a66","#bb9af7","#7dcfff","#e0af68","#a3be8c"];
 const $=s=>document.querySelector(s);

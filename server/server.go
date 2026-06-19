@@ -6,7 +6,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"expvar"
 	"log"
 	"net/http"
 	"time"
@@ -49,10 +51,26 @@ func (s *Server) SetGenerator(c *ollama.Client, defaultModel string) {
 // ingestion (for example PDF) through POST /api/ingest/files.
 func (s *Server) SetExtractor(r *extract.Registry) { s.extract = r }
 
-// Handler returns the HTTP routes, including the embedded UI.
+// Handler returns the HTTP routes wrapped in the default hardening middleware
+// (panic recovery, body-size limits, the access log). For auth, CORS, or metrics,
+// use HandlerWithOptions.
 func (s *Server) Handler() http.Handler {
+	return s.HandlerWithOptions(Options{})
+}
+
+// HandlerWithOptions returns the routes wrapped in the configured middleware.
+func (s *Server) HandlerWithOptions(opt Options) http.Handler {
+	return chain(s.routes(opt), opt)
+}
+
+// routes builds the bare route table (no middleware).
+func (s *Server) routes(opt Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
+	if opt.Metrics {
+		mux.Handle("GET /debug/vars", expvarHandler())
+	}
 	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("POST /ingest", s.handleIngest)
 	mux.HandleFunc("POST /query", s.handleQuery)
@@ -75,7 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/buckets", s.handleBuckets)
 	mux.HandleFunc("POST /api/buckets", s.handleCreateBucket)
 	mux.HandleFunc("DELETE /api/buckets", s.handleDeleteBucket)
-	return logging(mux)
+	return mux
 }
 
 // bucketOf returns the bucket named by the request, or the default.
@@ -94,6 +112,24 @@ func (s *Server) store(r *http.Request) (*rag.Store, error) {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleReady is a readiness probe: the process is up (liveness) and its
+// dependencies are reachable. When a generator is configured it pings Ollama, so
+// an orchestrator can hold traffic until the model backend is actually available.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.oll != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := s.oll.Ping(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not ready", "ollama": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+// expvarHandler serves the standard expvar metrics page.
+func expvarHandler() http.Handler { return expvar.Handler() }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store(r)
@@ -261,9 +297,13 @@ func (e errEmpty) Error() string { return string(e) + " is required" }
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		sw := &statusWriter{ResponseWriter: w, status: 0}
 		next.ServeHTTP(sw, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Microsecond))
+		status := sw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, status, time.Since(start).Round(time.Microsecond))
 	})
 }
 
@@ -273,8 +313,19 @@ type statusWriter struct {
 }
 
 func (s *statusWriter) WriteHeader(code int) {
-	s.status = code
+	if s.status == 0 {
+		s.status = code
+	}
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Write records that the response body has started (status defaults to 200) so
+// the panic guard knows not to try writing a 500 over an in-flight response.
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 // Flush forwards to the underlying writer so server-sent events stream through

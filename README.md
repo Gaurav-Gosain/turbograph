@@ -1,5 +1,8 @@
 # turbograph
 
+[![ci](https://github.com/Gaurav-Gosain/turbograph/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaurav-Gosain/turbograph/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Gaurav-Gosain/turbograph.svg)](https://pkg.go.dev/github.com/Gaurav-Gosain/turbograph)
+
 A fast, local, hackable graph RAG engine in Go.
 
 turbograph is the retrieval layer: you bring documents, an embedding model, and
@@ -188,6 +191,13 @@ go install github.com/Gaurav-Gosain/turbograph/cmd/turbograph@latest
 
 The binary embeds the entire web UI, so there is nothing else to deploy.
 
+Or run the whole stack (turbograph + Ollama) with Docker:
+
+```
+docker compose up
+docker compose exec ollama ollama pull embeddinggemma   # first run only
+```
+
 ## The web UI
 
 `serve` ships a self-contained interface (dark, JetBrains Mono, vanilla
@@ -256,11 +266,36 @@ turbograph serve  --store store.tg --addr :8080 [--gen-model M]
 turbograph stats  --store store.tg
 turbograph eval   --store store.tg --suite suite.jsonl [--k 10]  # score retrieval
 turbograph mcp    --store store.tg [--gen-model M]          # serve over MCP stdio
+turbograph quant  bench [--dim 768 --bits 1,2,4,8]          # benchmark the codec
 ```
 
 Run any subcommand with `-h` for its flags. Ingestion highlights:
 `--workers` (concurrency), `--checkpoint` (crash-recovery interval),
-`--pdf-cmd` and `--ocr-cmd` (swap parsers).
+`--pdf-cmd` and `--ocr-cmd` (swap parsers). `quant bench` reports the
+compression, recall, and throughput of the TurboQuant codec across bit rates, so
+you can pick a bit budget with eyes open.
+
+## Running in production
+
+`serve` is built to be exposed safely:
+
+- **Authentication.** `--api-key KEY` (or `$TURBOGRAPH_API_KEY`) requires the key
+  on every request via `Authorization: Bearer`, an `X-API-Key` header, or an
+  `?api_key=` parameter; liveness and readiness stay open. The web UI picks up the
+  key from `?api_key=` once and remembers it.
+- **Health and readiness.** `GET /healthz` is liveness; `GET /readyz` also checks
+  that the Ollama backend is reachable, so an orchestrator can hold traffic until
+  the model server is up.
+- **Metrics.** `--metrics` exposes request, in-flight, error, and uptime counters
+  at `/debug/vars` (stdlib expvar, no dependency).
+- **Hardening.** Panics become 500s instead of crashing the process, request
+  bodies are capped (`--max-body`), and `Ctrl-C`/`SIGTERM` triggers a graceful
+  drain of in-flight requests. `--cors` enables cross-origin browser access.
+
+```
+turbograph serve --gen-model qwen3.5:2b \
+  --api-key "$TURBOGRAPH_API_KEY" --metrics --cors "https://app.example.com"
+```
 
 ## Integrations
 
@@ -335,16 +370,23 @@ embeds documents in parallel.
 ## Tests
 
 ```
-go test ./...            # full suite
-go test -race ./...      # race detector
-go test -short ./...     # skip the slow recall and QPS sweeps
+make test                # full suite (or: go test ./...)
+make test-race           # race detector
+make test-short          # skip the slow recall and QPS sweeps
+make cover               # per-package coverage
+make fuzz                # fuzz the codec
 ```
 
 The Ollama and OCR dependent tests skip automatically when those tools are
-absent. Everything else is self-contained: the codebook is checked against
-textbook Lloyd-Max distortion, estimators against brute force, HNSW recall against
-exact search, BM25 and RRF against known rankings, communities against modularity,
-and ingestion (parallel, dedup, resume, error tolerance, cancellation) end to end.
+absent (the HTTP clients are also covered against in-process fakes, so the suite
+runs fully offline). Everything else is self-contained: the codebook is checked
+against textbook Lloyd-Max distortion, estimators against brute force, HNSW recall
+against exact search, BM25 and RRF against known rankings, communities against
+modularity, the codec against a fuzzer, the S3 client and SigV4 signer against an
+in-memory bucket, the server middleware (auth, body limits, panic recovery, CORS,
+metrics) against httptest, and ingestion (parallel, dedup, resume, error
+tolerance, cancellation) end to end. CI runs build, vet, gofmt, the race
+detector, the pure-stdlib `noasm` build, and govulncheck on every push.
 
 ## License
 

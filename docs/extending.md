@@ -83,6 +83,10 @@ ip := qr.IP(code)                // unbiased inner product
 the QJL residual correction for accurate magnitudes. See
 [architecture.md](architecture.md) for why both exist.
 
+`quant.Benchmark(cfg, opts)` measures a configuration's recall, compression, and
+throughput on synthetic clustered vectors; it backs `turbograph quant bench` and
+is callable directly to pick a bit budget for your data.
+
 ### index: nearest-neighbor search
 
 ```go

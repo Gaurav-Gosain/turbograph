@@ -1,0 +1,36 @@
+# turbograph + Ollama, ready to run: `docker compose up`.
+# First time, pull the default embedding model into the ollama service:
+#   docker compose exec ollama ollama pull embeddinggemma
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    # Uncomment for NVIDIA GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - { driver: nvidia, count: all, capabilities: [gpu] }
+
+  turbograph:
+    build: .
+    depends_on:
+      - ollama
+    ports:
+      - "8080:8080"
+    volumes:
+      - turbograph:/data
+    command:
+      - serve
+      - --addr=:8080
+      - --data=/data
+      - --ollama-url=http://ollama:11434
+      # - --gen-model=qwen3.5:2b
+      # - --api-key=change-me
+
+volumes:
+  ollama:
+  turbograph:

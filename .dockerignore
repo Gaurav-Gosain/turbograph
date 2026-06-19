@@ -1,0 +1,11 @@
+bin/
+*.tg
+*.tg.journal
+turbograph-data/
+.git/
+.github/
+*.md
+Makefile
+Dockerfile
+docker-compose.yml
+testdata/
