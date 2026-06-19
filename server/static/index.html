@@ -242,6 +242,23 @@
   .ver-diff .dctx{color:var(--faint)}
   .ver-diff .dgap{color:var(--border);text-align:center;user-select:none}
   .doc{cursor:pointer}
+  .tg-file{border:1px solid var(--border);border-radius:9px;overflow:hidden;margin:12px 0 8px}
+  .tg-file.ghost{opacity:.6;border-style:dashed}
+  .tg-name{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);background:var(--panel2);
+    padding:7px 11px;border-bottom:1px solid var(--border)}
+  .tg-file.ghost .tg-name{color:var(--faint)}
+  .tg-layer{display:flex;gap:10px;align-items:baseline;padding:8px 11px;border-bottom:1px solid var(--border)}
+  .tg-layer:last-child{border-bottom:0}
+  .tg-layer.s{border-left:3px solid var(--accent)}
+  .tg-layer.r{border-left:3px solid var(--faint)}
+  .tg-l{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);flex:none;min-width:135px}
+  .tg-d{font-size:11px;color:var(--muted);line-height:1.45}
+  .tg-legend{display:flex;gap:14px;margin:6px 0 2px;font-size:10.5px}
+  .tg-chip{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+  .tg-chip::before{content:"";width:9px;height:9px;border-radius:2px;display:inline-block}
+  .tg-chip.s::before{background:var(--accent)} .tg-chip.r::before{background:var(--faint)}
+  .tg-code{background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:11px 13px;margin:10px 0;
+    font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.55;color:var(--text);overflow-x:auto;white-space:pre}
   .cfg-foot{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid var(--border)}
   .cfg-foot #cfgMsg{font-size:11px;color:var(--muted)}
   .cfg-foot #cfgMsg.warn{color:var(--warn)} .cfg-foot #cfgMsg.ok{color:var(--accent)}
@@ -426,6 +443,7 @@
         <div id="docNote" class="note"></div>
         <div class="row">
           <button id="saveBtn">save store</button>
+          <span class="lnk" id="tgInfoBtn" title="what is a .tg file?">.tg format</span>
         </div>
         <div class="doclist" id="doclist"></div>
       </div>
@@ -475,6 +493,60 @@
       <p><kbd>Ctrl K</kbd> command palette, <kbd>/</kbd> search the graph,
       <kbd>?</kbd> commands, <kbd>esc</kbd> close or stop a running answer,
       <kbd>enter</kbd> send, <kbd>shift enter</kbd> newline.</p>
+    </div>
+  </div>
+</div>
+
+<div id="tgInfo" class="cmdk-overlay">
+  <div class="cfg ver">
+    <div class="cfg-head"><span>the <b>.tg</b> store format</span><span class="x" id="tgClose">close</span></div>
+    <div class="cfg-body">
+      <div class="cfg-sec">
+        <small>a <b>.tg</b> file is one complete corpus: its chunks, their embeddings, the content
+        history, and an optional entity graph, in a single portable file. save one, copy it anywhere,
+        load it, and you are back exactly where you left off without re-embedding anything. each bucket
+        is one <b>.tg</b> file.</small>
+        <div class="tg-file">
+          <div class="tg-name">research.tg</div>
+          <div class="tg-layer s" data-k="Cfg"><span class="tg-l">Cfg</span><span class="tg-d">how this corpus was built: chunking, quantization, index, graph, fusion knobs</span></div>
+          <div class="tg-layer s" data-k="Chunks"><span class="tg-l">Chunks</span><span class="tg-d">every chunk's id, document, ordinal, and text</span></div>
+          <div class="tg-layer s" data-k="Embeds"><span class="tg-l">Embeds</span><span class="tg-d">one raw float32 vector per chunk &mdash; storing these is what makes reload skip embedding</span></div>
+          <div class="tg-layer s" data-k="Hashes"><span class="tg-l">Hashes</span><span class="tg-d">a content hash per document, so dedup survives a reload</span></div>
+          <div class="tg-layer s" data-k="Entities"><span class="tg-l">Entities + Relations</span><span class="tg-d">the LLM-extracted knowledge graph, far too costly to rebuild on load (optional)</span></div>
+          <div class="tg-layer s" data-k="Versions"><span class="tg-l">Versions</span><span class="tg-d">each document's content snapshots that power history, diffs, and restore</span></div>
+        </div>
+        <div class="tg-legend"><span class="tg-chip s">stored in the file</span><span class="tg-chip r">rebuilt on load</span></div>
+        <div class="tg-file ghost">
+          <div class="tg-name">rebuilt from the embeddings, never stored</div>
+          <div class="tg-layer r"><span class="tg-l">HNSW index</span><span class="tg-d">vector search</span></div>
+          <div class="tg-layer r"><span class="tg-l">BM25 index</span><span class="tg-d">lexical search</span></div>
+          <div class="tg-layer r"><span class="tg-l">similarity graph</span><span class="tg-d">chunk-to-chunk links</span></div>
+          <div class="tg-layer r"><span class="tg-l">communities</span><span class="tg-d">graph clusters</span></div>
+        </div>
+      </div>
+      <div class="cfg-sec">
+        <h4>technical</h4>
+        <small>the file is a single <a href="https://pkg.go.dev/encoding/gob" target="_blank" rel="noopener">encoding/gob</a>
+        stream of one <code>snapshot</code> struct &mdash; no magic number, no header, no text framing.
+        gob is self-describing, so a file written by an older build loads in a newer one and fields added
+        later read as their zero value when absent. that is the whole compatibility story; there is no
+        version integer to bump.</small>
+        <pre class="tg-code">type snapshot struct {
+    Cfg       Config                  // how this corpus was built
+    Dim       int                     // embedding dimension
+    Chunks    []Chunk                 // the text, in ingestion order
+    Embeds    [][]float32             // raw embeddings, one per chunk
+    Hashes    map[string][32]byte     // doc id -> content hash
+    Entities  []entity.Entity         // entity graph nodes (optional)
+    Relations []entity.Relation       // entity graph edges (optional)
+    Versions  map[string][]docVersion // per-document content history
+}</pre>
+        <small>only the inputs that are expensive to recompute are stored; everything derived is rebuilt
+        deterministically on load. that keeps the file small, immune to index-internal layout changes,
+        and forward-compatible. a bring-your-own chunker is code, not data, so it is not persisted &mdash;
+        reattach it after loading if you ingest more documents with it. full spec in
+        <code>docs/format.md</code>.</small>
+      </div>
     </div>
   </div>
 </div>
@@ -1325,6 +1397,7 @@ document.addEventListener("keydown",e=>{
     if(settingsEl.classList.contains("open")){settingsEl.classList.remove("open");return}
     if(cfgOpen()){closeConfig();return}
     if(verEl.classList.contains("open")){closeVersions();return}
+    if(tgInfoEl.classList.contains("open")){tgInfoEl.classList.remove("open");return}
     if($("#srcPreview").classList.contains("open")){$("#srcPreview").classList.remove("open");return}
     if(chatAbort)chatAbort.abort();
     return;
@@ -1565,6 +1638,12 @@ async function restoreVersion(n){
 }
 $("#verClose").onclick=closeVersions;
 verEl.addEventListener("click",e=>{if(e.target===verEl)closeVersions()});
+
+// ---------- .tg format explainer ----------
+const tgInfoEl=$("#tgInfo");
+$("#tgInfoBtn").onclick=()=>tgInfoEl.classList.add("open");
+$("#tgClose").onclick=()=>tgInfoEl.classList.remove("open");
+tgInfoEl.addEventListener("click",e=>{if(e.target===tgInfoEl)tgInfoEl.classList.remove("open")});
 
 // ---------- misc ----------
 let toastTimer=null;

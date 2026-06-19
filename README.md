@@ -382,7 +382,8 @@ for how to:
 - use `quant`, `index`, `graph`, or `lexical` as standalone libraries,
 - tune quantization, graph construction, and retrieval.
 
-The deeper design is in [docs/architecture.md](docs/architecture.md).
+The deeper design is in [docs/architecture.md](docs/architecture.md), and the
+on-disk `.tg` store format is specified in [docs/format.md](docs/format.md).
 
 ## Performance
 
