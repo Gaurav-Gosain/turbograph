@@ -7,11 +7,15 @@ re-embedding a thing. This document is the format's specification.
 
 ## At a glance
 
-```
-turbograph-data/
-  default.tg     one bucket, one file
-  research.tg    another bucket
-  archive.tg
+```mermaid
+flowchart TB
+  subgraph data["turbograph-data/"]
+    a["default.tg"]
+    b["research.tg"]
+    c["archive.tg"]
+  end
+  note["one bucket = one file = one complete corpus"]
+  data --- note
 ```
 
 A bucket is a `.tg` file. The server's data directory holds one file per bucket
