@@ -47,6 +47,71 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"documents": st.Documents()})
 }
 
+// handleVersions lists a document's content history, oldest first.
+func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	doc := r.URL.Query().Get("doc")
+	if doc == "" {
+		writeErr(w, http.StatusBadRequest, errEmpty("doc"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"doc": doc, "versions": st.DocVersions(doc)})
+}
+
+// handleVersionText returns the stored text of one version, used by the UI to
+// preview a version and to diff two of them.
+func (s *Server) handleVersionText(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	doc := r.URL.Query().Get("doc")
+	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+	if doc == "" || n < 1 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("doc and a positive n are required"))
+		return
+	}
+	text, ok := st.DocVersionText(doc, n)
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no version %d for %q", n, doc))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"doc": doc, "n": n, "text": text})
+}
+
+// handleRestore makes an earlier version live again by re-ingesting its stored
+// text through the normal update path. This appends a new version equal to the
+// restored content (git-revert semantics) and reuses embeddings for any chunks
+// that did not change. Restoring the current version is a no-op.
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	doc := r.URL.Query().Get("doc")
+	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+	if doc == "" || n < 1 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("doc and a positive n are required"))
+		return
+	}
+	text, ok := st.DocVersionText(doc, n)
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no version %d for %q", n, doc))
+		return
+	}
+	if err := st.AddDocuments(r.Context(), []rag.Document{{ID: doc, Text: text}}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"doc": doc, "restored": n, "versions": st.DocVersions(doc)})
+}
+
 func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store(r)
 	if err != nil {

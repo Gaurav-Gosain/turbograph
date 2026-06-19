@@ -118,6 +118,8 @@ type Store struct {
 	hashes map[[32]byte]string // content hash -> owning doc id, for content-level dedup
 	idHash map[string][32]byte // doc id -> content hash, persisted so dedup survives reload
 
+	versions map[string][]docVersion // doc id -> content history, oldest first
+
 	edges        []edgeRec
 	indexedUpTo  int  // chunks for which similarity edges have been discovered
 	needsRebuild bool // vector and lexical indexes are stale (a document was removed)
@@ -203,11 +205,18 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	s.docSet = make(map[string]struct{})
 	s.hashes = make(map[[32]byte]string)
 	s.idHash = make(map[string][32]byte)
+	s.versions = make(map[string][]docVersion)
 	if err := s.appendChunksLocked(chunks, vecs); err != nil {
 		return err
 	}
+	perDoc := make(map[string]int, len(docs))
+	for _, c := range chunks {
+		perDoc[c.DocID]++
+	}
 	for _, d := range docs {
-		s.recordHashLocked(d.ID, contentHash(d.Text))
+		h := contentHash(d.Text)
+		s.recordHashLocked(d.ID, h)
+		s.recordVersionLocked(d.ID, h, d.Text, perDoc[d.ID])
 	}
 	s.reindexLocked()
 	return nil

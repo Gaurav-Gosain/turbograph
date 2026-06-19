@@ -139,3 +139,65 @@ func TestUpdateViaIngestEngine(t *testing.T) {
 		t.Errorf("engine update did not replace content: %+v", res)
 	}
 }
+
+func TestVersionHistoryTracksUpdates(t *testing.T) {
+	ctx := context.Background()
+	st := versionStore(newKeywordEmbedder(96))
+	if err := st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma delta"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Re-adding identical content must not append a version.
+	if err := st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma delta"}}); err != nil {
+		t.Fatal(err)
+	}
+	vs := st.DocVersions("doc")
+	if len(vs) != 2 {
+		t.Fatalf("got %d versions, want 2", len(vs))
+	}
+	if vs[0].N != 1 || vs[1].N != 2 {
+		t.Errorf("version numbers = %d,%d; want 1,2", vs[0].N, vs[1].N)
+	}
+	if vs[0].Current || !vs[1].Current {
+		t.Errorf("current flags wrong: %v,%v", vs[0].Current, vs[1].Current)
+	}
+	if txt, ok := st.DocVersionText("doc", 1); !ok || txt != "alpha beta gamma" {
+		t.Errorf("version 1 text = %q (ok=%v)", txt, ok)
+	}
+}
+
+func TestRestoreReingestsOldVersion(t *testing.T) {
+	ctx := context.Background()
+	st := versionStore(newKeywordEmbedder(96))
+	st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma"}})
+	st.AddDocuments(ctx, []Document{{ID: "doc", Text: "totally different words here"}})
+	// Restore is a re-ingest of version 1's text through the normal path.
+	old, _ := st.DocVersionText("doc", 1)
+	if err := st.AddDocuments(ctx, []Document{{ID: "doc", Text: old}}); err != nil {
+		t.Fatal(err)
+	}
+	vs := st.DocVersions("doc")
+	if len(vs) != 3 {
+		t.Fatalf("got %d versions after restore, want 3", len(vs))
+	}
+	if vs[2].Hash != vs[0].Hash {
+		t.Errorf("restored version hash %q != original %q", vs[2].Hash, vs[0].Hash)
+	}
+}
+
+func TestVersionsSurviveReload(t *testing.T) {
+	ctx := context.Background()
+	st := versionStore(newKeywordEmbedder(96))
+	st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma"}})
+	st.AddDocuments(ctx, []Document{{ID: "doc", Text: "alpha beta gamma delta"}})
+	path := filepath.Join(t.TempDir(), "snap.tg")
+	if err := saveTo(st, path); err != nil {
+		t.Fatal(err)
+	}
+	st2 := loadFrom(t, path)
+	if vs := st2.DocVersions("doc"); len(vs) != 2 {
+		t.Fatalf("after reload got %d versions, want 2", len(vs))
+	}
+}

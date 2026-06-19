@@ -11,6 +11,7 @@ import (
 type prepared struct {
 	id     string
 	hash   [32]byte
+	text   string // original document text, kept for the version history
 	chunks []Chunk
 	vecs   [][]float32
 }
@@ -47,7 +48,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 	h := contentHash(d.Text)
 	chunks := s.ChunkDocument(d)
 	if len(chunks) == 0 {
-		return prepared{id: d.ID, hash: h}, nil
+		return prepared{id: d.ID, hash: h, text: d.Text}, nil
 	}
 	reuse := s.docEmbeddings(d.ID) // empty for a new document
 	vecs := make([][]float32, len(chunks))
@@ -73,7 +74,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 			vecs[idx] = embedded[k]
 		}
 	}
-	return prepared{id: d.ID, hash: h, chunks: chunks, vecs: vecs}, nil
+	return prepared{id: d.ID, hash: h, text: d.Text, chunks: chunks, vecs: vecs}, nil
 }
 
 // removeDocLocked deletes all chunks of a document from the source-of-truth
@@ -152,6 +153,7 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 		s.removeDocLocked(p.id)
 		s.appendToArraysLocked(p.chunks, p.vecs)
 		s.recordHashLocked(p.id, p.hash)
+		s.recordVersionLocked(p.id, p.hash, p.text, len(p.chunks))
 		return true
 	}
 	// New document. Skip the incremental index add if a rebuild is already pending
@@ -163,6 +165,7 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 		s.needsRebuild = true
 	}
 	s.recordHashLocked(p.id, p.hash)
+	s.recordVersionLocked(p.id, p.hash, p.text, len(p.chunks))
 	return true
 }
 

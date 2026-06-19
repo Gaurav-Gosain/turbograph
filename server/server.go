@@ -127,6 +127,9 @@ func (s *Server) routes(opt Options) http.Handler {
 	// Web UI and its API.
 	mux.HandleFunc("GET /", s.handleUI)
 	mux.HandleFunc("GET /api/documents", s.handleDocuments)
+	mux.HandleFunc("GET /api/versions", s.handleVersions)
+	mux.HandleFunc("GET /api/version", s.handleVersionText)
+	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	mux.HandleFunc("GET /api/graph", s.handleGraph)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/chat", s.handleChat)

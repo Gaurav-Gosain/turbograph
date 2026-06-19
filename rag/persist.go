@@ -26,6 +26,10 @@ type snapshot struct {
 	// expensive to extract (it uses an LLM), so it is not rebuilt on load.
 	Entities  []entity.Entity
 	Relations []entity.Relation
+	// Versions persists each document's content history. Absent in older
+	// snapshots, in which case a document has no recorded history until its next
+	// update.
+	Versions map[string][]docVersion
 }
 
 // Save serializes the store to w.
@@ -35,7 +39,7 @@ func (s *Store) Save(w io.Writer) error {
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash}
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
@@ -67,6 +71,7 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	for id, h := range snap.Hashes {
 		s.recordHashLocked(id, h)
 	}
+	s.versions = snap.Versions
 	if len(snap.Entities) > 0 {
 		s.eg = entity.Restore(snap.Entities, snap.Relations)
 		s.rebuildEntityLocked()
