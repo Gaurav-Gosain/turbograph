@@ -44,6 +44,7 @@ type Server struct {
 	gen        Backend
 	genModel   string
 	embedModel string
+	version    string
 	extract    *extract.Registry
 
 	// Runtime configuration, editable over /api/config when EnableConfig was called.
@@ -84,6 +85,10 @@ func (s *Server) Handler() http.Handler {
 
 // HandlerWithOptions returns the routes wrapped in the configured middleware.
 func (s *Server) HandlerWithOptions(opt Options) http.Handler {
+	s.version = opt.Version
+	if s.version == "" {
+		s.version = "dev"
+	}
 	return chain(s.routes(opt), opt)
 }
 
@@ -112,6 +117,7 @@ func (s *Server) routes(opt Options) http.Handler {
 		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	}
 	mux.HandleFunc("GET /stats", s.handleStats)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("POST /ingest", s.handleIngest)
 	mux.HandleFunc("POST /query", s.handleQuery)
 
@@ -166,6 +172,49 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+// handleStatus aggregates everything a transparency view needs in one call: the
+// version, where data is stored, which model backends are configured and whether
+// the generation backend is reachable, and the current bucket's stats.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	storage := "local disk"
+	if s.cfg.S3Bucket != "" {
+		storage = "s3://" + s.cfg.S3Bucket
+	}
+	genReady := false
+	if s.gen != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		genReady = s.gen.Ping(ctx) == nil
+		cancel()
+	}
+	out := map[string]any{
+		"version": s.version,
+		"storage": map[string]any{
+			"backend":  map[bool]string{true: "s3", false: "local"}[s.cfg.S3Bucket != ""],
+			"location": storage, "endpoint": s.cfg.S3Endpoint,
+		},
+		"generation": map[string]any{"api": orStr(s.cfg.GenAPI, "ollama"), "model": s.genModel, "reachable": genReady},
+		"embedding":  map[string]any{"api": orStr(s.cfg.EmbedAPI, "ollama"), "model": s.embedModel, "dim": s.cfg.EmbedDim},
+		"buckets":    len(s.mgr.List()),
+		"bucket":     bucketOf(r),
+	}
+	if st, err := s.store(r); err == nil {
+		stats := map[string]any{"chunks": st.Len(), "documents": st.DocCount(), "entities": st.EntityCount()}
+		if c := st.Communities(); c != nil {
+			stats["communities"] = c.NumCommunities()
+		}
+		stats["chunk_strategy"] = st.Config().Chunk.Strategy
+		out["stats"] = stats
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func orStr(v, d string) string {
+	if v == "" {
+		return d
+	}
+	return v
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

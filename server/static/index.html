@@ -221,6 +221,17 @@
   .cfg-foot #cfgMsg{font-size:11px;color:var(--muted)}
   .cfg-foot #cfgMsg.warn{color:var(--warn)} .cfg-foot #cfgMsg.ok{color:var(--accent)}
   .cfg-hide{display:none}
+  .cfg-status{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px}
+  .cfg-status .k{color:var(--faint)} .cfg-status .v{color:var(--text)}
+  .cfg-status .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  .cfg-status .dot.up{background:#9ece6a} .cfg-status .dot.down{background:var(--danger)}
+  .cfg-pipe{display:flex;flex-direction:column;gap:0;margin-top:8px}
+  .cfg-step{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:11.5px}
+  .cfg-step .n{flex:0 0 18px;height:18px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);
+    color:var(--muted);font-size:9px;display:flex;align-items:center;justify-content:center}
+  .cfg-step.on .n{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+  .cfg-step.off{opacity:.45}
+  .cfg-step .lbl{color:var(--text)} .cfg-step .det{color:var(--faint);font-size:10.5px;margin-left:auto}
   #composer{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
   #composer textarea{flex:1;resize:none;height:38px;line-height:1.4;max-height:140px}
   #composer button{align-self:stretch;padding:0 16px}
@@ -443,6 +454,15 @@
   <div class="cfg">
     <div class="cfg-head"><span>settings &amp; configuration</span><span class="x" id="cfgClose">close</span></div>
     <div class="cfg-body">
+      <div class="cfg-sec" id="cfgStatus">
+        <h4>system status</h4>
+        <div id="cfgStatusBody" class="cfg-status">loading...</div>
+      </div>
+      <div class="cfg-sec">
+        <h4>retrieval pipeline</h4>
+        <small>what happens to a question, in order, with your current settings. tune the numbers in retrieval settings.</small>
+        <div id="cfgPipeline" class="cfg-pipe"></div>
+      </div>
       <div class="cfg-sec">
         <h4>generation model</h4>
         <small>the language model that writes answers and extracts the entity graph. applies immediately.</small>
@@ -1053,8 +1073,44 @@ async function openConfig(){
     $("#cfgEmbDim").value=c.embed_dim||"";$("#cfgEmbKey").value="";$("#cfgEmbKey").placeholder=c.embed_key_set?"set · leave blank to keep":"leave blank for none";
     sel.value=c.chunk_strategy||"recursive";$("#cfgChunkWords").value=c.chunk_words||"";$("#cfgChunkOverlap").value=c.chunk_overlap||"";
     $("#cfgS3Endpoint").value=c.s3_endpoint||"";$("#cfgS3Bucket").value=c.s3_bucket||"";$("#cfgS3Region").value=c.s3_region||"";$("#cfgS3Prefix").value=c.s3_prefix||"";
-    cfgToggleOA();cfgEl.classList.add("open");
+    cfgToggleOA();renderPipeline();cfgEl.classList.add("open");renderStatus();
   }catch(e){toast("could not load config: "+e.message,true)}
+}
+async function renderStatus(){
+  const el=$("#cfgStatusBody");
+  try{
+    const s=await api(bk("/api/status"));
+    const dot=ok=>'<span class="dot '+(ok?"up":"down")+'"></span>';
+    const st=s.stats||{};
+    const rows=[
+      ["version",s.version||"dev"],
+      ["storage",(s.storage&&s.storage.location)||"local disk"],
+      ["generation",dot(s.generation&&s.generation.reachable)+esc((s.generation&&s.generation.api)||"ollama")+" &middot; "+esc((s.generation&&s.generation.model)||"none")],
+      ["embedding",esc((s.embedding&&s.embedding.api)||"ollama")+" &middot; "+esc((s.embedding&&s.embedding.model)||"")+((s.embedding&&s.embedding.dim)?" &middot; "+s.embedding.dim+"d":"")],
+      ["bucket",esc(s.bucket||"default")+" ("+(s.buckets||1)+" total)"],
+      ["corpus",(st.documents||0)+" docs &middot; "+(st.chunks||0)+" chunks &middot; "+(st.entities||0)+" entities &middot; "+(st.communities||0)+" communities"],
+      ["chunking",esc(st.chunk_strategy||"recursive")],
+    ];
+    el.innerHTML=rows.map(r=>'<div class="k">'+r[0]+'</div><div class="v">'+r[1]+'</div>').join("");
+  }catch(e){el.textContent="status unavailable: "+e.message;}
+}
+function renderPipeline(){
+  const v=id=>+$(id).value, on=id=>$(id).checked;
+  const topk=v("#pTopK")||6, mix=v("#pMix"), ent=v("#pEnt"), mmr=v("#pMMR"), floor=v("#pMinSim"), rer=on("#pRerank");
+  const steps=[
+    [true,"Embed the question","query vector"],
+    [true,"Dense vector search","HNSW, top "+topk],
+    [true,"Lexical BM25 + fusion","keyword and exact-term recall"],
+    [mix>0,"Graph boost",mix>0?"+"+mix.toFixed(2)+" PageRank":"off"],
+    [ent>0,"Entity knowledge graph",ent>0?"mix "+ent.toFixed(2):"off (build it first)"],
+    [mmr>0,"Diversify (MMR)",mmr>0?"λ "+mmr.toFixed(2):"off"],
+    [rer,"LLM rerank",rer?"on":"off"],
+    [floor>0,"Grounding floor",floor>0?"abstain < "+floor.toFixed(2):"off"],
+    [true,"Answer with citations","the model grounds on the chunks"],
+  ];
+  $("#cfgPipeline").innerHTML=steps.map((s,i)=>
+    '<div class="cfg-step '+(s[0]?"on":"off")+'"><span class="n">'+(i+1)+'</span><span class="lbl">'+s[1]+'</span><span class="det">'+s[2]+'</span></div>'
+  ).join("");
 }
 function closeConfig(){cfgEl.classList.remove("open")}
 $("#cfgClose").onclick=closeConfig;

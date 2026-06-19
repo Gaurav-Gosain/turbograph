@@ -115,6 +115,30 @@ func TestConfigPostValidates(t *testing.T) {
 	}
 }
 
+func TestStatusAggregates(t *testing.T) {
+	s, _ := newConfigServer(t)
+	s.SetGenerator(stubBackend{}, "m1", "e1")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out["storage"] == nil || out["generation"] == nil || out["stats"] == nil {
+		t.Fatalf("status missing sections: %+v", out)
+	}
+	gen := out["generation"].(map[string]any)
+	if gen["reachable"] != true { // stubBackend.Ping returns nil
+		t.Errorf("generation should be reachable, got %v", gen["reachable"])
+	}
+	st := out["stats"].(map[string]any)
+	if st["chunk_strategy"] == nil {
+		t.Errorf("stats should report the chunk strategy: %+v", st)
+	}
+}
+
 func TestConfigDisabledWhenNotEnabled(t *testing.T) {
 	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1})
 	store.Build(context.Background(), []rag.Document{{ID: "a", Text: "x"}})
