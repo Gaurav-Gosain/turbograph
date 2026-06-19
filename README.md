@@ -223,6 +223,20 @@ including a grounding floor (abstain below a cosine threshold) and a rerank
 toggle (re-score candidates with the model), and a built-in "how it works" guide
 explains the pipeline.
 
+A **config** panel (header button or command palette) makes the whole engine
+configurable without the command line, and persists to a JSON file:
+
+- **Model backends.** Point generation and embeddings at Ollama or any
+  OpenAI-compatible endpoint, with base URL, API key, and model, edited live.
+- **Chunking.** Pick the strategy (recursive, word, markdown, sentence) and sizes
+  for new ingests.
+- **Storage.** Configure S3-compatible storage (endpoint, bucket, region, prefix).
+- **System status.** A live readout of the version, storage location, backend
+  reachability, and corpus stats.
+- **Pipeline.** An interactive, explainable view of the retrieval stages (embed,
+  dense, BM25 fusion, graph, entity graph, MMR, rerank, grounding floor, answer),
+  each switchable and tunable in place.
+
 ## Grounding
 
 Four refinements sit between retrieval and the answer, each off by default and
