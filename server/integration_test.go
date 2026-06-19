@@ -159,3 +159,66 @@ func TestDocumentsEndpoint(t *testing.T) {
 		t.Fatalf("unexpected first document: %+v", out.Documents[0])
 	}
 }
+
+func TestVersionEndpoints(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05})
+	ctx := context.Background()
+	if err := store.Build(ctx, []rag.Document{{ID: "doc", Text: "alpha beta gamma"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddDocuments(ctx, []rag.Document{{ID: "doc", Text: "alpha beta gamma delta"}}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(store).Handler())
+	defer ts.Close()
+
+	// list
+	var list struct {
+		Versions []struct {
+			N       int  `json:"n"`
+			Current bool `json:"current"`
+		} `json:"versions"`
+	}
+	getJSON(t, ts.URL+"/api/versions?doc=doc", &list)
+	if len(list.Versions) != 2 || !list.Versions[1].Current {
+		t.Fatalf("versions = %+v", list.Versions)
+	}
+
+	// text of version 1
+	var v1 struct {
+		Text string `json:"text"`
+	}
+	getJSON(t, ts.URL+"/api/version?doc=doc&n=1", &v1)
+	if v1.Text != "alpha beta gamma" {
+		t.Fatalf("v1 text = %q", v1.Text)
+	}
+
+	// restore version 1 -> appends a third version equal to v1
+	resp, err := http.Post(ts.URL+"/api/restore?doc=doc&n=1", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restore status %d", resp.StatusCode)
+	}
+	getJSON(t, ts.URL+"/api/versions?doc=doc", &list)
+	if len(list.Versions) != 3 {
+		t.Fatalf("after restore got %d versions, want 3", len(list.Versions))
+	}
+}
+
+func getJSON(t *testing.T, url string, dst any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s -> %d", url, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+		t.Fatal(err)
+	}
+}

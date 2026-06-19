@@ -217,6 +217,31 @@
   .cfg-row input,.cfg-row select{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--border);
     border-radius:6px;color:var(--text);padding:6px 8px;font-size:12px;font-family:inherit}
   .cfg-row input:focus,.cfg-row select:focus{outline:none;border-color:var(--accent)}
+  .cfg.ver{width:min(880px,96vw)}
+  .ver-body{display:flex;min-height:0;flex:1}
+  .ver-timeline{width:230px;flex:none;overflow-y:auto;border-right:1px solid var(--border);padding:8px}
+  .ver-main{flex:1;display:flex;flex-direction:column;min-width:0;padding:12px 14px}
+  .vrow{padding:8px 9px;border-radius:7px;cursor:pointer;border:1px solid transparent;margin-bottom:4px}
+  .vrow:hover{background:var(--panel2)}
+  .vrow.sel{border-color:var(--accent);background:var(--panel2)}
+  .vrow.base{box-shadow:inset 3px 0 0 var(--faint)}
+  .vrow .vn{font-size:12px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:6px}
+  .vrow .vsub{font-size:10px;color:var(--faint);margin-top:2px}
+  .vcur{font-size:9px;background:var(--accent);color:var(--bg);border-radius:4px;padding:1px 5px;font-weight:600}
+  .vdelta{color:var(--muted)}
+  .ver-meta{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);margin-bottom:8px}
+  .ver-meta b{color:var(--text)}
+  .vbtn{font-size:11px;background:var(--accent);color:var(--bg);border:0;border-radius:6px;padding:5px 11px;cursor:pointer;font-weight:600}
+  .vbtn:hover{filter:brightness(1.08)}
+  .ver-diffbar{font-size:11px;color:var(--muted);margin-bottom:8px}
+  .ver-diffbar select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:2px 5px;font-family:inherit}
+  .ver-diff{flex:1;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:7px;
+    padding:8px 10px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  .ver-diff .dadd{color:#9ece6a;background:rgba(158,206,106,.08)}
+  .ver-diff .ddel{color:var(--danger);background:rgba(247,118,142,.08)}
+  .ver-diff .dctx{color:var(--faint)}
+  .ver-diff .dgap{color:var(--border);text-align:center;user-select:none}
+  .doc{cursor:pointer}
   .cfg-foot{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid var(--border)}
   .cfg-foot #cfgMsg{font-size:11px;color:var(--muted)}
   .cfg-foot #cfgMsg.warn{color:var(--warn)} .cfg-foot #cfgMsg.ok{color:var(--accent)}
@@ -501,6 +526,20 @@
       </div>
     </div>
     <div class="cfg-foot"><span id="cfgMsg"></span><button id="cfgSave">save settings</button></div>
+  </div>
+</div>
+
+<div id="versions" class="cmdk-overlay">
+  <div class="cfg ver">
+    <div class="cfg-head"><span>version history &middot; <b id="verDoc"></b></span><span class="x" id="verClose">close</span></div>
+    <div class="ver-body">
+      <div class="ver-timeline" id="verTimeline"></div>
+      <div class="ver-main">
+        <div class="ver-meta" id="verMeta"></div>
+        <div class="ver-diffbar" id="verDiffBar"></div>
+        <div class="ver-diff" id="verDiff"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1285,6 +1324,7 @@ document.addEventListener("keydown",e=>{
     if(helpEl.classList.contains("open")){helpEl.classList.remove("open");return}
     if(settingsEl.classList.contains("open")){settingsEl.classList.remove("open");return}
     if(cfgOpen()){closeConfig();return}
+    if(verEl.classList.contains("open")){closeVersions();return}
     if($("#srcPreview").classList.contains("open")){$("#srcPreview").classList.remove("open");return}
     if(chatAbort)chatAbort.abort();
     return;
@@ -1412,8 +1452,12 @@ function renderDocList(){
   const items=[...G.docs.entries()];
   if(!items.length){$("#doclist").innerHTML='<div class="empty" style="padding:14px 4px">no documents in this bucket yet</div>';return}
   $("#doclist").innerHTML=items.map(([n,d])=>
-    '<div class="doc'+(d.fail?" fail":"")+'" title="'+esc(n)+'"><span class="n">'+esc(n)+'</span>'+
+    '<div class="doc'+(d.fail?" fail":"")+'" title="'+esc(n)+' — click for version history"><span class="n">'+esc(n)+'</span>'+
     '<span class="c">'+(d.fail?esc(d.fail):((d.chunks?d.chunks+" ch · ":"")+(d.c||0)+" b"))+'</span></div>').join("");
+  // Bind by index so a document name containing quotes can never break a handler.
+  $("#doclist").querySelectorAll(".doc").forEach((el,i)=>{
+    const [name,d]=items[i];if(d.fail)return;el.onclick=()=>openVersions(name);
+  });
 }
 $("#saveBtn").onclick=async()=>{
   const note=$("#docNote");
@@ -1421,6 +1465,106 @@ $("#saveBtn").onclick=async()=>{
     note.className=r.error?"note err":"note";note.textContent=r.error?r.error:"saved to "+r.path;toast("saved")}
   catch(e){note.className="note err";note.textContent=e.message}
 };
+
+// ---------- document version history ----------
+const verEl=$("#versions");
+function relTime(t){
+  if(!t)return"";
+  const s=Math.max(0,Math.floor(Date.now()/1000)-t);
+  if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";
+  if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";
+}
+function fmtBytes(b){return b<1024?b+" b":b<1048576?(b/1024).toFixed(1)+" kb":(b/1048576).toFixed(1)+" mb"}
+// Line-level LCS diff between two version texts.
+function lineDiff(a,b){
+  const A=a.split("\n"),B=b.split("\n"),n=A.length,m=B.length;
+  if(n*m>4000000)return[{t:"ctx",s:"(documents too large to diff inline)"}];
+  const dp=Array.from({length:n+1},()=>new Int32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+    dp[i][j]=A[i]===B[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const out=[];let i=0,j=0;
+  while(i<n&&j<m){
+    if(A[i]===B[j]){out.push({t:"ctx",s:A[i]});i++;j++}
+    else if(dp[i+1][j]>=dp[i][j+1]){out.push({t:"del",s:A[i]});i++}
+    else{out.push({t:"add",s:B[j]});j++}
+  }
+  while(i<n)out.push({t:"del",s:A[i++]});
+  while(j<m)out.push({t:"add",s:B[j++]});
+  return out;
+}
+// Render a diff, collapsing long unchanged runs to keep it readable.
+function renderDiffRows(rows){
+  const keep=new Array(rows.length).fill(false);
+  for(let i=0;i<rows.length;i++)if(rows[i].t!=="ctx")
+    for(let k=Math.max(0,i-2);k<=Math.min(rows.length-1,i+2);k++)keep[k]=true;
+  let html="",gap=false,any=false;
+  for(let i=0;i<rows.length;i++){
+    if(!keep[i]){if(!gap){html+='<div class="dgap">&middot;&middot;&middot;</div>';gap=true}continue}
+    gap=false;const r=rows[i];if(r.t!=="ctx")any=true;
+    const cls=r.t==="add"?"dadd":r.t==="del"?"ddel":"dctx";
+    const sign=r.t==="add"?"+":r.t==="del"?"-":" ";
+    html+='<div class="'+cls+'">'+sign+" "+esc(r.s||" ")+"</div>";
+  }
+  return any?html:'<div class="dctx">no textual changes between these versions</div>';
+}
+async function verText(n){
+  if(!G.ver.texts.has(n)){
+    const r=await api(bk("/api/version?doc="+encodeURIComponent(G.ver.doc)+"&n="+n));
+    G.ver.texts.set(n,r.text||"");
+  }
+  return G.ver.texts.get(n);
+}
+async function openVersions(doc){
+  let list;
+  try{const r=await api(bk("/api/versions?doc="+encodeURIComponent(doc)));list=r.versions||[]}
+  catch(e){toast(e.message,true);return}
+  if(!list.length){toast("no version history yet — re-ingest this document to start tracking");return}
+  const sel=list.length;
+  G.ver={doc,list,texts:new Map(),sel,base:Math.max(1,sel-1)};
+  $("#verDoc").textContent=doc;
+  verEl.classList.add("open");
+  renderVersions();
+}
+function closeVersions(){verEl.classList.remove("open")}
+async function renderVersions(){
+  const {list,sel,base}=G.ver;
+  const byN=new Map(list.map(v=>[v.n,v]));
+  $("#verTimeline").innerHTML=list.slice().reverse().map(v=>{
+    const prev=byN.get(v.n-1);
+    const delta=prev?(()=>{const d=v.chunks-prev.chunks;return d>0?"+"+d+" ch":d<0?d+" ch":"no ch change"})():"first";
+    return '<div class="vrow'+(v.n===sel?" sel":"")+(v.n===base&&base!==sel?" base":"")+'" data-n="'+v.n+'">'+
+      '<div class="vn">v'+v.n+(v.current?' <span class="vcur">live</span>':"")+'</div>'+
+      '<div class="vsub">'+relTime(v.time)+" &middot; "+v.chunks+' ch <span class="vdelta">'+delta+"</span><br>"+fmtBytes(v.bytes)+"</div></div>";
+  }).join("");
+  $("#verTimeline").querySelectorAll(".vrow").forEach(el=>{
+    el.onclick=()=>{const n=+el.dataset.n;G.ver.sel=n;G.ver.base=Math.max(1,n-1);renderVersions()};
+  });
+  const cur=byN.get(sel);
+  $("#verMeta").innerHTML="<span>viewing <b>v"+sel+"</b> of "+list.length+"</span>"+
+    (cur&&cur.current?'<span class="vcur">current</span>':'<button id="verRestore" class="vbtn">restore v'+sel+" as current</button>");
+  const rb=$("#verRestore");if(rb)rb.onclick=()=>restoreVersion(sel);
+  if(list.length>1){
+    const opts=list.filter(v=>v.n!==sel).map(v=>'<option value="'+v.n+'"'+(v.n===base?" selected":"")+">v"+v.n+"</option>").join("");
+    $("#verDiffBar").innerHTML='comparing <select id="verBase">'+opts+"</select> &harr; <b>v"+sel+"</b>";
+    const bs=$("#verBase");if(bs)bs.onchange=()=>{G.ver.base=+bs.value;renderVersions()};
+  }else $("#verDiffBar").innerHTML="this document has a single version";
+  if(list.length<2||base===sel){$("#verDiff").innerHTML='<div class="dctx">nothing to compare yet</div>';return}
+  $("#verDiff").innerHTML='<div class="dctx">loading diff&hellip;</div>';
+  const [ta,tb]=await Promise.all([verText(base),verText(sel)]);
+  if(G.ver.sel!==sel||G.ver.base!==base)return; // a newer selection superseded this render
+  $("#verDiff").innerHTML=renderDiffRows(lineDiff(ta,tb));
+}
+async function restoreVersion(n){
+  try{
+    await api(bk("/api/restore?doc="+encodeURIComponent(G.ver.doc)+"&n="+n),{method:"POST"});
+    toast("restored v"+n+" as current");
+    await loadDocuments();loadStats();
+    G.pos=[];await loadGraph();
+    await openVersions(G.ver.doc);
+  }catch(e){toast(e.message,true)}
+}
+$("#verClose").onclick=closeVersions;
+verEl.addEventListener("click",e=>{if(e.target===verEl)closeVersions()});
 
 // ---------- misc ----------
 let toastTimer=null;
