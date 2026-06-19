@@ -270,6 +270,8 @@
   #nodeBody .meta b{color:var(--text);font-weight:500}
   #nodeBody .text{background:var(--panel2);border:1px solid var(--border);border-radius:6px;
     padding:10px;white-space:pre-wrap;word-break:break-word;font-size:12px}
+  #nodeBody .edgeends{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  #nodeBody .edgeends .arrow{color:var(--muted)}
   #nodeBody .neigh{margin-top:12px}
   #nodeBody h4{margin:0 0 8px;color:var(--muted);font-weight:500;font-size:11px;letter-spacing:.5px}
   .empty{color:var(--muted);padding:24px 14px;text-align:center;font-size:12px}
@@ -537,7 +539,7 @@ const esc=s=>(s==null?"":""+s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":
 const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
-  highlight:new Set(),pulse:-1,selected:-1,hover:-1,
+  highlight:new Set(),pulse:-1,selected:-1,hover:-1,hoverEdge:-1,selEdge:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
   model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0};
 
@@ -640,12 +642,15 @@ function render(){
   if(G.pos.length!==G.nodes.length)return;
   const foc=G.highlight.size>0;
   ctx.lineWidth=1;
-  for(const e of G.edges){
-    const a=G.pos[e.source],b=G.pos[e.target];
+  for(let ei=0;ei<G.edges.length;ei++){
+    const e=G.edges[ei],a=G.pos[e.source],b=G.pos[e.target];
+    const emph=ei===G.hoverEdge||ei===G.selEdge;
     const hl=foc&&(G.highlight.has(e.source)||G.highlight.has(e.target));
-    ctx.strokeStyle=hl?"rgba(90,209,200,.34)":(foc?"rgba(120,130,150,.04)":"rgba(120,130,150,.10)");
+    if(emph){ctx.lineWidth=2;ctx.strokeStyle="rgba(122,162,247,.9)"}
+    else{ctx.lineWidth=1;ctx.strokeStyle=hl?"rgba(90,209,200,.34)":(foc?"rgba(120,130,150,.04)":"rgba(120,130,150,.10)")}
     ctx.beginPath();ctx.moveTo(sx(a.x),sy(a.y));ctx.lineTo(sx(b.x),sy(b.y));ctx.stroke();
   }
+  ctx.lineWidth=1;
   const pulse=0.5+0.5*Math.sin(time*3.2);
   for(let i=0;i<G.nodes.length;i++){
     const nd=G.nodes[i],p=G.pos[i];
@@ -703,14 +708,28 @@ function nodeAt(mx,my){
     if(d<bd){bd=d;best=i}}
   return best;
 }
+// Nearest edge whose segment passes within ~6px of the cursor, or -1.
+function edgeAt(mx,my){
+  if(G.pos.length!==G.nodes.length)return -1;
+  const wx=(mx-G.view.tx)/G.view.scale,wy=(my-G.view.ty)/G.view.scale;
+  const tol=6/G.view.scale;let best=-1,bd=tol*tol;
+  for(let i=0;i<G.edges.length;i++){
+    const e=G.edges[i],a=G.pos[e.source],b=G.pos[e.target];
+    const vx=b.x-a.x,vy=b.y-a.y,len2=vx*vx+vy*vy||1e-6;
+    let t=((wx-a.x)*vx+(wy-a.y)*vy)/len2;t=t<0?0:t>1?1:t;
+    const dx=wx-(a.x+t*vx),dy=wy-(a.y+t*vy),d=dx*dx+dy*dy;
+    if(d<bd){bd=d;best=i}
+  }
+  return best;
+}
 
 // ---------- interaction (stable drag) ----------
-const drag={node:-1,pan:false,px:0,py:0,wx:0,wy:0,moved:false};
+const drag={node:-1,edge:-1,pan:false,px:0,py:0,wx:0,wy:0,moved:false};
 cv.addEventListener("mousedown",e=>{
-  drag.px=e.offsetX;drag.py=e.offsetY;drag.moved=false;
+  drag.px=e.offsetX;drag.py=e.offsetY;drag.moved=false;drag.edge=-1;
   const n=nodeAt(e.offsetX,e.offsetY);
   if(n>=0){drag.node=n;drag.wx=G.pos[n].x;drag.wy=G.pos[n].y;cv.classList.add("dragging");reheat(0.12)}
-  else{drag.pan=true;cv.classList.add("dragging")}
+  else{drag.edge=edgeAt(e.offsetX,e.offsetY);drag.pan=true;cv.classList.add("dragging")}
 });
 window.addEventListener("mousemove",e=>{
   const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
@@ -722,11 +741,18 @@ window.addEventListener("mousemove",e=>{
   if(drag.pan){G.view.tx+=mx-drag.px;G.view.ty+=my-drag.py;drag.px=mx;drag.py=my;drag.moved=true;dirty=true;return;}
   const n=nodeAt(mx,my);
   if(n!==G.hover){G.hover=n;dirty=true}
-  showTip(n,e.clientX,e.clientY);
+  // Edges are only probed when no node is under the cursor; nodes win ties.
+  const ed=n>=0?-1:edgeAt(mx,my);
+  if(ed!==G.hoverEdge){G.hoverEdge=ed;dirty=true}
+  cv.style.cursor=(n>=0||ed>=0)?"pointer":"";
+  if(n>=0)showTip(n,e.clientX,e.clientY);
+  else if(ed>=0)showEdgeTip(ed,e.clientX,e.clientY);
+  else showTip(-1);
 });
 window.addEventListener("mouseup",()=>{
   if(drag.node>=0&&!drag.moved)selectNode(drag.node);
-  drag.node=-1;drag.pan=false;cv.classList.remove("dragging");
+  else if(drag.edge>=0&&!drag.moved)selectEdge(drag.edge);
+  drag.node=-1;drag.edge=-1;drag.pan=false;cv.classList.remove("dragging");
 });
 cv.addEventListener("wheel",e=>{e.preventDefault();zoomAt(e.offsetX,e.offsetY,Math.exp(-e.deltaY*0.0012))},{passive:false});
 $("#zoomIn").onclick=()=>zoomAt(W/2,H/2,1.25);
@@ -831,7 +857,7 @@ async function loadBuckets(){
   }catch(e){}
 }
 async function switchBucket(){
-  G.highlight=new Set();G.selected=-1;G.pulse=-1;G.pos=[];
+  G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;G.pos=[];
   clearMessages();G.docs=new Map();renderDocList();
   await loadDocuments();await loadStats();await loadGraph();
 }
@@ -1279,7 +1305,7 @@ $("#input").addEventListener("input",autoGrow);
 
 // ---------- node detail ----------
 function selectNode(i){
-  G.selected=i;dirty=true;showTab("node");
+  G.selected=i;G.selEdge=-1;dirty=true;showTab("node");
   const nd=G.nodes[i];
   const neigh=[...new Set(G.adj[i])].slice(0,16)
     .map(j=>'<span class="chip" data-i="'+j+'">'+esc(G.nodes[j].doc_id)+'</span>').join("");
@@ -1295,6 +1321,37 @@ function selectNode(i){
     c.onmouseenter=()=>{G.pulse=+c.dataset.i;dirty=true};
     c.onmouseleave=()=>{G.pulse=-1;dirty=true};
   });
+}
+// The relationship an edge represents: a typed link in the entity graph, a
+// similarity bond between chunks otherwise.
+function edgeKind(){return G.graphMode==="entities"?"relationship":"similarity"}
+function selectEdge(ei){
+  const e=G.edges[ei];if(!e)return;
+  G.selEdge=ei;G.selected=-1;
+  G.highlight=new Set([e.source,e.target]);dirty=true;showTab("node");
+  const a=G.nodes[e.source],b=G.nodes[e.target];
+  $("#nodeBody").innerHTML=
+    '<div class="meta"><span>'+edgeKind()+' edge</span>'+
+    '<span>weight <b>'+(+e.weight).toFixed(3)+'</b></span></div>'+
+    '<div class="edgeends">'+
+    '<span class="chip" data-i="'+e.source+'">'+esc(a.doc_id||a.id)+'</span>'+
+    '<span class="arrow">&harr;</span>'+
+    '<span class="chip" data-i="'+e.target+'">'+esc(b.doc_id||b.id)+'</span></div>';
+  $("#nodeBody").querySelectorAll(".chip").forEach(c=>{
+    c.onclick=()=>selectNode(+c.dataset.i);
+    c.onmouseenter=()=>{G.pulse=+c.dataset.i;dirty=true};
+    c.onmouseleave=()=>{G.pulse=-1;dirty=true};
+  });
+}
+function showEdgeTip(ei,cx,cy){
+  const e=G.edges[ei];if(!e){tip.style.display="none";return}
+  const a=G.nodes[e.source],b=G.nodes[e.target];
+  tip.innerHTML='<div class="d">'+esc(a.doc_id||a.id)+' &harr; '+esc(b.doc_id||b.id)+'</div>'+
+    '<div class="s">'+edgeKind()+' &middot; weight '+(+e.weight).toFixed(3)+'</div>';
+  tip.style.display="block";
+  const w=tip.offsetWidth,h=tip.offsetHeight;
+  tip.style.left=Math.min(cx+12,window.innerWidth-w-8)+"px";
+  tip.style.top=Math.min(cy+12,window.innerHeight-h-8)+"px";
 }
 
 // ---------- uploads ----------
@@ -1383,7 +1440,7 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
   if(G.graphMode===b.dataset.m)return;
   G.graphMode=b.dataset.m;
   document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x===b));
-  G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;loadGraph();
+  G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;loadGraph();
 });
 async function buildEntities(onProg){
   if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
