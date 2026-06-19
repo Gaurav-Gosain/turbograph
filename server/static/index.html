@@ -287,11 +287,25 @@
   .flow-edges path{fill:none;stroke:var(--faint);stroke-width:2}
   .flow-edges path.live{stroke:var(--accent);stroke-dasharray:5 4}
   .flow-edges path.hot{stroke:var(--accent)}
+  .flow-edges path.flowing{stroke:var(--accent);stroke-width:3;stroke-dasharray:6 5;animation:march .5s linear infinite}
+  @keyframes march{to{stroke-dashoffset:-22}}
   .flow-nodes{position:absolute;inset:0}
   .fnode{position:absolute;width:182px;background:var(--panel);border:1px solid var(--border);border-radius:9px;
     box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none}
-  .fnode.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 6px 18px rgba(0,0,0,.45)}
+  .fnode.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),0 8px 22px rgba(0,0,0,.5)}
+  .fnode.sel .ft{background:rgba(90,209,200,.10)}
+  .fnode.run{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),0 0 24px rgba(90,209,200,.5)}
+  .fnode.run .ft{background:rgba(90,209,200,.18)}
+  .fnode.ran{border-color:rgba(90,209,200,.5)}
   .fnode.off{opacity:.5}
+  .fp-q{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:7px;font-family:inherit;font-size:12px}
+  .ctx-menu{position:fixed;z-index:40;background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 12px 34px rgba(0,0,0,.55);padding:4px;min-width:152px;animation:pop .1s ease-out}
+  .ctx-it{padding:7px 11px;border-radius:5px;font-size:12px;color:var(--text);cursor:pointer;white-space:nowrap}
+  .ctx-it:hover{background:var(--panel2)}
+  .ctx-it.danger{color:var(--danger)}
+  .ctx-sep{height:1px;background:var(--border);margin:4px 6px}
   .fnode.pipe{height:60px}
   .fnode.pipe .fb{border-top:1px solid var(--border)}
   .fnode .ft{display:flex;align-items:center;gap:7px;padding:7px 10px;cursor:grab}
@@ -325,7 +339,11 @@
   .fp-del{width:100%;margin-top:7px;background:transparent;color:var(--danger);border:1px solid var(--border);
     border-radius:6px;padding:6px;cursor:pointer;font-size:11px}
   .fp-out{margin-top:10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:9px;
-    font-size:11px;line-height:1.5;color:var(--text);max-height:40vh;overflow:auto;white-space:pre-wrap}
+    font-size:11px;line-height:1.5;color:var(--text);max-height:46vh;overflow:auto;white-space:pre-wrap}
+  .fp-out .run-srchead{color:var(--faint);font-size:9px;text-transform:uppercase;letter-spacing:.6px;margin:10px 0 4px}
+  .fp-out .run-srchead:first-child{margin-top:0}
+  .fp-out .run-ans{color:var(--text)} .fp-out .run-ans p{margin:0 0 6px}
+  .fp-out .run-srcitem{margin-bottom:6px}
   .cfg-foot{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid var(--border)}
   .cfg-foot #cfgMsg{font-size:11px;color:var(--muted)}
   .cfg-foot #cfgMsg.warn{color:var(--warn)} .cfg-foot #cfgMsg.ok{color:var(--accent)}
@@ -1514,6 +1532,8 @@ document.addEventListener("keydown",e=>{
   const tag=(document.activeElement&&document.activeElement.tagName)||"";
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(tag);
   if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();toggleCmdk();return}
+  if(flowEl.classList.contains("open")&&!typing&&F.mode==="free"&&F.sel&&e.key==="Delete"){
+    e.preventDefault();deleteNode(F.sel);return}
   if(e.key==="Escape"){
     if(cmdkOpen()){if(cmdkPath.length)popCmdk();else closeCmdk();return}
     if(helpEl.classList.contains("open")){helpEl.classList.remove("open");return}
@@ -1792,7 +1812,7 @@ const F={mode:"pipeline",nodes:[],edges:[],sel:null,uid:1,free:null};
 const WORK="tg.flow.work",SLOTS="tg.flows";
 
 function openFlow(){flowEl.classList.add("open");setMode("pipeline")}
-function closeFlow(){flowEl.classList.remove("open")}
+function closeFlow(){if(F._runAbort)F._runAbort.abort();flowEl.classList.remove("open")}
 $("#flowBtn").onclick=openFlow;
 $("#flowClose").onclick=closeFlow;
 flowEl.addEventListener("click",e=>{if(e.target===flowEl)closeFlow()});
@@ -1860,7 +1880,8 @@ function bez(a,b,vert){
 function renderEdges(live){
   const vert=F.mode==="pipeline";let d="";
   for(const e of F.edges){const a=nodeById(e.from),b=nodeById(e.to);if(!a||!b)continue;
-    d+='<path'+(vert?' class="hot"':'')+' d="'+bez(portXY(a,"out"),portXY(b,"in"),vert)+'"/>'}
+    const cls=F._flowKey===e.from+">"+e.to?"flowing":(vert?"hot":"");
+    d+='<path'+(cls?' class="'+cls+'"':"")+' d="'+bez(portXY(a,"out"),portXY(b,"in"),vert)+'"/>'}
   if(live)d+='<path class="live" d="'+bez(live.a,live.b,false)+'"/>';
   flowEdges.innerHTML=d;
 }
@@ -1909,7 +1930,29 @@ function bindNode(el,n){
     syncReadouts();saveSettings();renderPipeline();rebuildPipeEdges();renderFlow()};
   const op=el.querySelector(".port.out");
   if(op)op.addEventListener("mousedown",e=>{e.preventDefault();e.stopPropagation();startWire(n)});
+  el.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();
+    F.sel=n.id;renderNodes();renderSide();nodeMenu(n,e.clientX,e.clientY)});
 }
+function nodeMenu(n,x,y){
+  if(n.pipe!=null){
+    const s=PIPE[n.pipe],items=[];
+    if(s.kind==="range"||s.kind==="check"){const on=pipeOn(s);
+      items.push({label:on?"turn this stage off":"turn this stage on",run:()=>{
+        if(s.kind==="check")$("#"+s.set).checked=!on;else $("#"+s.set).value=on?0:(s.def||.3);
+        syncReadouts();saveSettings();renderPipeline();rebuildPipeEdges();renderFlow()}})}
+    items.push({label:"reset pipeline to defaults",run:()=>{$("#resetSettings").click();buildPipeline();renderFlow()}});
+    showCtx(x,y,items);return;
+  }
+  showCtx(x,y,[
+    {label:"duplicate block",run:()=>{const c={id:"n"+(F.uid++),type:n.type,x:n.x+26,y:n.y+22,
+      params:Object.assign({},n.params)};F.nodes.push(c);F.sel=c.id;saveWork();renderFlow()}},
+    {label:"disconnect wires",run:()=>{F.edges=F.edges.filter(x=>x.from!==n.id&&x.to!==n.id);saveWork();renderFlow()}},
+    {sep:true},
+    {label:"delete block",danger:true,run:()=>deleteNode(n.id)},
+  ]);
+}
+function deleteNode(id){F.edges=F.edges.filter(x=>x.from!==id&&x.to!==id);
+  F.nodes=F.nodes.filter(x=>x.id!==id);if(F.sel===id)F.sel=null;saveWork();renderFlow()}
 function startWire(from){
   const mv=ev=>{const p=canvasXY(ev);renderEdges({a:portXY(from,"out"),b:p})};
   const up=ev=>{window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);
@@ -1924,6 +1967,27 @@ function addEdge(from,to){
   F.edges=F.edges.filter(e=>e.to!==to); // one inbound edge per input keeps flows linear
   F.edges.push({from,to});saveWork();renderEdges();
 }
+// ---- right-click context menu ----
+const ctxEl=document.createElement("div");ctxEl.className="ctx-menu";ctxEl.style.display="none";
+document.body.appendChild(ctxEl);
+function showCtx(x,y,items){
+  ctxEl.innerHTML=items.map((it,i)=>it.sep?'<div class="ctx-sep"></div>'
+    :'<div class="ctx-it'+(it.danger?" danger":"")+'" data-i="'+i+'">'+esc(it.label)+'</div>').join("");
+  ctxEl.style.display="block";
+  ctxEl.style.left=Math.min(x,window.innerWidth-ctxEl.offsetWidth-8)+"px";
+  ctxEl.style.top=Math.min(y,window.innerHeight-ctxEl.offsetHeight-8)+"px";
+  ctxEl.querySelectorAll(".ctx-it").forEach(el=>el.onclick=()=>{hideCtx();items[+el.dataset.i].run()});
+}
+function hideCtx(){ctxEl.style.display="none"}
+window.addEventListener("mousedown",e=>{if(!ctxEl.contains(e.target))hideCtx()});
+window.addEventListener("blur",hideCtx);
+// Right-click on empty free-form canvas: add a block where you clicked.
+flowCanvas.addEventListener("contextmenu",e=>{
+  if(F.mode!=="free"||e.target.closest(".fnode"))return;
+  e.preventDefault();const p=canvasXY(e);
+  showCtx(e.clientX,e.clientY,FPAL.map(t=>({label:"add "+FB[t].nm.toLowerCase(),
+    run:()=>addNode(t,p.x-NW/2,p.y-20)})));
+});
 
 // ---- palette + tools ----
 function renderTools(){
@@ -1971,7 +2035,7 @@ function renderSide(){
       ? "each block is a stage of the retrieval pipeline, in execution order. toggle a stage on or off and tune it; changes apply to your real retrieval settings immediately. select a block to adjust it here."
       : "drag blocks from the palette onto the canvas and wire them output to input. select a block to configure it. save named flows and run a query flow against this bucket.")+'</p>';
   }
-  if(F.mode==="free")h+=runPanel();
+  h+=runPanel();
   flowSide.innerHTML=h;
   wireSide(n);
 }
@@ -1998,10 +2062,15 @@ function freeInspector(n){
   return h;
 }
 function runPanel(){
+  if(F.mode==="pipeline")
+    return '<h4 style="margin-top:16px">test run</h4>'+
+      '<div class="fp-row"><input type="text" id="flowQuery" class="fp-q" placeholder="ask a question to trace the pipeline"></div>'+
+      '<button class="fp-run" id="si_run">run pipeline</button>'+
+      '<div class="fp-out" id="flowOut"><span class="muted">runs a real query, lights up each stage as it executes, then lists the matches.</span></div>';
   const has=F.nodes.some(n=>n.type==="retrieve");
   return '<h4 style="margin-top:16px">run</h4>'+(has
-    ? '<div class="fp-row"><input type="text" id="flowQuery" placeholder="ask this flow a question" style="width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px"></div>'+
-      '<button class="fp-run" id="si_run">run flow</button><div class="fp-out" id="flowOut"><span class="muted">runs the retrieve block against this bucket and lists the matches.</span></div>'
+    ? '<div class="fp-row"><input type="text" id="flowQuery" class="fp-q" placeholder="ask this flow a question"></div>'+
+      '<button class="fp-run" id="si_run">run flow</button><div class="fp-out" id="flowOut"><span class="muted">lights up each block as it runs, then lists the matches.</span></div>'
     : '<p class="muted">add a retrieve block to run this flow.</p>');
 }
 function wireSide(n){
@@ -2022,21 +2091,100 @@ function wireSide(n){
   const run=$("#si_run");if(run)run.onclick=runFlow;
 }
 
-// ---- run a query flow against the live bucket ----
+// ---- run a query flow against the live bucket, tracing each stage ----
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function nodeEl(id){return flowNodes.querySelector('.fnode[data-id="'+id+'"]')}
+// The order to light up: top-to-bottom for the pipeline, edge-following from the
+// input node for a free-form flow.
+function flowOrder(){
+  if(F.mode==="pipeline")return F.nodes.map(n=>n.id);
+  const inbound=new Set(F.edges.map(e=>e.to));
+  const start=F.nodes.find(n=>!inbound.has(n.id))||F.nodes[0];
+  if(!start)return [];
+  const order=[],seen=new Set();let cur=start.id;
+  while(cur&&!seen.has(cur)){order.push(cur);seen.add(cur);
+    const e=F.edges.find(x=>x.from===cur);cur=e?e.to:null}
+  return order;
+}
+async function animateRun(ids){
+  flowNodes.querySelectorAll(".fnode").forEach(e=>e.classList.remove("run","ran"));
+  for(let i=0;i<ids.length;i++){
+    if(i>0){F._flowKey=ids[i-1]+">"+ids[i];renderEdges()}
+    const el=nodeEl(ids[i]);
+    if(el){el.classList.add("run");el.scrollIntoView({block:"nearest",inline:"nearest"})}
+    await sleep(300);
+    if(el){el.classList.remove("run");el.classList.add("ran")}
+  }
+  F._flowKey=null;renderEdges();
+  setTimeout(()=>flowNodes.querySelectorAll(".fnode").forEach(e=>e.classList.remove("ran")),1400);
+}
+function runParams(){
+  if(F.mode==="pipeline")return{top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,
+    entity_mix:+$("#pEnt").value,mmr_lambda:+$("#pMMR").value,min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked};
+  const rn=F.nodes.find(n=>n.type==="retrieve");return rn?rn.params:null;
+}
+function runSourcesHTML(list){
+  if(!list||!list.length)return '<div class="muted">no matches in this bucket</div>';
+  return '<div class="run-srchead">sources</div>'+list.map((c,i)=>
+    '<div class="run-srcitem"><b>'+(i+1)+". "+esc(c.doc_id||c.id)+"</b>"+
+    (c.score!=null?' <span class="muted">'+(+c.score).toFixed(3)+"</span>":"")+
+    "<br>"+esc((c.text||"").slice(0,160))+"</div>").join("");
+}
 async function runFlow(){
   const qel=$("#flowQuery");const q=qel?qel.value.trim():"";
-  if(!q){toast("enter a question to run the flow",true);return}
-  const rn=F.nodes.find(n=>n.type==="retrieve"),p=rn?rn.params:{};
-  const out=$("#flowOut");if(out)out.innerHTML='<span class="muted">running...</span>';
+  if(!q){toast("enter a question to run",true);return}
+  const p=runParams();
+  if(!p){toast("add a retrieve block to run",true);return}
+  // The flow produces an answer when it reaches an Answer block (always, in the
+  // fixed pipeline). That needs a language model; without one we show retrieval only.
+  const wantsAnswer=F.mode==="pipeline"||F.nodes.some(n=>n.type==="answer");
+  const out=$("#flowOut"),btn=$("#si_run");
+  if(out)out.innerHTML='<span class="muted">tracing the pipeline...</span>';
+  if(btn)btn.disabled=true;
+  if(F._runAbort)F._runAbort.abort();
+  F._runAbort=new AbortController();
+  await animateRun(flowOrder());
+  try{
+    if(wantsAnswer&&G.model)await runAnswer(q,p,out);
+    else await runRetrieval(q,p,out,wantsAnswer&&!G.model);
+  }finally{if(btn)btn.disabled=false}
+}
+// Retrieval-only: hit /query and list the matches (no model needed).
+async function runRetrieval(q,p,out,needModel){
+  if(out)out.innerHTML='<span class="muted">retrieving...</span>';
   try{
     const r=await api(bk("/query"),{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({query:q,top_k:+(p.top_k!=null?p.top_k:6),graph_mix:+(p.graph_mix||0),
         entity_mix:+(p.entity_mix||0),mmr_lambda:+(p.mmr_lambda||0)})});
-    const res=r.results||[];
-    out.innerHTML=res.length?res.map((c,i)=>'<div style="margin-bottom:7px"><b>'+(i+1)+". "+esc(c.doc_id)+
-      '</b> <span class="muted">'+(+c.score).toFixed(3)+'</span><br>'+esc((c.text||"").slice(0,180))+'</div>').join("")
-      :'<span class="muted">no matches in this bucket</span>';
+    if(!out)return;
+    out.innerHTML=(needModel?'<div class="muted" style="margin-bottom:8px">pick a model (top right) to generate an answer. retrieved matches:</div>':"")
+      +runSourcesHTML(r.results||[]);
   }catch(e){if(out)out.textContent=e.message}
+}
+// Full run: stream a grounded answer from /api/chat and show its sources.
+async function runAnswer(q,p,out){
+  if(out)out.innerHTML='<div class="run-srchead">answer</div><div class="run-ans muted">generating...</div><div class="run-src"></div>';
+  const ansEl=out?out.querySelector(".run-ans"):null,srcEl=out?out.querySelector(".run-src"):null;
+  let answer="";
+  try{
+    const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:F._runAbort.signal,
+      body:JSON.stringify({query:q,top_k:+(p.top_k!=null?p.top_k:6),graph_mix:+(p.graph_mix||0),
+        mmr_lambda:+(p.mmr_lambda||0),entity_mix:+(p.entity_mix||0),min_sim:+(p.min_sim||0),
+        rerank:!!p.rerank,history:[],model:G.model})});
+    if(!resp.ok){let m="chat failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
+    const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
+    while(true){
+      const {value,done}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});let i;
+      while((i=buf.indexOf("\n\n"))>=0){
+        const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
+        if(ev.event==="sources"){if(srcEl)srcEl.innerHTML=runSourcesHTML(ev.data.sources)}
+        else if(ev.event==="token"){answer+=ev.data.text;if(ansEl){ansEl.classList.remove("muted");ansEl.innerHTML=renderMarkdown(answer)}}
+        else if(ev.event==="abstain"){if(ansEl){ansEl.classList.remove("muted");ansEl.innerHTML=renderMarkdown(ev.data.message)}return}
+        else if(ev.event==="error"){if(ansEl){ansEl.classList.remove("muted");ansEl.innerHTML='<span style="color:var(--danger)">'+esc(ev.data.error)+"</span>"}return}
+      }
+    }
+  }catch(e){if(e.name!=="AbortError"&&ansEl){ansEl.classList.remove("muted");ansEl.innerHTML='<span style="color:var(--danger)">'+esc(e.message)+"</span>"}}
 }
 
 // ---- free-form flow persistence (localStorage) ----
