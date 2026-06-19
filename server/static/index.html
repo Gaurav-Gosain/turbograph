@@ -539,7 +539,7 @@ const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false};
+  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0};
 
 // ---------- settings persistence + popover ----------
 const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim"];
@@ -634,6 +634,10 @@ let dirty=true,t0=performance.now();
 function render(){
   const time=(performance.now()-t0)/1000;
   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  // Positions and nodes can be momentarily out of sync while a graph reloads
+  // (the toggle clears G.pos, then awaits a fetch before refilling nodes/edges).
+  // Drawing in that window would deref an undefined position and kill the loop.
+  if(G.pos.length!==G.nodes.length)return;
   const foc=G.highlight.size>0;
   ctx.lineWidth=1;
   for(const e of G.edges){
@@ -664,9 +668,12 @@ function render(){
   }
 }
 function frame(){
-  if(G.sim.running){tick();tick();dirty=true}
-  if(G.highlight.size||G.pulse>=0)dirty=true; // keep pulsing
-  if(dirty){render();dirty=false}
+  // A throw here must never break the rAF chain, or the canvas freezes for good.
+  try{
+    if(G.sim.running){tick();tick();dirty=true}
+    if(G.highlight.size||G.pulse>=0)dirty=true; // keep pulsing
+    if(dirty){render();dirty=false}
+  }catch(e){}
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -739,7 +746,11 @@ function showTip(i,cx,cy){
 
 // ---------- data ----------
 async function loadGraph(keepView){
+  // Tag this load. Rapid mode switches fire overlapping fetches; if a slower,
+  // older one resolves last it must not overwrite the graph the user now wants.
+  const seq=++G.loadSeq;
   const v=await api(bk(G.graphMode==="entities"?"/api/entity-graph":"/api/graph"));
+  if(seq!==G.loadSeq)return;
   G.nodes=v.nodes||[];G.edges=v.edges||[];
   G.idIndex=new Map(G.nodes.map((n,i)=>[n.id,i]));
   G.adj=G.nodes.map(()=>[]);
@@ -822,7 +833,17 @@ async function loadBuckets(){
 async function switchBucket(){
   G.highlight=new Set();G.selected=-1;G.pulse=-1;G.pos=[];
   clearMessages();G.docs=new Map();renderDocList();
-  await loadStats();await loadGraph();
+  await loadDocuments();await loadStats();await loadGraph();
+}
+// loadDocuments fetches the document list from the server so a store loaded from
+// disk shows its files, not just what was uploaded in this browser session.
+async function loadDocuments(){
+  try{
+    const r=await api(bk("/api/documents"));
+    G.docs=new Map();
+    (r.documents||[]).forEach(d=>G.docs.set(d.id,{c:d.bytes,chunks:d.chunks}));
+    renderDocList();
+  }catch(e){}
 }
 $("#bucket").onchange=async e=>{G.bucket=e.target.value;await switchBucket()};
 $("#newBucket").onclick=async()=>{
@@ -1331,9 +1352,11 @@ function toB64(buf){
   return btoa(bin);
 }
 function renderDocList(){
-  $("#doclist").innerHTML=[...G.docs.entries()].map(([n,d])=>
-    '<div class="doc'+(d.fail?" fail":"")+'"><span class="n">'+esc(n)+'</span>'+
-    '<span class="c">'+(d.fail?esc(d.fail):(d.c+" b"))+'</span></div>').join("");
+  const items=[...G.docs.entries()];
+  if(!items.length){$("#doclist").innerHTML='<div class="empty" style="padding:14px 4px">no documents in this bucket yet</div>';return}
+  $("#doclist").innerHTML=items.map(([n,d])=>
+    '<div class="doc'+(d.fail?" fail":"")+'" title="'+esc(n)+'"><span class="n">'+esc(n)+'</span>'+
+    '<span class="c">'+(d.fail?esc(d.fail):((d.chunks?d.chunks+" ch · ":"")+(d.c||0)+" b"))+'</span></div>').join("");
 }
 $("#saveBtn").onclick=async()=>{
   const note=$("#docNote");
@@ -1392,7 +1415,7 @@ async function runBuildEntities(){
 }
 
 resize();loadSettings();updateEmpty();loadModels();
-loadBuckets().then(()=>{loadStats();loadGraph()});
+loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
 </script>
 </body>
 </html>

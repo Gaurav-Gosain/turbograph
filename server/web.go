@@ -36,6 +36,17 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Write(indexHTML)
 }
 
+// handleDocuments lists the documents in the request's bucket, so the UI can show
+// what is in a store it loaded from disk (not just what was uploaded this session).
+func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"documents": st.Documents()})
+}
+
 func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	st, err := s.store(r)
 	if err != nil {

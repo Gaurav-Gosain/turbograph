@@ -313,6 +313,35 @@ func (s *Store) DocCount() int {
 	return len(s.docSet)
 }
 
+// DocInfo summarizes one ingested document.
+type DocInfo struct {
+	ID     string `json:"id"`
+	Chunks int    `json:"chunks"`
+	Bytes  int    `json:"bytes"` // total chunk text length
+}
+
+// Documents lists the ingested documents in first-seen order, with each one's
+// chunk count and size. It lets a client reconstruct the document list after
+// loading a store from disk, where the in-memory client has no record of what was
+// ingested in a previous session.
+func (s *Store) Documents() []DocInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	idx := make(map[string]int, len(s.docSet))
+	var out []DocInfo
+	for _, c := range s.chunks {
+		i, ok := idx[c.DocID]
+		if !ok {
+			idx[c.DocID] = len(out)
+			out = append(out, DocInfo{ID: c.DocID})
+			i = len(out) - 1
+		}
+		out[i].Chunks++
+		out[i].Bytes += len(c.Text)
+	}
+	return out
+}
+
 // Embedder returns the embedder the store was created with.
 func (s *Store) Embedder() Embedder { return s.embedder }
 

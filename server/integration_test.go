@@ -130,3 +130,32 @@ func TestPullEndpoint(t *testing.T) {
 		t.Fatalf("pull stream missing done event:\n%s", buf.String())
 	}
 }
+
+func TestDocumentsEndpoint(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05})
+	docs := []rag.Document{{ID: "readme.md", Text: "alpha beta gamma delta epsilon"}, {ID: "guide.md", Text: "one two three"}}
+	if err := store.Build(context.Background(), docs); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(store).Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/documents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Documents []struct {
+			ID     string `json:"id"`
+			Chunks int    `json:"chunks"`
+			Bytes  int    `json:"bytes"`
+		} `json:"documents"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if len(out.Documents) != 2 {
+		t.Fatalf("expected 2 documents, got %d", len(out.Documents))
+	}
+	if out.Documents[0].ID != "readme.md" || out.Documents[0].Chunks < 1 || out.Documents[0].Bytes == 0 {
+		t.Fatalf("unexpected first document: %+v", out.Documents[0])
+	}
+}
