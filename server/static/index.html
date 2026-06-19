@@ -286,14 +286,20 @@
   .fnode{position:absolute;width:182px;background:var(--panel);border:1px solid var(--border);border-radius:9px;
     box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none}
   .fnode.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 6px 18px rgba(0,0,0,.45)}
-  .fnode.off{opacity:.45}
-  .fnode .ft{display:flex;align-items:center;gap:7px;padding:7px 9px;cursor:grab;border-bottom:1px solid var(--border)}
+  .fnode.off{opacity:.5}
+  .fnode.pipe{height:60px}
+  .fnode.pipe .fb{border-top:1px solid var(--border)}
+  .fnode .ft{display:flex;align-items:center;gap:7px;padding:7px 10px;cursor:grab}
   .fnode .ft .dot{width:8px;height:8px;border-radius:50%;flex:none}
-  .fnode .ft .nm{font-size:12px;color:var(--text);font-weight:600;flex:1}
-  .fnode .ft .tg{cursor:pointer;color:var(--faint);font-size:10px}
-  .fnode .fb{padding:7px 9px;font-size:10.5px;color:var(--muted);line-height:1.4}
-  .fnode .fb .kv{display:flex;justify-content:space-between;gap:8px;margin:2px 0}
-  .fnode .fb .kv b{color:var(--text);font-weight:500}
+  .fnode .ft .num{flex:none;width:17px;height:17px;border-radius:5px;background:var(--accent);color:var(--bg);
+    font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .fnode .ft .num.off{background:var(--faint);color:var(--panel)}
+  .fnode .ft .nm{font-size:12px;color:var(--text);font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fnode .ft .ptog{flex:none;margin:0}
+  .fnode .fb{padding:6px 10px;font-size:10.5px;color:var(--muted);line-height:1.4}
+  .fnode .fb .kv{display:flex;justify-content:space-between;gap:8px;margin:1px 0}
+  .fnode .fb .kv span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fnode .fb .kv b{color:var(--text);font-weight:500;flex:none}
   .port{position:absolute;width:13px;height:13px;border-radius:50%;background:var(--panel2);
     border:2px solid var(--faint);top:50%;transform:translateY(-50%);cursor:crosshair;z-index:2}
   .port:hover,.port.armed{border-color:var(--accent);background:var(--accent)}
@@ -611,7 +617,6 @@
 <div id="flow" class="cmdk-overlay">
   <div class="flow-shell">
     <div class="flow-head">
-      <span class="flow-title">pipeline editor</span>
       <div class="seg flow-mode" id="flowMode">
         <button data-fm="pipeline" class="on">retrieval pipeline</button>
         <button data-fm="free" title="build your own flow">free-form</button>
@@ -1757,24 +1762,30 @@ document.querySelectorAll("#flowMode button").forEach(b=>b.onclick=()=>setMode(b
 function setMode(m){
   F.mode=m;F.sel=null;
   document.querySelectorAll("#flowMode button").forEach(b=>b.classList.toggle("on",b.dataset.fm===m));
-  $(".flow-title").textContent=m==="pipeline"?"retrieval pipeline":"free-form flow";
   if(m==="pipeline")buildPipeline();
   else{if(!F.free)F.free=loadWork();F.nodes=F.free.nodes;F.edges=F.free.edges;
     F.uid=F.nodes.reduce((a,n)=>Math.max(a,(+(""+n.id).replace(/\D/g,""))||0),0)+1;}
   renderFlow();
 }
-// ---- pipeline mode: nodes derive from the real retrieval settings ----
+// Compact, one-line stage names for the node canvas (PIPE keeps its longer
+// labels for the settings list).
+const PIPE_SHORT={"Embed the question":"Embed query","Dense vector search":"Vector search",
+  "Lexical BM25 + fusion":"Lexical BM25","Entity knowledge graph":"Entity graph",
+  "Diversify (MMR)":"Diversify","Answer with citations":"Answer"};
+// ---- pipeline mode: a clean vertical chain of the real retrieval settings ----
 function buildPipeline(){
-  F.nodes=[];const cols=4,W=205,GH=120,px=22,py=24;
-  PIPE.forEach((s,i)=>{F.nodes.push({id:"p"+i,pipe:i,x:px+(i%cols)*W,y:py+Math.floor(i/cols)*GH})});
+  F.nodes=[];const PH=60,GAP=18,top=22;
+  const cx=Math.max(20,Math.round((flowCanvas.clientWidth||840)/2-NW/2));
+  PIPE.forEach((s,i)=>{F.nodes.push({id:"p"+i,pipe:i,x:cx,y:top+i*(PH+GAP)})});
   rebuildPipeEdges();
 }
+// The chain stays unbroken so it always reads as one pipeline; inactive stages
+// are dimmed rather than disconnected.
 function rebuildPipeEdges(){
-  F.edges=[];const act=F.nodes.filter(n=>pipeOn(PIPE[n.pipe]));
-  for(let i=0;i+1<act.length;i++)F.edges.push({from:act[i].id,to:act[i+1].id});
+  F.edges=[];for(let i=0;i+1<F.nodes.length;i++)F.edges.push({from:F.nodes[i].id,to:F.nodes[i+1].id});
 }
 function nodeMeta(n){
-  if(n.pipe!=null){const s=PIPE[n.pipe];return{nm:s.lbl,dot:pipeOn(s)?"#5ad1c8":"#5a5f68",
+  if(n.pipe!=null){const s=PIPE[n.pipe];return{nm:PIPE_SHORT[s.lbl]||s.lbl,dot:pipeOn(s)?"#5ad1c8":"#5a5f68",
     ins:n.pipe>0?1:0,outs:n.pipe<PIPE.length-1?1:0,on:pipeOn(s)}}
   const b=FB[n.type];return{nm:b.nm,dot:b.dot,ins:b.ins,outs:b.outs,on:true};
 }
@@ -1793,29 +1804,44 @@ function kv(a,b){return '<div class="kv"><span>'+esc(a)+'</span>'+(b!==""?'<b>'+
 
 // ---- shared rendering ----
 function nodeById(id){return F.nodes.find(n=>n.id===id)}
-function portXY(n,side){return{x:side==="out"?n.x+NW:n.x,y:n.y+18}}
-function bez(a,b){const dx=Math.max(36,Math.abs(b.x-a.x)/2);
-  return "M"+a.x+" "+a.y+" C"+(a.x+dx)+" "+a.y+" "+(b.x-dx)+" "+b.y+" "+b.x+" "+b.y}
+// Pipeline mode flows top-to-bottom (bottom port -> top port); free-form flows
+// left-to-right (right port -> left port).
+const PH=60;
+function portXY(n,side){
+  if(F.mode==="pipeline")return side==="out"?{x:n.x+NW/2,y:n.y+PH}:{x:n.x+NW/2,y:n.y};
+  const cy=n.y+(n._h||64)/2; // match the css-centered port circle
+  return{x:side==="out"?n.x+NW:n.x,y:cy};
+}
+function bez(a,b,vert){
+  if(vert){const dy=Math.max(20,Math.abs(b.y-a.y)/2);
+    return "M"+a.x+" "+a.y+" C"+a.x+" "+(a.y+dy)+" "+b.x+" "+(b.y-dy)+" "+b.x+" "+b.y}
+  const dx=Math.max(36,Math.abs(b.x-a.x)/2);
+  return "M"+a.x+" "+a.y+" C"+(a.x+dx)+" "+a.y+" "+(b.x-dx)+" "+b.y+" "+b.x+" "+b.y;
+}
 function renderEdges(live){
-  let d="";
+  const vert=F.mode==="pipeline";let d="";
   for(const e of F.edges){const a=nodeById(e.from),b=nodeById(e.to);if(!a||!b)continue;
-    d+='<path'+(F.mode==="pipeline"?' class="hot"':'')+' d="'+bez(portXY(a,"out"),portXY(b,"in"))+'"/>'}
-  if(live)d+='<path class="live" d="'+bez(live.a,live.b)+'"/>';
+    d+='<path'+(vert?' class="hot"':'')+' d="'+bez(portXY(a,"out"),portXY(b,"in"),vert)+'"/>'}
+  if(live)d+='<path class="live" d="'+bez(live.a,live.b,false)+'"/>';
   flowEdges.innerHTML=d;
 }
 function renderNodes(){
   flowNodes.innerHTML="";
   for(const n of F.nodes){
     const m=nodeMeta(n),el=document.createElement("div");
-    el.className="fnode"+(F.sel===n.id?" sel":"")+(m.on?"":" off");
+    el.className="fnode"+(n.pipe!=null?" pipe":"")+(F.sel===n.id?" sel":"")+(m.on?"":" off");
     el.style.left=n.x+"px";el.style.top=n.y+"px";el.dataset.id=n.id;
     const tog=(F.mode==="pipeline"&&n.pipe!=null&&(PIPE[n.pipe].kind==="range"||PIPE[n.pipe].kind==="check"))
       ? '<input class="ptog" type="checkbox" '+(m.on?"checked":"")+'>' : "";
     const ports=F.mode==="free"
       ? (m.ins?'<span class="port in"></span>':"")+(m.outs?'<span class="port out"></span>':"") : "";
-    el.innerHTML='<div class="ft"><span class="dot" style="background:'+m.dot+'"></span>'+
-      '<span class="nm">'+esc(m.nm)+'</span>'+tog+'</div><div class="fb">'+nodeBody(n)+'</div>'+ports;
+    const head=n.pipe!=null
+      ? '<span class="num'+(m.on?"":" off")+'">'+(n.pipe+1)+'</span>'
+      : '<span class="dot" style="background:'+m.dot+'"></span>';
+    el.innerHTML='<div class="ft">'+head+'<span class="nm">'+esc(m.nm)+'</span>'+tog+
+      '</div><div class="fb">'+nodeBody(n)+'</div>'+ports;
     flowNodes.appendChild(el);
+    n._h=el.offsetHeight; // cache height so free-form edges meet the centered ports
     bindNode(el,n);
   }
 }
@@ -1868,14 +1894,13 @@ function renderTools(){
     return;
   }
   const chips=FPAL.map(t=>'<span class="chip" draggable="true" data-add="'+t+'" title="drag onto the canvas">'+esc(FB[t].nm)+'</span>').join("");
-  flowTools.innerHTML='<span class="pal">blocks:</span>'+chips+
-    '<button id="flowNew">new</button><select id="flowLoad"></select>'+
-    '<button id="flowSaveAs">save</button><button id="flowRunTop" class="prime">run</button>';
+  flowTools.innerHTML='<span class="pal">drag a block:</span>'+chips+
+    '<span class="pal" style="margin-left:6px">flow:</span><button id="flowNew">new</button>'+
+    '<select id="flowLoad"></select><button id="flowSaveAs">save as...</button>';
   flowTools.querySelectorAll(".chip").forEach(c=>{
     c.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",c.dataset.add))});
   $("#flowNew").onclick=()=>{F.free=defaultFlow();F.nodes=F.free.nodes;F.edges=F.free.edges;F.sel=null;saveWork();renderFlow()};
   $("#flowSaveAs").onclick=saveNamed;
-  $("#flowRunTop").onclick=()=>{F.sel=null;renderSide();runFlow()};
   const sel=$("#flowLoad");const names=Object.keys(loadSlots());
   sel.innerHTML='<option value="">load saved...</option>'+names.map(n=>'<option>'+esc(n)+'</option>').join("");
   sel.onchange=()=>{if(sel.value)loadNamed(sel.value)};
@@ -1977,9 +2002,9 @@ async function runFlow(){
 
 // ---- free-form flow persistence (localStorage) ----
 function defaultFlow(){return{nodes:[
-  {id:"n1",type:"query",x:30,y:120,params:{}},
-  {id:"n2",type:"retrieve",x:260,y:120,params:{top_k:6,graph_mix:0,entity_mix:0,mmr_lambda:0}},
-  {id:"n3",type:"answer",x:490,y:120,params:{}}],
+  {id:"n1",type:"query",x:60,y:210,params:{}},
+  {id:"n2",type:"retrieve",x:330,y:200,params:{top_k:6,graph_mix:0,entity_mix:0,mmr_lambda:0}},
+  {id:"n3",type:"answer",x:610,y:210,params:{}}],
   edges:[{from:"n1",to:"n2"},{from:"n2",to:"n3"}]}}
 function freeSnapshot(){return{nodes:F.nodes.map(n=>({id:n.id,type:n.type,x:n.x,y:n.y,params:n.params})),edges:F.edges}}
 function saveWork(){if(F.mode==="free"){F.free=freeSnapshot();try{localStorage.setItem(WORK,JSON.stringify(F.free))}catch(e){}}}
@@ -2044,6 +2069,11 @@ async function runBuildEntities(){
 
 resize();loadSettings();updateEmpty();loadModels();
 loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
+// Deep links: #pipeline / #free open the editor, #config opens settings.
+function applyHash(){const h=location.hash.slice(1);
+  if(h==="pipeline"||h==="free"){openFlow();setMode(h==="free"?"free":"pipeline")}
+  else if(h==="config")openConfig();}
+window.addEventListener("hashchange",applyHash);applyHash();
 </script>
 </body>
 </html>
