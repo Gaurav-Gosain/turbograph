@@ -7,8 +7,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG VERSION=docker
 # CGO is off by default on alpine; build a static binary with the embedded UI.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /turbograph ./cmd/turbograph
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /turbograph ./cmd/turbograph
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /turbograph /turbograph

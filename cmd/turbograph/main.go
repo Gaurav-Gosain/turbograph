@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +29,20 @@ import (
 // and {out} placeholders, so simple splitting is sufficient.
 func splitCmd(s string) []string { return strings.Fields(s) }
 
+// version is set at build time via -ldflags "-X main.version=...". It falls back
+// to the module's build info when installed with `go install`.
+var version = "dev"
+
+func resolvedVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -34,6 +50,9 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Printf("turbograph %s (%s %s/%s)\n", resolvedVersion(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		return
 	case "ingest":
 		err = cmdIngest(os.Args[2:])
 	case "query":
@@ -72,6 +91,7 @@ usage:
   turbograph eval   --store <store> --suite <suite.jsonl> [flags]
   turbograph mcp    --store <store> [--gen-model M]
   turbograph quant  bench [flags]                             # benchmark the codec
+  turbograph version
 
 run a subcommand with -h for its flags.
 `)
@@ -103,6 +123,7 @@ func cmdServe(args []string) error {
 		*apiKey = os.Getenv("TURBOGRAPH_API_KEY")
 	}
 
+	server.Version = resolvedVersion()
 	client := ollama.New()
 	client.SetEmbedModel(*embedModel)
 	client.EmbedDim = *embedDim

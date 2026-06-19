@@ -1,10 +1,12 @@
 # turbograph developer tasks. Everything here uses only the Go toolchain.
 BIN := bin/turbograph
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: build install test test-race test-short cover fuzz vet fmt lint bench clean docker run
 
 build: ## build the single binary (embedded UI)
-	go build -trimpath -ldflags "-s -w" -o $(BIN) ./cmd/turbograph
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/turbograph
 
 install: ## go install the binary
 	go install ./cmd/turbograph

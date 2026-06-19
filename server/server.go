@@ -21,6 +21,10 @@ import (
 // DefaultBucket is used when a request does not name one.
 const DefaultBucket = "default"
 
+// Version is reported by the health endpoint. The CLI sets it from its build-time
+// version so an operator can confirm what is deployed with a single probe.
+var Version = "dev"
+
 // Server serves a set of buckets managed by a rag.Manager.
 type Server struct {
 	mgr      *rag.Manager
@@ -110,7 +114,7 @@ func (s *Server) store(r *http.Request) (*rag.Store, error) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": Version})
 }
 
 // handleReady is a readiness probe: the process is up (liveness) and its

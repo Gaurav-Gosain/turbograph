@@ -61,6 +61,16 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestResolvedVersion(t *testing.T) {
+	// An explicit build-time version is reported verbatim.
+	old := version
+	defer func() { version = old }()
+	version = "v1.2.3"
+	if got := resolvedVersion(); got != "v1.2.3" {
+		t.Errorf("resolvedVersion() = %q, want v1.2.3", got)
+	}
+}
+
 func TestBuildPrompt(t *testing.T) {
 	res := []rag.Retrieved{
 		{Chunk: rag.Chunk{ID: "d#0", Text: "alpha"}},
