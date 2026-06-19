@@ -231,7 +231,9 @@
     color:var(--muted);font-size:9px;display:flex;align-items:center;justify-content:center}
   .cfg-step.on .n{background:var(--accent);color:var(--bg);border-color:var(--accent)}
   .cfg-step.off{opacity:.45}
-  .cfg-step .lbl{color:var(--text)} .cfg-step .det{color:var(--faint);font-size:10.5px;margin-left:auto}
+  .cfg-step .lbl{color:var(--text)} .cfg-step .det{color:var(--faint);font-size:10.5px;margin-left:auto;min-width:96px;text-align:right}
+  .cfg-step .ps-tog{width:auto;cursor:pointer;accent-color:var(--accent)}
+  .cfg-step .ps-rng{width:96px;flex:0 0 auto}
   #composer{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
   #composer textarea{flex:1;resize:none;height:38px;line-height:1.4;max-height:140px}
   #composer button{align-self:stretch;padding:0 16px}
@@ -1094,23 +1096,47 @@ async function renderStatus(){
     el.innerHTML=rows.map(r=>'<div class="k">'+r[0]+'</div><div class="v">'+r[1]+'</div>').join("");
   }catch(e){el.textContent="status unavailable: "+e.message;}
 }
+// PIPE defines the retrieval pipeline as configurable stages bound to the same
+// settings the retrieval popover uses, so the pipeline view both explains and
+// composes the query path. "range" stages are on when their value is > 0; the
+// default value is applied when you toggle one on.
+const PIPE=[
+  {lbl:"Embed the question",det:"query vector",kind:"always"},
+  {lbl:"Dense vector search",set:"pTopK",kind:"num",min:1,max:20,step:1,fmt:v=>"top "+v},
+  {lbl:"Lexical BM25 + fusion",det:"keyword and exact-term recall",kind:"always"},
+  {lbl:"Graph boost",set:"pMix",kind:"range",min:0,max:1,step:.05,def:.2,fmt:v=>"+"+v.toFixed(2)+" PageRank"},
+  {lbl:"Entity knowledge graph",set:"pEnt",kind:"range",min:0,max:1,step:.05,def:.5,fmt:v=>"mix "+v.toFixed(2)},
+  {lbl:"Diversify (MMR)",set:"pMMR",kind:"range",min:0,max:1,step:.05,def:.5,fmt:v=>"λ "+v.toFixed(2)},
+  {lbl:"LLM rerank",set:"pRerank",kind:"check"},
+  {lbl:"Grounding floor",set:"pMinSim",kind:"range",min:0,max:1,step:.05,def:.3,fmt:v=>"abstain < "+v.toFixed(2)},
+  {lbl:"Answer with citations",det:"the model grounds on the chunks",kind:"always"},
+];
+function pipeOn(s){
+  if(s.kind==="always"||s.kind==="num")return true;
+  if(s.kind==="check")return $("#"+s.set).checked;
+  return (+$("#"+s.set).value)>0;
+}
 function renderPipeline(){
-  const v=id=>+$(id).value, on=id=>$(id).checked;
-  const topk=v("#pTopK")||6, mix=v("#pMix"), ent=v("#pEnt"), mmr=v("#pMMR"), floor=v("#pMinSim"), rer=on("#pRerank");
-  const steps=[
-    [true,"Embed the question","query vector"],
-    [true,"Dense vector search","HNSW, top "+topk],
-    [true,"Lexical BM25 + fusion","keyword and exact-term recall"],
-    [mix>0,"Graph boost",mix>0?"+"+mix.toFixed(2)+" PageRank":"off"],
-    [ent>0,"Entity knowledge graph",ent>0?"mix "+ent.toFixed(2):"off (build it first)"],
-    [mmr>0,"Diversify (MMR)",mmr>0?"λ "+mmr.toFixed(2):"off"],
-    [rer,"LLM rerank",rer?"on":"off"],
-    [floor>0,"Grounding floor",floor>0?"abstain < "+floor.toFixed(2):"off"],
-    [true,"Answer with citations","the model grounds on the chunks"],
-  ];
-  $("#cfgPipeline").innerHTML=steps.map((s,i)=>
-    '<div class="cfg-step '+(s[0]?"on":"off")+'"><span class="n">'+(i+1)+'</span><span class="lbl">'+s[1]+'</span><span class="det">'+s[2]+'</span></div>'
-  ).join("");
+  const wrap=$("#cfgPipeline");wrap.innerHTML="";
+  PIPE.forEach((s,i)=>{
+    const on=pipeOn(s);
+    const row=document.createElement("div");row.className="cfg-step "+(on?"on":"off");
+    let ctrl="";
+    if(s.kind==="num"){const val=+$("#"+s.set).value||6;ctrl='<input class="ps-rng" type="range" min="'+s.min+'" max="'+s.max+'" step="'+s.step+'" value="'+val+'"><span class="det">'+s.fmt(val)+'</span>';}
+    else if(s.kind==="range"){const val=+$("#"+s.set).value;ctrl='<input class="ps-tog" type="checkbox" '+(val>0?"checked":"")+'>'+(val>0?'<input class="ps-rng" type="range" min="'+s.min+'" max="'+s.max+'" step="'+s.step+'" value="'+val+'"><span class="det">'+s.fmt(val)+'</span>':'<span class="det">off</span>');}
+    else if(s.kind==="check"){ctrl='<input class="ps-tog" type="checkbox" '+($("#"+s.set).checked?"checked":"")+'><span class="det">'+($("#"+s.set).checked?"on":"off")+'</span>';}
+    else ctrl='<span class="det">'+(s.det||"")+'</span>';
+    row.innerHTML='<span class="n">'+(i+1)+'</span><span class="lbl">'+s.lbl+'</span>'+ctrl;
+    // wire controls back to the underlying settings
+    const tog=row.querySelector(".ps-tog"), rng=row.querySelector(".ps-rng");
+    if(tog)tog.onchange=()=>{
+      if(s.kind==="check"){$("#"+s.set).checked=tog.checked;}
+      else{$("#"+s.set).value=tog.checked?(s.def||.3):0;}
+      syncReadouts();saveSettings();renderPipeline();
+    };
+    if(rng)rng.oninput=()=>{$("#"+s.set).value=rng.value;syncReadouts();saveSettings();renderPipeline();};
+    wrap.appendChild(row);
+  });
 }
 function closeConfig(){cfgEl.classList.remove("open")}
 $("#cfgClose").onclick=closeConfig;
