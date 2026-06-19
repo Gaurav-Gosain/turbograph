@@ -135,8 +135,19 @@
     font-size:11px;color:var(--muted);margin-bottom:8px}
   #srcPreview .sp-head b{color:var(--accent);font-weight:600}
   #srcPreview .sp-text{font-size:12px;line-height:1.6;color:var(--text);white-space:pre-wrap}
+  #srcPreview .sp-text mark.sp-main{background:rgba(90,209,200,.42);color:#fff;border-radius:2px;
+    box-shadow:0 0 0 1px rgba(90,209,200,.6)}
+  #srcPreview .sp-text mark.sp-also{background:rgba(130,140,160,.16);color:var(--text);border-radius:2px}
+  #srcPreview .sp-meta{display:flex;flex-wrap:wrap;gap:3px 6px;margin-bottom:9px;padding-bottom:9px;
+    border-bottom:1px solid var(--border)}
+  #srcPreview .sp-meta .mk{color:var(--bg);background:var(--faint);border-radius:4px 0 0 4px;padding:1px 5px;font-size:10px}
+  #srcPreview .sp-meta .mv{color:var(--text);background:var(--panel);border-radius:0 4px 4px 0;padding:1px 6px;font-size:10px;margin-right:5px}
   #srcPreview .x{cursor:pointer;color:var(--faint)}
   #srcPreview .x:hover{color:var(--accent)}
+  .doc{position:relative}
+  .doc .doc-del{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;
+    color:var(--faint);font-size:14px;padding:0 4px;border-radius:4px;cursor:pointer;background:var(--panel)}
+  .doc:hover .doc-del{display:block} .doc .doc-del:hover{color:var(--danger);background:var(--panel2)}
 
   #panel-chat{position:relative}
   .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1275,16 +1286,50 @@ function renderSources(msgEl,sources){
   });
   msgEl.appendChild(wrap);
 }
-// openSource focuses the cited chunk's node in the graph (when present) and shows
-// its full text in a preview, so a citation is one click from its evidence.
-function openSource(msgEl,i){
+// metaHTML renders a document's metadata (a JSON object or its string form) as a
+// compact key/value strip, or "" when there is none.
+function metaHTML(meta){
+  if(!meta)return"";
+  let obj=meta;if(typeof meta==="string"){try{obj=JSON.parse(meta)}catch(e){return""}}
+  const keys=Object.keys(obj||{});if(!keys.length)return"";
+  return '<div class="sp-meta">'+keys.map(k=>{
+    const v=obj[k];return '<span class="mk">'+esc(k)+'</span><span class="mv">'+
+      esc(typeof v==="object"?JSON.stringify(v):""+v)+'</span>'}).join("")+'</div>';
+}
+// openSource focuses the cited chunk in the graph and previews the WHOLE source
+// document with the retrieved chunks highlighted (the clicked one emphasized),
+// plus the document's metadata. It falls back to the chunk text if the full
+// document is unavailable.
+async function openSource(msgEl,i){
   const s=msgEl._sources&&msgEl._sources[i];if(!s)return;
   const idx=G.idIndex.get(s.id);
-  if(idx!=null){selectNode(idx);G.highlight=new Set([idx]);fit(G.highlight)}
+  // Highlight the chunk's node but stay on the chat tab, where the preview lives.
+  if(idx!=null){G.selected=idx;G.highlight=new Set([idx]);dirty=true;fit(G.highlight)}
   $("#spNum").textContent="["+(i+1)+"]";
   $("#spDoc").textContent=s.doc_id||s.id;
-  $("#spText").textContent=s.text||"(no text)";
+  const body=$("#spText");const docId=s.doc_id||s.id;
   $("#srcPreview").classList.add("open");
+  let view=null;try{view=await api(bk("/api/document?doc="+encodeURIComponent(docId)))}catch(e){}
+  if(view&&view.text){
+    const runes=[...view.text];
+    // Mark each rune: 2 = the clicked chunk, 1 = another retrieved chunk of this doc.
+    const mark=new Array(runes.length).fill(0);
+    (msgEl._sources||[]).forEach((o,j)=>{
+      if((o.doc_id||o.id)!==docId||o.start==null||o.start<0||o.end<=o.start)return;
+      const v=j===i?2:1;
+      for(let k=o.start;k<o.end&&k<mark.length;k++)if(mark[k]<v)mark[k]=v;
+    });
+    let html="",cur=0,run="";
+    const cls=m=>m===2?"sp-main":m===1?"sp-also":"";
+    const flush=()=>{if(!run)return;const e=esc(run);const c=cls(cur);
+      html+=c?'<mark class="'+c+'">'+e+'</mark>':e;run=""};
+    for(let k=0;k<runes.length;k++){if(mark[k]!==cur){flush();cur=mark[k]}run+=runes[k]}
+    flush();
+    body.innerHTML=metaHTML(view.meta)+html;
+    const m=body.querySelector(".sp-main");if(m)m.scrollIntoView({block:"center"});
+  }else{
+    body.innerHTML=metaHTML(s.meta)+esc(s.text||"(no text)");
+  }
 }
 $("#spClose").onclick=()=>$("#srcPreview").classList.remove("open");
 // linkCitations turns bracketed numbers in the answer into clickable chips that
@@ -1671,11 +1716,24 @@ function renderDocList(){
   if(!items.length){$("#doclist").innerHTML='<div class="empty" style="padding:14px 4px">no documents in this bucket yet</div>';return}
   $("#doclist").innerHTML=items.map(([n,d])=>
     '<div class="doc'+(d.fail?" fail":"")+'" title="'+esc(n)+' — click for version history"><span class="n">'+esc(n)+'</span>'+
-    '<span class="c">'+(d.fail?esc(d.fail):((d.chunks?d.chunks+" ch · ":"")+(d.c||0)+" b"))+'</span></div>').join("");
+    '<span class="c">'+(d.fail?esc(d.fail):((d.chunks?d.chunks+" ch · ":"")+(d.c||0)+" b"))+'</span>'+
+    '<span class="doc-del" title="delete this document">&times;</span></div>').join("");
   // Bind by index so a document name containing quotes can never break a handler.
   $("#doclist").querySelectorAll(".doc").forEach((el,i)=>{
-    const [name,d]=items[i];if(d.fail)return;el.onclick=()=>openVersions(name);
+    const [name,d]=items[i];
+    const del=el.querySelector(".doc-del");
+    if(del)del.onclick=e=>{e.stopPropagation();deleteDocument(name)};
+    if(d.fail)return;el.onclick=()=>openVersions(name);
   });
+}
+async function deleteDocument(name){
+  if(!confirm('Delete "'+name+'" and all of its chunks from this bucket?'))return;
+  try{
+    await api(bk("/api/document?doc="+encodeURIComponent(name)),{method:"DELETE"});
+    toast("deleted "+name);
+    G.highlight=new Set();G.pos=[];
+    await loadDocuments();loadStats();await loadGraph();
+  }catch(e){toast(e.message,true)}
 }
 $("#saveBtn").onclick=async()=>{
   const note=$("#docNote");
