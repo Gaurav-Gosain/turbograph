@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
@@ -97,8 +98,17 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
+	// Batch several chunks per model call (default 4) to cut round trips; ?batch=1
+	// restores one call per chunk for maximum small-model fidelity.
+	batch := 4
+	if b := r.URL.Query().Get("batch"); b != "" {
+		if n, err := strconv.Atoi(b); err == nil && n >= 1 {
+			batch = n
+		}
+	}
 	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
 	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
+		BatchSize: batch,
 		OnProgress: func(p rag.EntityProgress) {
 			send("progress", map[string]int{"done": p.Done, "total": p.Total, "entities": p.Entities, "relations": p.Relations})
 		},

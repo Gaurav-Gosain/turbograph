@@ -20,7 +20,12 @@ type EntityProgress struct {
 
 // EntityBuildOptions configures BuildEntityGraph.
 type EntityBuildOptions struct {
-	Workers    int
+	Workers int
+	// BatchSize groups this many chunks into a single model call when the extractor
+	// implements entity.BatchExtractor, cutting the number of LLM round trips by
+	// roughly this factor. 0 or 1 extracts one chunk per call. Large batches are
+	// faster but can dilute a small model's accuracy; 4 to 8 is a good range.
+	BatchSize  int
 	OnProgress func(EntityProgress)
 }
 
@@ -56,36 +61,57 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	}
 	s.mu.RUnlock()
 
+	// Group chunks into batches; a batch extractor handles a whole batch in one
+	// model call, otherwise each chunk is extracted individually.
+	batchSize := opt.BatchSize
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	batcher, _ := ex.(entity.BatchExtractor)
+
 	type res struct {
 		id string
 		ex entity.Extraction
 	}
-	jobs := make(chan chunkRef)
+	jobs := make(chan []chunkRef)
 	out := make(chan res, opt.Workers)
 	var wg sync.WaitGroup
 	wg.Add(opt.Workers)
 	for w := 0; w < opt.Workers; w++ {
 		go func() {
 			defer wg.Done()
-			for r := range jobs {
-				ext, err := ex.Extract(ctx, r.text)
-				if err != nil {
-					// A failed extraction drops that chunk's entities but does not
-					// abort the build.
-					out <- res{r.id, entity.Extraction{}}
-					continue
+			for b := range jobs {
+				exs := make([]entity.Extraction, len(b))
+				if batcher != nil && len(b) > 1 {
+					texts := make([]string, len(b))
+					for i, r := range b {
+						texts[i] = r.text
+					}
+					// A failed batch drops its chunks' entities but does not abort.
+					if got, err := batcher.ExtractBatch(ctx, texts); err == nil && len(got) == len(b) {
+						exs = got
+					}
+				} else {
+					for i, r := range b {
+						if e, err := ex.Extract(ctx, r.text); err == nil {
+							exs[i] = e
+						}
+					}
 				}
-				out <- res{r.id, ext}
+				for i, r := range b {
+					out <- res{r.id, exs[i]}
+				}
 			}
 		}()
 	}
 	go func() {
 		defer close(jobs)
-		for _, r := range refs {
+		for i := 0; i < len(refs); i += batchSize {
+			end := min(i+batchSize, len(refs))
 			select {
 			case <-ctx.Done():
 				return
-			case jobs <- r:
+			case jobs <- refs[i:end]:
 			}
 		}
 	}()

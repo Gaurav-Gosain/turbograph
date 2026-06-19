@@ -118,3 +118,51 @@ func TestExtractorInterface(t *testing.T) {
 		t.Errorf("expected 3 entities (Alice, Bob, Paris), got %+v", ex.Entities)
 	}
 }
+
+// recordGen returns a fixed batch-tagged output and records the prompt.
+type recordGen struct {
+	out    string
+	prompt string
+}
+
+func (g *recordGen) Generate(_ context.Context, _ string, prompt string) (string, error) {
+	g.prompt = prompt
+	return g.out, nil
+}
+
+func TestParseBatchAttributesByPassage(t *testing.T) {
+	out := "entity|1|Ada|person|mathematician\n" +
+		"relation|1|Ada|Engine|wrote algorithm for\n" +
+		"entity|2|Bell Labs|org|research lab\n" +
+		"entity|5|OutOfRange|x|ignored\n" + // out-of-range passage -> dropped
+		"garbage line without pipes\n"
+	exs := ParseBatch(out, 2)
+	if len(exs) != 2 {
+		t.Fatalf("want 2 extractions, got %d", len(exs))
+	}
+	if len(exs[0].Entities) != 1 || exs[0].Entities[0].Name != "Ada" {
+		t.Errorf("passage 1 entities wrong: %+v", exs[0].Entities)
+	}
+	if len(exs[0].Relations) != 1 || exs[0].Relations[0].Source != "Ada" || exs[0].Relations[0].Target != "Engine" {
+		t.Errorf("passage 1 relations wrong: %+v", exs[0].Relations)
+	}
+	if len(exs[1].Entities) != 1 || exs[1].Entities[0].Name != "Bell Labs" {
+		t.Errorf("passage 2 entities wrong: %+v", exs[1].Entities)
+	}
+}
+
+func TestExtractBatchOneCall(t *testing.T) {
+	g := &recordGen{out: "entity|1|A|t|d\nentity|2|B|t|d\nentity|3|C|t|d\n"}
+	e := NewLLMExtractor(g)
+	exs, err := e.ExtractBatch(context.Background(), []string{"x", "y", "z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three passages came back from one Generate call, each attributed correctly.
+	if len(exs) != 3 || exs[0].Entities[0].Name != "A" || exs[2].Entities[0].Name != "C" {
+		t.Fatalf("batch extraction misattributed: %+v", exs)
+	}
+	if !strings.Contains(g.prompt, "[1]") || !strings.Contains(g.prompt, "[3]") {
+		t.Errorf("batch prompt should number passages, got: %s", g.prompt)
+	}
+}

@@ -45,6 +45,134 @@ func (e *LLMExtractor) Extract(ctx context.Context, text string) (Extraction, er
 	return Parse(out), nil
 }
 
+// BatchExtractor extracts from several passages in one model call, returning one
+// Extraction per input in order. Batching amortizes the per-call overhead and
+// dramatically cuts the number of LLM round trips over a large corpus.
+type BatchExtractor interface {
+	ExtractBatch(ctx context.Context, texts []string) ([]Extraction, error)
+}
+
+const extractBatchSystem = "You extract a knowledge graph from several numbered passages. " +
+	"For each passage, identify the salient entities (people, organizations, places, products, concepts) " +
+	"and the relationships between them. " +
+	"Output one item per line and nothing else, each tagged with its passage number, in exactly these formats:\n" +
+	"entity|<passage number>|name|type|one short description\n" +
+	"relation|<passage number>|source entity|target entity|how they relate\n" +
+	"Use the same entity names in relations as in the entity lines. Do not add commentary."
+
+const extractBatchExample = "Example output for two passages:\n" +
+	"entity|1|Ada Lovelace|person|nineteenth century mathematician\n" +
+	"relation|1|Ada Lovelace|Analytical Engine|wrote the first algorithm for it\n" +
+	"entity|2|Bell Labs|organization|research laboratory\n"
+
+// ExtractBatch extracts from texts in a single model call, one Extraction per
+// input. A single-element batch falls back to Extract, and any passage the model
+// omits comes back empty rather than failing the whole batch.
+func (e *LLMExtractor) ExtractBatch(ctx context.Context, texts []string) ([]Extraction, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if len(texts) == 1 {
+		ex, err := e.Extract(ctx, texts[0])
+		return []Extraction{ex}, err
+	}
+	var sb strings.Builder
+	sb.WriteString(extractBatchExample)
+	sb.WriteString("\nPassages:\n")
+	for i, t := range texts {
+		sb.WriteString("[")
+		sb.WriteString(itoa(i + 1))
+		sb.WriteString("] ")
+		sb.WriteString(t)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nOutput:")
+	out, err := e.Gen.Generate(ctx, extractBatchSystem, sb.String())
+	if err != nil {
+		return nil, err
+	}
+	return ParseBatch(out, len(texts)), nil
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
+// ParseBatch turns tagged line-delimited output into n Extractions, one per
+// passage. Lines whose passage tag is missing or out of range are ignored, so
+// stray output never corrupts a neighbour's extraction.
+func ParseBatch(out string, n int) []Extraction {
+	res := make([]Extraction, n)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.Trim(line, "`")
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		if len(parts) < 3 {
+			continue
+		}
+		idx := atoi(parts[1])
+		if idx < 1 || idx > n {
+			continue
+		}
+		p := &res[idx-1]
+		switch strings.ToLower(parts[0]) {
+		case "entity":
+			if parts[2] == "" {
+				continue
+			}
+			typ, desc := "", ""
+			if len(parts) >= 4 {
+				typ = parts[3]
+			}
+			if len(parts) >= 5 {
+				desc = strings.Join(parts[4:], " ")
+			}
+			p.Entities = append(p.Entities, ExtractedEntity{Name: parts[2], Type: typ, Description: desc})
+		case "relation", "relationship":
+			if len(parts) >= 4 && parts[2] != "" && parts[3] != "" {
+				desc := ""
+				if len(parts) >= 5 {
+					desc = strings.Join(parts[4:], " ")
+				}
+				p.Relations = append(p.Relations, ExtractedRelation{Source: parts[2], Target: parts[3], Description: desc})
+			}
+		}
+	}
+	return res
+}
+
+// atoi parses a small non-negative integer, returning -1 on any non-digit input.
+func atoi(s string) int {
+	if s == "" {
+		return -1
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return -1
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
 // Parse turns line-delimited model output into an Extraction. It ignores lines
 // that do not match the expected shape, so stray prose or code fences do not
 // break it.

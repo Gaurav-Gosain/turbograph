@@ -375,6 +375,7 @@ func cmdIngest(args []string) error {
 	ocrCmd := fs.String("ocr-cmd", "", "OCR command for scanned pdfs and images, e.g. a PaddleOCR PP-OCRv6 wrapper")
 	entities := fs.Bool("entities", false, "after indexing, extract an entity-relationship knowledge graph (GraphRAG style)")
 	entModel := fs.String("gen-model", "", "model used to extract entities when --entities is set")
+	entBatch := fs.Int("entity-batch", 4, "chunks per model call during entity extraction (1 = one call per chunk; higher is faster but can dilute a small model)")
 	fs.Parse(args)
 
 	if *src == "" {
@@ -470,6 +471,7 @@ func cmdIngest(args []string) error {
 		gen := buildBackend("ollama", *ollamaURL, "")
 		ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: *entModel})
 		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
+			BatchSize: *entBatch,
 			OnProgress: func(p rag.EntityProgress) {
 				fmt.Fprintf(os.Stderr, "\rextracting %d/%d  entities %d  relations %d", p.Done, p.Total, p.Entities, p.Relations)
 			},
