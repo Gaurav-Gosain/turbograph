@@ -55,7 +55,7 @@ func (s *Server) handleEntityGraph(w http.ResponseWriter, r *http.Request) {
 
 // genAdapter binds a model to the Ollama client so it satisfies entity.Generator.
 type genAdapter struct {
-	c     *ollama.Client
+	c     Backend
 	model string
 }
 
@@ -68,7 +68,7 @@ func (g genAdapter) Generate(ctx context.Context, system, prompt string) (string
 // indexing pass; it is on demand because it is much more expensive than the
 // similarity graph.
 func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
-	if s.oll == nil {
+	if s.gen == nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("no language model configured"))
 		return
 	}
@@ -97,7 +97,7 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
-	ex := entity.NewLLMExtractor(genAdapter{c: s.oll, model: model})
+	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
 	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
 		OnProgress: func(p rag.EntityProgress) {
 			send("progress", map[string]int{"done": p.Done, "total": p.Total, "entities": p.Entities, "relations": p.Relations})
@@ -113,16 +113,16 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	pdf := s.extract != nil && s.extract.Has("pdf")
-	if s.oll == nil {
+	if s.gen == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"models": []string{}, "default": "", "pdf": pdf})
 		return
 	}
-	models, err := s.oll.ListModels(r.Context())
+	models, err := s.gen.ListModels(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	embed := s.oll.EmbedModel
+	embed := s.embedModel
 	embedReady := false
 	for _, m := range models {
 		if m == embed || strings.HasPrefix(m, embed+":") {
@@ -142,8 +142,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // handlePull streams the download of a model over server-sent events. It emits
 // "progress" events with a status line and byte counts, then "done" or "error".
 func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
-	if s.oll == nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("no ollama server configured"))
+	puller, ok := s.gen.(Puller)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("the configured backend does not support pulling models"))
 		return
 	}
 	model := r.URL.Query().Get("model")
@@ -163,7 +164,7 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
-	err := s.oll.Pull(r.Context(), model, func(p ollama.PullProgress) error {
+	err := puller.Pull(r.Context(), model, func(p ollama.PullProgress) error {
 		send("progress", map[string]any{"status": p.Status, "completed": p.Completed, "total": p.Total})
 		return nil
 	})
@@ -321,13 +322,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	send("sources", map[string]any{"sources": toQueryResults(res)})
 
-	if s.oll == nil || model == "" {
+	if s.gen == nil || model == "" {
 		send("error", map[string]string{"error": "no language model configured"})
 		return
 	}
 
 	prompt := buildChatPrompt(req.Query, res)
-	streamErr := s.oll.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
+	streamErr := s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
 		send("token", map[string]string{"text": tok})
 		return nil
 	})
@@ -369,8 +370,8 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 	if rag.ShouldAbstain(res, req.MinSim) {
 		return nil, true, nil
 	}
-	if req.Rerank && model != "" && s.oll != nil {
-		res = rag.Rerank(ctx, genAdapter{c: s.oll, model: model}, retrievalQuery, res, req.TopK)
+	if req.Rerank && model != "" && s.gen != nil {
+		res = rag.Rerank(ctx, genAdapter{c: s.gen, model: model}, retrievalQuery, res, req.TopK)
 	} else if len(res) > req.TopK {
 		res = res[:req.TopK]
 	}
@@ -410,7 +411,7 @@ func buildChatPrompt(query string, res []rag.Retrieved) string {
 // looks dependent (short, or contains a pronoun or reference), and it falls back
 // to the original on any weak or malformed rewrite, so it can only help.
 func (s *Server) rewriteQuery(ctx context.Context, history []chatTurn, query string, model string) string {
-	if s.oll == nil || model == "" || len(history) == 0 || !looksDependent(query) {
+	if s.gen == nil || model == "" || len(history) == 0 || !looksDependent(query) {
 		return query
 	}
 	var sb strings.Builder
@@ -419,7 +420,7 @@ func (s *Server) rewriteQuery(ctx context.Context, history []chatTurn, query str
 		fmt.Fprintf(&sb, "%s: %s\n", t.Role, t.Content)
 	}
 	fmt.Fprintf(&sb, "user: %s\n\nStandalone query:", query)
-	out, err := s.oll.Generate(ctx, model, rewriteSystem, sb.String())
+	out, err := s.gen.Generate(ctx, model, rewriteSystem, sb.String())
 	if err != nil {
 		return query
 	}

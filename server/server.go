@@ -22,12 +22,29 @@ import (
 // DefaultBucket is used when a request does not name one.
 const DefaultBucket = "default"
 
+// Backend is the generation/model surface the server needs. Both ollama.Client
+// and oai.Client (any OpenAI-compatible endpoint) satisfy it, so the server is
+// not tied to a single provider.
+type Backend interface {
+	Generate(ctx context.Context, model, system, prompt string) (string, error)
+	GenerateStream(ctx context.Context, model, system, prompt string, onToken func(string) error) error
+	ListModels(ctx context.Context) ([]string, error)
+	Ping(ctx context.Context) error
+}
+
+// Puller is the optional model-download surface; only the Ollama backend provides
+// it, so pull-related UI is offered only when the backend implements this.
+type Puller interface {
+	Pull(ctx context.Context, model string, onProgress func(ollama.PullProgress) error) error
+}
+
 // Server serves a set of buckets managed by a rag.Manager.
 type Server struct {
-	mgr      *rag.Manager
-	oll      *ollama.Client
-	genModel string
-	extract  *extract.Registry
+	mgr        *rag.Manager
+	gen        Backend
+	genModel   string
+	embedModel string
+	extract    *extract.Registry
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -43,9 +60,10 @@ func NewManager(mgr *rag.Manager) *Server { return &Server{mgr: mgr} }
 
 // SetGenerator attaches an Ollama client and default generation model, enabling
 // the chat and model-listing endpoints.
-func (s *Server) SetGenerator(c *ollama.Client, defaultModel string) {
-	s.oll = c
+func (s *Server) SetGenerator(c Backend, defaultModel, embedModel string) {
+	s.gen = c
 	s.genModel = defaultModel
+	s.embedModel = embedModel
 }
 
 // SetExtractor attaches a document extractor registry, enabling binary file
@@ -130,10 +148,10 @@ func (s *Server) store(r *http.Request) (*rag.Store, error) {
 // dependencies are reachable. When a generator is configured it pings Ollama, so
 // an orchestrator can hold traffic until the model backend is actually available.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	if s.oll != nil {
+	if s.gen != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
-		if err := s.oll.Ping(ctx); err != nil {
+		if err := s.gen.Ping(ctx); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not ready", "ollama": err.Error()})
 			return
 		}

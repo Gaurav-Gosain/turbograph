@@ -103,7 +103,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = s.genModel
 	}
-	if s.oll == nil || model == "" {
+	if s.gen == nil || model == "" {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("no language model configured"))
 		return
 	}
@@ -142,7 +142,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	prompt := buildChatPrompt(req.Query, res)
 	if oreq.Stream {
 		s.streamCompletion(w, id, model, created, func(emit func(string)) error {
-			return s.oll.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
+			return s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
 				emit(tok)
 				return nil
 			})
@@ -150,7 +150,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := s.oll.Generate(r.Context(), model, chatSystemPrompt, prompt)
+	answer, err := s.gen.Generate(r.Context(), model, chatSystemPrompt, prompt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

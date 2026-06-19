@@ -19,11 +19,60 @@ import (
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/extract"
+	"github.com/Gaurav-Gosain/turbograph/oai"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 	"github.com/Gaurav-Gosain/turbograph/server"
 	"github.com/Gaurav-Gosain/turbograph/storage"
 )
+
+// orEnv returns v, or the named environment variable when v is empty.
+func orEnv(v, env string) string {
+	if v != "" {
+		return v
+	}
+	return os.Getenv(env)
+}
+
+// buildEmbedder builds the document/query embedder for the chosen backend.
+// "openai" targets any OpenAI-compatible /v1/embeddings endpoint; anything else
+// uses Ollama. Both satisfy rag.Embedder (and the asymmetric QueryEmbedder).
+func buildEmbedder(api, baseURL, key, model, ollamaURL string, dim int) rag.Embedder {
+	if api == "openai" {
+		c := oai.New(baseURL, key, model)
+		c.EmbedDim = dim
+		return c
+	}
+	c := ollama.New()
+	c.SetEmbedModel(model)
+	c.EmbedDim = dim
+	if ollamaURL != "" {
+		c.BaseURL = ollamaURL
+	}
+	return c
+}
+
+// pingBackend checks reachability when the backend supports it (both clients do).
+func pingBackend(ctx context.Context, e any) error {
+	if p, ok := e.(interface {
+		Ping(context.Context) error
+	}); ok {
+		return p.Ping(ctx)
+	}
+	return nil
+}
+
+// buildBackend builds the generation backend for the chosen provider.
+func buildBackend(api, baseURL, key, ollamaURL string) server.Backend {
+	if api == "openai" {
+		return oai.New(baseURL, key, "")
+	}
+	c := ollama.New()
+	if ollamaURL != "" {
+		c.BaseURL = ollamaURL
+	}
+	return c
+}
 
 // splitCmd splits a command string into argv on whitespace. Templates use {in}
 // and {out} placeholders, so simple splitting is sufficient.
@@ -103,8 +152,14 @@ func cmdServe(args []string) error {
 	addr := fs.String("addr", ":8080", "listen address")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
 	embedDim := fs.Int("embed-dim", 0, "truncate embeddings to this Matryoshka dimension for new buckets (0 = full; e.g. 256 or 512 for embeddinggemma)")
-	genModel := fs.String("gen-model", "", "default ollama model for chat (UI can override)")
+	genModel := fs.String("gen-model", "", "default chat model (UI can override)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+	embedAPI := fs.String("embed-api", "ollama", "embedding backend: ollama or openai (any OpenAI-compatible endpoint)")
+	embedURL := fs.String("embed-url", "", "base URL for an openai embedding backend (e.g. https://api.openai.com)")
+	embedKey := fs.String("embed-key", "", "API key for an openai embedding backend (also via $OPENAI_API_KEY)")
+	llmAPI := fs.String("llm-api", "ollama", "generation backend: ollama or openai (any OpenAI-compatible endpoint)")
+	llmURL := fs.String("llm-url", "", "base URL for an openai generation backend")
+	llmKey := fs.String("llm-key", "", "API key for an openai generation backend (also via $OPENAI_API_KEY)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk for new buckets")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy for new buckets: recursive, word, markdown, or sentence")
@@ -125,13 +180,11 @@ func cmdServe(args []string) error {
 	if *apiKey == "" {
 		*apiKey = os.Getenv("TURBOGRAPH_API_KEY")
 	}
+	embedKeyVal := orEnv(*embedKey, "OPENAI_API_KEY")
+	llmKeyVal := orEnv(*llmKey, "OPENAI_API_KEY")
 
-	client := ollama.New()
-	client.SetEmbedModel(*embedModel)
-	client.EmbedDim = *embedDim
-	if *ollamaURL != "" {
-		client.BaseURL = *ollamaURL
-	}
+	embedder := buildEmbedder(*embedAPI, *embedURL, embedKeyVal, *embedModel, *ollamaURL, *embedDim)
+	backend := buildBackend(*llmAPI, *llmURL, llmKeyVal, *ollamaURL)
 
 	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{Strategy: *chunkStrategy}}
 	var mgr *rag.Manager
@@ -149,9 +202,9 @@ func cmdServe(args []string) error {
 		if berr != nil {
 			return berr
 		}
-		mgr, err = rag.NewManagerBlob(blob, client, cfg)
+		mgr, err = rag.NewManagerBlob(blob, embedder, cfg)
 	} else {
-		mgr, err = rag.NewManager(*data, client, cfg)
+		mgr, err = rag.NewManager(*data, embedder, cfg)
 	}
 	if err != nil {
 		return err
@@ -167,7 +220,7 @@ func cmdServe(args []string) error {
 	fmt.Fprintf(os.Stderr, "serving %d bucket(s) from %s\n", len(mgr.List()), source)
 
 	srv := server.NewManager(mgr)
-	srv.SetGenerator(client, *genModel)
+	srv.SetGenerator(backend, *genModel, *embedModel)
 
 	reg := buildRegistry(*pdfCmd, *ocrCmd)
 	srv.SetExtractor(reg)
@@ -230,18 +283,22 @@ func uiURL(a string) string {
 // batchingEmbedder splits large embed requests into bounded batches so a big
 // corpus does not become one oversized request.
 type batchingEmbedder struct {
-	c     *ollama.Client
+	inner rag.Embedder // an ollama.Client or oai.Client
 	batch int
 }
 
 func (b *batchingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	return b.batched(ctx, texts, b.c.Embed)
+	return b.batched(ctx, texts, b.inner.Embed)
 }
 
-// EmbedQuery forwards to the client's query path so a store created or queried
-// through this wrapper keeps the asymmetric query/document embedding.
+// EmbedQuery forwards to the inner query path (when the embedder distinguishes
+// queries) so a store created or queried through this wrapper keeps asymmetric
+// embedding.
 func (b *batchingEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
-	return b.batched(ctx, texts, b.c.EmbedQuery)
+	if qe, ok := b.inner.(rag.QueryEmbedder); ok {
+		return b.batched(ctx, texts, qe.EmbedQuery)
+	}
+	return b.batched(ctx, texts, b.inner.Embed)
 }
 
 func (b *batchingEmbedder) batched(ctx context.Context, texts []string, embed func(context.Context, []string) ([][]float32, error)) ([][]float32, error) {
@@ -261,9 +318,12 @@ func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	src := fs.String("src", "", "source file or directory to ingest")
 	out := fs.String("out", "store.tg", "store path; loaded and extended if it already exists")
-	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
+	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "embedding model")
 	embedDim := fs.Int("embed-dim", 0, "truncate embeddings to this Matryoshka dimension (0 = full; e.g. 256 or 512 for embeddinggemma)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+	embedAPI := fs.String("embed-api", "ollama", "embedding backend: ollama or openai (any OpenAI-compatible endpoint)")
+	embedURL := fs.String("embed-url", "", "base URL for an openai embedding backend")
+	embedKey := fs.String("embed-key", "", "API key for an openai embedding backend (also via $OPENAI_API_KEY)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate (1-8)")
 	residual := fs.Int("residual", 32, "QJL residual projections (0-64)")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk in the graph")
@@ -284,13 +344,8 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("--src is required")
 	}
 
-	client := ollama.New()
-	client.SetEmbedModel(*embedModel)
-	client.EmbedDim = *embedDim
-	if *ollamaURL != "" {
-		client.BaseURL = *ollamaURL
-	}
-	emb := &batchingEmbedder{c: client, batch: *batch}
+	embedder := buildEmbedder(*embedAPI, *embedURL, orEnv(*embedKey, "OPENAI_API_KEY"), *embedModel, *ollamaURL, *embedDim)
+	emb := &batchingEmbedder{inner: embedder, batch: *batch}
 
 	// Cancel on the first interrupt so ingestion stops cleanly after checkpointing.
 	// A second interrupt aborts immediately.
@@ -307,10 +362,10 @@ func cmdIngest(args []string) error {
 	}()
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-	err := client.Ping(pingCtx)
+	err := pingBackend(pingCtx, embedder)
 	pingCancel()
 	if err != nil {
-		return fmt.Errorf("ollama unreachable at %s: %w", client.BaseURL, err)
+		return fmt.Errorf("embedding backend unreachable: %w", err)
 	}
 
 	reg := buildRegistry(*pdfCmd, *ocrCmd)
@@ -371,7 +426,8 @@ func cmdIngest(args []string) error {
 			return fmt.Errorf("--entities requires --gen-model for extraction")
 		}
 		fmt.Fprintf(os.Stderr, "extracting entity graph with %s ...\n", *entModel)
-		ex := entity.NewLLMExtractor(cliGenerator{c: client, model: *entModel})
+		gen := buildBackend("ollama", "", "", *ollamaURL)
+		ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: *entModel})
 		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 			OnProgress: func(p rag.EntityProgress) {
 				fmt.Fprintf(os.Stderr, "\rextracting %d/%d  entities %d  relations %d", p.Done, p.Total, p.Entities, p.Relations)
@@ -391,7 +447,7 @@ func cmdIngest(args []string) error {
 
 // cliGenerator binds a model to the Ollama client for entity extraction.
 type cliGenerator struct {
-	c     *ollama.Client
+	c     server.Backend
 	model string
 }
 

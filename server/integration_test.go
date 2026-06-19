@@ -48,7 +48,7 @@ func newGenServer(t *testing.T) (*httptest.Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	s := New(store)
-	s.SetGenerator(client, "qwen3.5:2b")
+	s.SetGenerator(client, "qwen3.5:2b", "embeddinggemma")
 	return httptest.NewServer(s.Handler()), oll
 }
 

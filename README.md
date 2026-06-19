@@ -301,6 +301,23 @@ turbograph serve --gen-model qwen3.5:2b \
 
 ## Integrations
 
+### Model backends
+
+Embeddings and generation default to a local Ollama, but either can target any
+**OpenAI-compatible** endpoint (OpenAI, OpenRouter, Together, vLLM, LM Studio,
+llama.cpp, ...). The two backends are independent, so you can mix them, for
+example OpenAI embeddings with a local LLM:
+
+```
+turbograph serve \
+  --embed-api openai --embed-url https://api.openai.com --embed-model text-embedding-3-small \
+  --llm-api ollama --gen-model qwen3.5:2b
+# keys also read from $OPENAI_API_KEY; --llm-url/--llm-key for an OpenAI-compatible LLM
+```
+
+`ingest` takes the same `--embed-api/--embed-url/--embed-key` flags. Pulling
+models from the UI is offered only when the backend supports it (Ollama).
+
 ### OpenAI-compatible API
 
 `serve` exposes `POST /v1/chat/completions` (streaming and non-streaming). It
