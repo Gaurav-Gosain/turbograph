@@ -419,13 +419,26 @@
 <script>
 "use strict";
 // API-key support: when the server is started with --api-key, open the UI with
-// ?api_key=KEY once; the key is remembered and attached to every request.
+// ?api_key=KEY once; the key is remembered and attached to same-origin requests.
 (function(){
   try{
     const u=new URL(location.href);
     let k=u.searchParams.get("api_key");
     if(k){localStorage.setItem("tg.apikey",k);}else{k=localStorage.getItem("tg.apikey");}
-    if(k){const f=window.fetch.bind(window);window.fetch=(url,opt)=>{opt=opt||{};opt.headers=Object.assign({},opt.headers,{"X-API-Key":k});return f(url,opt);};}
+    if(!k)return;
+    const f=window.fetch.bind(window);
+    window.fetch=(url,opt)=>{
+      opt=opt||{};
+      // Only attach the key to our own origin so it never leaks to a third party.
+      let same=true;
+      try{same=new URL(url,location.href).origin===location.origin;}catch(e){}
+      if(same){
+        const h=new Headers(opt.headers||{}); // merges plain objects and Headers
+        h.set("X-API-Key",k);
+        opt=Object.assign({},opt,{headers:h});
+      }
+      return f(url,opt);
+    };
   }catch(e){}
 })();
 const PALETTE=["#5ad1c8","#7aa2f7","#e5c07b","#c8a2e8","#e06c91","#9ece6a",

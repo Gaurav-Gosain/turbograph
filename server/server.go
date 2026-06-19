@@ -11,6 +11,7 @@ import (
 	"expvar"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/extract"
@@ -27,7 +28,6 @@ type Server struct {
 	oll      *ollama.Client
 	genModel string
 	extract  *extract.Registry
-	version  string
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -61,20 +61,32 @@ func (s *Server) Handler() http.Handler {
 
 // HandlerWithOptions returns the routes wrapped in the configured middleware.
 func (s *Server) HandlerWithOptions(opt Options) http.Handler {
-	s.version = opt.Version
-	if s.version == "" {
-		s.version = "dev"
-	}
 	return chain(s.routes(opt), opt)
 }
 
 // routes builds the bare route table (no middleware).
 func (s *Server) routes(opt Options) http.Handler {
+	version := opt.Version
+	if version == "" {
+		version = "dev"
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// Health captures the version at build time, so no mutable server state is
+	// shared with concurrent requests.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
+	})
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	if opt.Metrics {
 		mux.Handle("GET /debug/vars", expvar.Handler())
+	}
+	if opt.Pprof {
+		// Registered on our mux (not DefaultServeMux), so it stays behind auth.
+		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	}
 	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("POST /ingest", s.handleIngest)
@@ -112,10 +124,6 @@ func bucketOf(r *http.Request) string {
 // store resolves the request's bucket, creating it on first use.
 func (s *Server) store(r *http.Request) (*rag.Store, error) {
 	return s.mgr.GetOrCreate(bucketOf(r))
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
 }
 
 // handleReady is a readiness probe: the process is up (liveness) and its

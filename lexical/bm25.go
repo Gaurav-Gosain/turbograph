@@ -3,6 +3,7 @@ package lexical
 import (
 	"math"
 	"sort"
+	"sync"
 )
 
 // Result is a scored document, returned ranked best-first by Search and RRF.
@@ -50,6 +51,10 @@ type Index struct {
 	finalized bool
 	idf       map[string]float64 // populated by finalize
 	avgLen    float64
+
+	// scorePool reuses the per-query score accumulator across Search calls, the
+	// dominant allocation on the retrieval hot path. Safe for concurrent Search.
+	scorePool sync.Pool
 }
 
 // New returns an empty index using cfg. Out-of-range parameters are clamped to
@@ -159,16 +164,24 @@ func (ix *Index) Search(query string, k int) []Result {
 	if len(qterms) == 0 {
 		return nil
 	}
+	// A query repeating a term should not double-count its IDF. Dedupe by sorting
+	// the (small) term list and skipping runs, which avoids a per-query map.
+	sort.Strings(qterms)
 
-	// A query repeating a term should not double-count its IDF, so dedupe.
-	seen := make(map[string]struct{}, len(qterms))
-	scores := make(map[uint32]float64)
-	for _, term := range qterms {
-		if _, dup := seen[term]; dup {
+	scores, _ := ix.scorePool.Get().(map[uint32]float64)
+	if scores == nil {
+		scores = make(map[uint32]float64)
+	} else {
+		clear(scores)
+	}
+	defer ix.scorePool.Put(scores)
+
+	prev := ""
+	for i, term := range qterms {
+		if i > 0 && term == prev {
 			continue
 		}
-		seen[term] = struct{}{}
-
+		prev = term
 		plist, ok := ix.postings[term]
 		if !ok {
 			continue
@@ -182,16 +195,79 @@ func (ix *Index) Search(query string, k int) []Result {
 		return nil
 	}
 
-	results := make([]Result, 0, len(scores))
-	for ord, s := range scores {
-		results = append(results, Result{ID: ix.ids[ord], Score: float32(s)})
-	}
-	sortResults(results)
+	return ix.topK(scores, k)
+}
 
-	if k < len(results) {
-		results = results[:k]
+// topK returns the k highest-scoring documents. It keeps a bounded min-heap of
+// size k while scanning the accumulator, so it allocates only k results and never
+// sorts the full (potentially large) match set.
+func (ix *Index) topK(scores map[uint32]float64, k int) []Result {
+	if k >= len(scores) {
+		out := make([]Result, 0, len(scores))
+		for ord, s := range scores {
+			out = append(out, Result{ID: ix.ids[ord], Score: float32(s)})
+		}
+		sortResults(out)
+		return out
 	}
-	return results
+	h := make(minHeap, 0, k)
+	for ord, s := range scores {
+		sc := float32(s)
+		if len(h) < k {
+			h.push(scored{ord, sc})
+		} else if sc > h[0].score {
+			h.replaceMin(scored{ord, sc})
+		}
+	}
+	out := make([]Result, len(h))
+	for i := range h {
+		out[i] = Result{ID: ix.ids[h[i].ord], Score: h[i].score}
+	}
+	sortResults(out)
+	return out
+}
+
+type scored struct {
+	ord   uint32
+	score float32
+}
+
+// minHeap is a binary min-heap of scored docs keyed on score: the smallest of the
+// current best-k sits at the root, so a better candidate can displace it in O(log
+// k). It is a tiny, allocation-free alternative to sorting the whole match set.
+type minHeap []scored
+
+func (h *minHeap) push(s scored) {
+	*h = append(*h, s)
+	hp := *h
+	for i := len(hp) - 1; i > 0; {
+		parent := (i - 1) / 2
+		if hp[parent].score <= hp[i].score {
+			break
+		}
+		hp[parent], hp[i] = hp[i], hp[parent]
+		i = parent
+	}
+}
+
+// replaceMin overwrites the root with s and sifts it down to restore the heap.
+func (h minHeap) replaceMin(s scored) {
+	h[0] = s
+	n, i := len(h), 0
+	for {
+		l, r, small := 2*i+1, 2*i+2, i
+		if l < n && h[l].score < h[small].score {
+			small = l
+		}
+		if r < n && h[r].score < h[small].score {
+			small = r
+		}
+		if small == i {
+			return
+		}
+		h[i], h[small] = h[small], h[i]
+		i = small
+	}
 }
 
 // termScore is the BM25 per-term contribution: the IDF times saturated,

@@ -287,7 +287,9 @@ you can pick a bit budget with eyes open.
   that the Ollama backend is reachable, so an orchestrator can hold traffic until
   the model server is up.
 - **Metrics.** `--metrics` exposes request, in-flight, error, and uptime counters
-  at `/debug/vars` (stdlib expvar, no dependency).
+  at `/debug/vars` (stdlib expvar). `--pprof` exposes the runtime profiler at
+  `/debug/pprof/` (CPU, heap, goroutine, trace). Both sit behind `--api-key` when
+  one is set, and both are off by default.
 - **Hardening.** Panics become 500s instead of crashing the process, request
   bodies are capped (`--max-body`), and `Ctrl-C`/`SIGTERM` triggers a graceful
   drain of in-flight requests. `--cors` enables cross-origin browser access.
@@ -365,7 +367,10 @@ Measured on 16 cores, 768-dimensional embeddings, 4 bits per coordinate.
 The hottest function, the high-dimensional distance, is hand-tuned with multiple
 accumulators and bounds-check elimination (profiled with pprof for a 1.8x build
 speedup). Index scans and graph edge discovery run across all cores. Ingestion
-embeds documents in parallel.
+embeds documents in parallel. The query path was likewise profiled: pooling the
+BM25 scorer's accumulator and replacing its full sort with a bounded top-k cut
+default retrieval latency about 2.5x and per-query allocation about 5x. Run
+`serve --pprof` to profile your own workload at `/debug/pprof/`.
 
 ## Tests
 

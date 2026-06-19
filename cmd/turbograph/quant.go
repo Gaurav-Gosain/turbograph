@@ -54,6 +54,15 @@ func cmdQuantBench(args []string) error {
 	seed := fs.Int64("seed", 1, "determinism seed")
 	fs.Parse(args)
 
+	if *dim < 1 {
+		return fmt.Errorf("--dim must be >= 1, got %d", *dim)
+	}
+	if *residual < 0 || *residual > 64 {
+		return fmt.Errorf("--residual must be in [0,64], got %d", *residual)
+	}
+	if *n < 1 || *queries < 1 || *topk < 1 || *clusters < 1 {
+		return fmt.Errorf("--n, --queries, --topk, and --clusters must all be >= 1")
+	}
 	var bits []int
 	for _, s := range strings.Split(*bitsStr, ",") {
 		b, err := strconv.Atoi(strings.TrimSpace(s))

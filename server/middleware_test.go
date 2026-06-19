@@ -47,6 +47,57 @@ func TestBodyLimit(t *testing.T) {
 	}
 }
 
+func TestUploadGetsLargerLimit(t *testing.T) {
+	// JSON limit tiny, upload limit generous: the same body is rejected on /query
+	// but allowed past the limit on the upload route.
+	ts := newOptServer(t, Options{MaxBodyBytes: 16, MaxUploadBytes: 1 << 20})
+	defer ts.Close()
+	body := func() *bytes.Reader { return bytes.NewReader(make([]byte, 4096)) }
+
+	resp, _ := http.Post(ts.URL+"/query", "application/json", body())
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("/query should reject a 4KB body under a 16B limit, got %d", resp.StatusCode)
+	}
+	// The upload path is not capped at 16B; it fails later (no extractor) but must
+	// not be a 413 request-entity-too-large from the body limit.
+	resp, _ = http.Post(ts.URL+"/api/ingest/files", "application/json", body())
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		t.Fatalf("upload route should use the larger limit, got 413")
+	}
+}
+
+func TestPprofGatedAndAuthed(t *testing.T) {
+	// Off by default: /debug/pprof/ is not registered (UI catch-all answers).
+	off := newOptServer(t, Options{})
+	resp, _ := http.Get(off.URL + "/debug/pprof/")
+	body := readAll(resp)
+	off.Close()
+	if strings.Contains(body, "Types of profiles available") {
+		t.Fatal("pprof should be off by default")
+	}
+	// On: the index is served.
+	on := newOptServer(t, Options{Pprof: true})
+	defer on.Close()
+	resp, _ = http.Get(on.URL + "/debug/pprof/")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(readAll(resp), "Types of profiles available") {
+		t.Fatal("pprof index should be served when enabled")
+	}
+	// Behind auth: with a key set, pprof requires it.
+	authed := newOptServer(t, Options{Pprof: true, APIKey: "k"})
+	defer authed.Close()
+	resp, _ = http.Get(authed.URL + "/debug/pprof/")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("pprof should sit behind the API key, got %d", resp.StatusCode)
+	}
+}
+
+func readAll(resp *http.Response) string {
+	defer resp.Body.Close()
+	b := new(bytes.Buffer)
+	b.ReadFrom(resp.Body)
+	return b.String()
+}
+
 func TestAPIKeyAuth(t *testing.T) {
 	ts := newOptServer(t, Options{APIKey: "secret"})
 	defer ts.Close()

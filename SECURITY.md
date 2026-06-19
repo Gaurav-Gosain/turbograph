@@ -16,6 +16,9 @@ turbograph is local-first. When exposing `serve` beyond localhost:
   accepted via `Authorization: Bearer`, `X-API-Key`, or `?api_key=`.
 - Liveness (`/healthz`) and readiness (`/readyz`) are intentionally unauthenticated
   so orchestrators can probe a protected server.
+- `--metrics` (`/debug/vars`) and `--pprof` (`/debug/pprof/`) are off by default
+  and sit behind `--api-key` when one is set. The profiler can dump heap and CPU
+  data, so only enable it with auth on, or on a non-public interface.
 - Request bodies are capped (`--max-body`, default 32 MiB) and panics are
   recovered, but turbograph does no per-client rate limiting; put it behind a
   reverse proxy or gateway if you need that.

@@ -75,17 +75,25 @@ func Benchmark(cfg Config, opt BenchOptions) BenchResult {
 	}
 	encDur := time.Since(t0)
 
-	var hit, total, scoreCount int
-	tq := time.Now()
+	// Measure only the quantized scoring loop: exact search, ranking, and recall
+	// bookkeeping are computed outside the timed window so QueryScoresPerSec
+	// reflects scoring throughput rather than the harness around it.
+	var hit, total int
+	var scoreNanos int64
+	scores := make([]float32, opt.N)
 	for _, qv := range queries {
 		exact := topKExact(db, qv, opt.TopK)
 		qr := q.PrepareQuery(qv)
-		approx := topKApprox(codes, qr, opt.TopK)
-		scoreCount += len(codes)
+		t := time.Now()
+		for i := range codes {
+			scores[i] = qr.Score(codes[i])
+		}
+		scoreNanos += time.Since(t).Nanoseconds()
+		approx := topKFromScores(scores, opt.TopK)
 		hit += overlapCount(exact, approx)
 		total += opt.TopK
 	}
-	qDur := time.Since(tq)
+	scoreSecs := float64(scoreNanos) / 1e9
 
 	codeBytes := (q.Dim()*cfg.Bits+7)/8 + 4 // packed codes + stored norm
 	if cfg.ResidualDims > 0 {
@@ -100,7 +108,7 @@ func Benchmark(cfg Config, opt BenchOptions) BenchResult {
 		RecallAtK:         float64(hit) / float64(total),
 		CodebookMSE:       q.Codebook().MSE(),
 		EncodeVecsPerSec:  float64(opt.N) / encDur.Seconds(),
-		QueryScoresPerSec: float64(scoreCount) / qDur.Seconds(),
+		QueryScoresPerSec: float64(opt.Queries*opt.N) / scoreSecs,
 	}
 }
 
@@ -153,12 +161,28 @@ func topKExact(db [][]float32, q []float32, k int) []int {
 	return topIDs(s, k)
 }
 
-func topKApprox(codes []Code, qr *Query, k int) []int {
-	s := make([]scored, len(codes))
-	for i := range codes {
-		s[i] = scored{i, qr.Score(codes[i])}
+// topKFromScores returns the indices of the k highest scores using a single
+// partial selection (O(n*k) for small k) rather than a full O(n log n) sort.
+func topKFromScores(scores []float32, k int) []int {
+	if k > len(scores) {
+		k = len(scores)
 	}
-	return topIDs(s, k)
+	out := make([]int, 0, k)
+	taken := make([]bool, len(scores))
+	for range k {
+		best, bestVal := -1, float32(-math.MaxFloat32)
+		for i, v := range scores {
+			if !taken[i] && v > bestVal {
+				best, bestVal = i, v
+			}
+		}
+		if best < 0 {
+			break
+		}
+		taken[best] = true
+		out = append(out, best)
+	}
+	return out
 }
 
 func topIDs(s []scored, k int) []int {

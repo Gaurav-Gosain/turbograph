@@ -116,7 +116,9 @@ func cmdServe(args []string) error {
 	apiKey := fs.String("api-key", "", "require this key on all requests (Authorization: Bearer, X-API-Key, or ?api_key=); also via $TURBOGRAPH_API_KEY")
 	cors := fs.String("cors", "", "Access-Control-Allow-Origin to send (e.g. * or https://app.example.com); empty disables CORS")
 	metrics := fs.Bool("metrics", false, "expose expvar metrics at /debug/vars")
-	maxBody := fs.Int64("max-body", server.DefaultMaxBodyBytes, "max request body in bytes (negative disables the limit)")
+	pprofOn := fs.Bool("pprof", false, "expose the runtime profiler at /debug/pprof/ (behind --api-key when set)")
+	maxBody := fs.Int64("max-body", server.DefaultMaxBodyBytes, "max JSON/query request body in bytes (0 uses the default, negative disables)")
+	maxUpload := fs.Int64("max-upload", server.DefaultMaxUploadBytes, "max file-upload request body in bytes (0 uses the default, negative disables)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -173,11 +175,13 @@ func cmdServe(args []string) error {
 	}
 
 	handler := srv.HandlerWithOptions(server.Options{
-		APIKey:       *apiKey,
-		CORSOrigin:   *cors,
-		Metrics:      *metrics,
-		MaxBodyBytes: *maxBody,
-		Version:      resolvedVersion(),
+		APIKey:         *apiKey,
+		CORSOrigin:     *cors,
+		Metrics:        *metrics,
+		Pprof:          *pprofOn,
+		MaxBodyBytes:   *maxBody,
+		MaxUploadBytes: *maxUpload,
+		Version:        resolvedVersion(),
 	})
 	httpSrv := &http.Server{
 		Addr:              *addr,
