@@ -1162,7 +1162,9 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
   G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;loadGraph();
 });
 async function buildEntities(onProg){
-  const resp=await fetch(bk("/api/build-entities"),{method:"POST"});
+  if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
+  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model),{method:"POST"});
+  if(!resp.ok){let m="entity build failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
   const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
   while(true){
     const {value,done}=await reader.read();if(done)break;

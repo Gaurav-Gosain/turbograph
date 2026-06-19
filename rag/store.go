@@ -48,6 +48,10 @@ func embedQuery(ctx context.Context, e Embedder, texts []string) ([][]float32, e
 // Config parameterizes the store. Zero values select sensible defaults.
 type Config struct {
 	Chunk ChunkConfig
+	// Chunker, if set, overrides Chunk.Strategy with a caller-supplied splitter
+	// (bring your own). It is not persisted; after loading a store you must set it
+	// again to ingest further documents with a custom chunker.
+	Chunker Chunker
 
 	// Quantization.
 	Bits         int
@@ -171,7 +175,7 @@ func (s *Store) Communities() *graph.Communities {
 func (s *Store) Build(ctx context.Context, docs []Document) error {
 	chunks := make([]Chunk, 0, len(docs))
 	for _, d := range docs {
-		chunks = append(chunks, chunkDocument(d.ID, d.Text, s.cfg.Chunk)...)
+		chunks = append(chunks, s.chunkDoc(d.ID, d.Text)...)
 	}
 	if len(chunks) == 0 {
 		return fmt.Errorf("rag: no chunks produced from %d documents", len(docs))
@@ -315,7 +319,15 @@ func (s *Store) Embedder() Embedder { return s.embedder }
 // ChunkDocument splits a document using the store's chunk configuration. It is
 // exposed so an ingestion engine can chunk and embed off the write path.
 func (s *Store) ChunkDocument(d Document) []Chunk {
-	return chunkDocument(d.ID, d.Text, s.cfg.Chunk)
+	return s.chunkDoc(d.ID, d.Text)
+}
+
+// Config returns the store's configuration (the custom Chunker, if any, is
+// omitted as it does not round-trip).
+func (s *Store) Config() Config {
+	c := s.cfg
+	c.Chunker = nil
+	return c
 }
 
 // AddEmbedded indexes already-embedded chunks without rebuilding the graph. The

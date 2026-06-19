@@ -36,6 +36,7 @@ func (s *Store) Save(w io.Writer) error {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
 	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash}
+	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
 		snap.Relations = s.eg.Relations()

@@ -12,6 +12,9 @@ type Chunk struct {
 
 // ChunkConfig controls how documents are split.
 type ChunkConfig struct {
+	// Strategy names the built-in chunker: "recursive" (default), "word",
+	// "markdown", or "sentence". See NewChunker and the Strategy* constants.
+	Strategy string
 	// TargetWords is the desired chunk size in whitespace-delimited tokens.
 	TargetWords int
 	// OverlapWords is how many tokens consecutive chunks share, preserving
@@ -19,41 +22,36 @@ type ChunkConfig struct {
 	OverlapWords int
 }
 
-// DefaultChunkConfig returns balanced defaults for prose.
+// DefaultChunkConfig returns balanced defaults for prose: the recursive splitter
+// at a modest size, which keeps paragraphs and sentences intact.
 func DefaultChunkConfig() ChunkConfig {
-	return ChunkConfig{TargetWords: 120, OverlapWords: 24}
+	return ChunkConfig{Strategy: StrategyRecursive, TargetWords: 120, OverlapWords: 24}
 }
 
-// chunkDocument splits text into overlapping word windows. It is deterministic
-// and allocation-light, and never emits empty chunks.
-func chunkDocument(docID, text string, cfg ChunkConfig) []Chunk {
-	if cfg.TargetWords <= 0 {
-		cfg = DefaultChunkConfig()
+// chunkDoc splits a document with the store's configured chunker (Config.Chunker
+// if a custom one was supplied, otherwise the strategy named in Config.Chunk),
+// turning the pieces into chunks and prepending any heading breadcrumb so the
+// embedded and lexically-indexed text carries its context.
+func (s *Store) chunkDoc(docID, text string) []Chunk {
+	ch := s.cfg.Chunker
+	if ch == nil {
+		ch = NewChunker(s.cfg.Chunk)
 	}
-	if cfg.OverlapWords < 0 || cfg.OverlapWords >= cfg.TargetWords {
-		cfg.OverlapWords = cfg.TargetWords / 4
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return nil
-	}
-	stride := cfg.TargetWords - cfg.OverlapWords
-	var chunks []Chunk
-	pos := 0
-	for start := 0; start < len(words); start += stride {
-		end := min(start+cfg.TargetWords, len(words))
-		chunks = append(chunks, Chunk{
-			ID:    docID + "#" + itoa(pos),
-			DocID: docID,
-			Pos:   pos,
-			Text:  strings.Join(words[start:end], " "),
-		})
-		pos++
-		if end == len(words) {
-			break
+	pieces := ch.Split(text)
+	out := make([]Chunk, 0, len(pieces))
+	for i, p := range pieces {
+		t := p.Text
+		if len(p.Headings) > 0 {
+			t = strings.Join(p.Headings, " > ") + "\n" + t
 		}
+		out = append(out, Chunk{
+			ID:    docID + "#" + itoa(i),
+			DocID: docID,
+			Pos:   i,
+			Text:  t,
+		})
 	}
-	return chunks
+	return out
 }
 
 func itoa(n int) string {

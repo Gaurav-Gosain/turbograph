@@ -107,6 +107,7 @@ func cmdServe(args []string) error {
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk for new buckets")
+	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy for new buckets: recursive, word, markdown, or sentence")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for the input path (default: pdftotext if present)")
 	ocrCmd := fs.String("ocr-cmd", "", "extraction command for scanned PDFs/images via OCR, e.g. a PaddleOCR PP-OCRv6 wrapper")
 	s3Bucket := fs.String("s3-bucket", "", "store buckets in an S3-compatible bucket instead of --data")
@@ -132,7 +133,7 @@ func cmdServe(args []string) error {
 		client.BaseURL = *ollamaURL
 	}
 
-	cfg := rag.Config{Bits: *bits, GraphKNN: *knn}
+	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{Strategy: *chunkStrategy}}
 	var mgr *rag.Manager
 	var err error
 	if *s3Bucket != "" {
@@ -268,6 +269,7 @@ func cmdIngest(args []string) error {
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk in the graph")
 	target := fs.Int("chunk-words", 120, "target chunk size in words")
 	overlap := fs.Int("chunk-overlap", 24, "chunk overlap in words")
+	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy: recursive, word, markdown, or sentence")
 	minSim := fs.Float64("min-sim", 0.5, "minimum cosine similarity for a graph edge")
 	batch := fs.Int("batch", 64, "embedding request batch size per document")
 	workers := fs.Int("workers", 0, "documents embedded concurrently (0 = number of CPUs)")
@@ -326,7 +328,7 @@ func cmdIngest(args []string) error {
 		store = rag.New(emb, rag.Config{
 			Bits: *bits, ResidualDims: *residual, GraphKNN: *knn,
 			MinSimilarity: float32(*minSim),
-			Chunk:         rag.ChunkConfig{TargetWords: *target, OverlapWords: *overlap},
+			Chunk:         rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
 		})
 	}
 

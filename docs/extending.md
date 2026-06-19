@@ -118,6 +118,42 @@ hits := ix.Search("query terms", 10)
 fused := lexical.RRF(60, denseHits, sparseHits) // reciprocal rank fusion
 ```
 
+## Choose or swap the chunker
+
+How documents are split is a one-method interface:
+
+```go
+type Chunker interface {
+    Split(text string) []Piece   // Piece{Text, Headings}
+}
+```
+
+Four strategies ship, selected by name:
+
+```go
+cfg := rag.Config{Chunk: rag.ChunkConfig{
+    Strategy: rag.StrategyRecursive, // or Word, Markdown, Sentence
+    TargetWords: 120, OverlapWords: 24,
+}}
+```
+
+- `recursive` (default) splits on a separator hierarchy (paragraph, line,
+  sentence, word), descending only when a piece is over budget, then packs the
+  fragments to the target with overlap. It keeps paragraphs and sentences intact.
+- `word` is fixed overlapping word windows: fast and uniform, weakest at
+  boundaries.
+- `markdown` splits on headings, tracks the heading path, and prepends it to each
+  chunk as a contextual header (e.g. `Guide > Setup`), which situates the passage
+  for both embedding and BM25.
+- `sentence` packs whole sentences up to the budget without cutting one in half.
+
+Bring your own by implementing `Chunker` and setting `Config.Chunker`; it
+overrides the named strategy. A custom chunker is not persisted (interfaces do not
+round-trip through the snapshot), so set it again after loading a store if you
+ingest more documents. Strategies that need an embedder or LLM (semantic,
+contextual) take it at construction and still satisfy the same one-method
+interface, so they compose as decorators around a base chunker.
+
 ## Swap the entity extractor
 
 The optional knowledge graph is built through one interface:

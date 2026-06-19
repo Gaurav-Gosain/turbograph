@@ -77,16 +77,14 @@ func (e *keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32,
 
 func TestChunking(t *testing.T) {
 	text := strings.Repeat("word ", 300)
-	chunks := chunkDocument("d", text, ChunkConfig{TargetWords: 100, OverlapWords: 20})
-	if len(chunks) == 0 {
-		t.Fatal("no chunks")
+	ch := NewChunker(ChunkConfig{Strategy: StrategyWord, TargetWords: 100, OverlapWords: 20})
+	pieces := ch.Split(text)
+	if len(pieces) == 0 {
+		t.Fatal("no pieces")
 	}
-	for i, c := range chunks {
-		if c.Pos != i || c.DocID != "d" {
-			t.Errorf("chunk %d metadata wrong: %+v", i, c)
-		}
-		if len(strings.Fields(c.Text)) > 100 {
-			t.Errorf("chunk %d too large", i)
+	for i, p := range pieces {
+		if len(strings.Fields(p.Text)) > 100 {
+			t.Errorf("piece %d too large", i)
 		}
 	}
 }
