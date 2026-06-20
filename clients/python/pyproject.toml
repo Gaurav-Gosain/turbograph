@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turbograph-client"
+version = "0.1.0"
+description = "A pure standard library Python client for the turbograph graph-RAG server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "turbograph" }]
+keywords = ["rag", "graph-rag", "retrieval", "turbograph", "client"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+]
+# No runtime dependencies: standard library only, matching turbograph's ethos.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/Gaurav-Gosain/turbograph"
+
+[tool.setuptools]
+packages = ["turbograph"]

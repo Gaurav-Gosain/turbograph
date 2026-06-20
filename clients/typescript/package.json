@@ -1,0 +1,41 @@
+{
+  "name": "@turbograph/client",
+  "version": "0.1.0",
+  "description": "Dependency-free TypeScript client for turbograph, a graph-RAG server.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test \"test/**/*.test.mjs\""
+  },
+  "keywords": [
+    "turbograph",
+    "rag",
+    "graph-rag",
+    "retrieval",
+    "vector-search",
+    "client"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
