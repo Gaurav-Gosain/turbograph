@@ -255,6 +255,13 @@ func cmdServe(args []string) error {
 
 	srv := server.NewManager(mgr)
 	srv.SetGenerator(backend, rc.GenModel, rc.EmbedModel)
+	// Image assets live beside the buckets so the multimodal path (caption then
+	// embed) can store and serve figures; a local data dir is required for it.
+	if *data != "" {
+		if err := srv.EnableAssets(filepath.Join(*data, "assets")); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: image ingestion disabled:", err)
+		}
+	}
 	srv.EnableConfig(rc, cfgFile, server.Factories{
 		Backend: func(api, url, key string) server.Backend { return buildBackend(api, url, key) },
 		Embedder: func(api, url, key, model string, dim int) rag.Embedder {

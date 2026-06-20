@@ -15,6 +15,12 @@ type Chunk struct {
 	// verbatim in the source (for example a custom Chunker that rewrites text).
 	Start int `json:"start"`
 	End   int `json:"end"`
+	// Kind labels non-text chunks. "" (text) is the default; "image" marks a chunk
+	// whose Text is a model-written caption of an image, figure, or table.
+	Kind string `json:"kind,omitempty"`
+	// ImageRef is the asset id of the source image for an image chunk, served by
+	// the host application (for example GET /api/asset/<ref>). Empty for text.
+	ImageRef string `json:"image_ref,omitempty"`
 }
 
 // ChunkConfig controls how documents are split.
@@ -39,13 +45,13 @@ func DefaultChunkConfig() ChunkConfig {
 // if a custom one was supplied, otherwise the strategy named in Config.Chunk),
 // turning the pieces into chunks and prepending any heading breadcrumb so the
 // embedded and lexically-indexed text carries its context.
-func (s *Store) chunkDoc(docID, text string) []Chunk {
+func (s *Store) chunkDoc(d Document) []Chunk {
 	ch := s.cfg.Chunker
 	if ch == nil {
 		ch = NewChunker(s.cfg.Chunk)
 	}
-	pieces := ch.Split(text)
-	runes := []rune(text)
+	pieces := ch.Split(d.Text)
+	runes := []rune(d.Text)
 	out := make([]Chunk, 0, len(pieces))
 	cursor := 0
 	for i, p := range pieces {
@@ -62,12 +68,14 @@ func (s *Store) chunkDoc(docID, text string) []Chunk {
 			cursor = start
 		}
 		out = append(out, Chunk{
-			ID:    docID + "#" + itoa(i),
-			DocID: docID,
-			Pos:   i,
-			Text:  t,
-			Start: start,
-			End:   end,
+			ID:       d.ID + "#" + itoa(i),
+			DocID:    d.ID,
+			Pos:      i,
+			Text:     t,
+			Start:    start,
+			End:      end,
+			Kind:     d.Kind,
+			ImageRef: d.ImageRef,
 		})
 	}
 	return out

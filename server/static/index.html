@@ -142,6 +142,8 @@
     border-bottom:1px solid var(--border)}
   #srcPreview .sp-meta .mk{color:var(--bg);background:var(--faint);border-radius:4px 0 0 4px;padding:1px 5px;font-size:10px}
   #srcPreview .sp-meta .mv{color:var(--text);background:var(--panel);border-radius:0 4px 4px 0;padding:1px 6px;font-size:10px;margin-right:5px}
+  #srcPreview .sp-img{max-width:100%;max-height:30vh;border-radius:6px;border:1px solid var(--border);display:block;margin-bottom:8px}
+  #srcPreview .sp-cap{font-size:11.5px;color:var(--muted);line-height:1.5}
   #srcPreview .x{cursor:pointer;color:var(--faint)}
   #srcPreview .x:hover{color:var(--accent)}
   .doc{position:relative}
@@ -1033,7 +1035,7 @@ async function loadStats(){
 async function loadModels(){
   try{
     const m=await api("/api/models");
-    if(m.pdf!=null){G.pdfSupported=m.pdf;$("#dropTypes").textContent=m.pdf?".txt .md .pdf":".txt .md"}
+    if(m.pdf!=null){G.pdfSupported=m.pdf;$("#dropTypes").textContent=(m.pdf?".txt .md .pdf":".txt .md")+" images"}
     // Surface a missing embedding model: it is required to index anything.
     G.embedModel=m.embed_model||"";
     $("#embedName").textContent=G.embedModel;
@@ -1309,6 +1311,12 @@ async function openSource(msgEl,i){
   $("#spDoc").textContent=s.doc_id||s.id;
   const body=$("#spText");const docId=s.doc_id||s.id;
   $("#srcPreview").classList.add("open");
+  // An image chunk shows the source image above its caption.
+  if(s.image_ref){
+    body.innerHTML=metaHTML(s.meta)+'<img class="sp-img" src="'+bk("/api/asset/"+encodeURIComponent(s.image_ref))+'" alt="source image">'+
+      '<div class="sp-cap">'+esc(s.text||"")+'</div>';
+    return;
+  }
   let view=null;try{view=await api(bk("/api/document?doc="+encodeURIComponent(docId)))}catch(e){}
   if(view&&view.text){
     const runes=[...view.text];
@@ -1668,15 +1676,18 @@ fileInput.onchange=e=>handleFiles(e.target.files);
 function isText(name){return /\.(txt|md|markdown|text|csv|log|json)$/i.test(name)}
 function isPDF(name){return /\.pdf$/i.test(name)}
 
+function isImage(name){return /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)}
 async function handleFiles(files){
   const note=$("#docNote");note.className="note";
-  const text=[],binary=[];
+  const text=[],binary=[],images=[];
   for(const f of files){
     if(isText(f.name)){const t=await f.text();if(t.trim()){text.push({id:f.name,text:t});G.docs.set(f.name,{c:t.length})}}
     else if(isPDF(f.name)&&G.pdfSupported){const b=await f.arrayBuffer();binary.push({id:f.name,b64:toB64(b)});G.docs.set(f.name,{c:b.byteLength,pdf:true})}
     else if(isPDF(f.name)){toast("pdf parsing not enabled on the server",true)}
+    else if(isImage(f.name)){const b=await f.arrayBuffer();
+      images.push({id:f.name,b64:toB64(b),ext:f.name.split(".").pop().toLowerCase()});G.docs.set(f.name,{c:b.byteLength,img:true})}
   }
-  if(!text.length&&!binary.length){note.className="note err";note.textContent="no supported files (.txt .md"+(G.pdfSupported?" .pdf":"")+")";return}
+  if(!text.length&&!binary.length&&!images.length){note.className="note err";note.textContent="no supported files (.txt .md"+(G.pdfSupported?" .pdf":"")+" images)";return}
   renderDocList();
   const bar=$("#progBar");bar.style.display="block";bar.querySelector("i").style.width="8%";
   note.textContent="indexing "+(text.length+binary.length)+" document(s)...";
@@ -1693,6 +1704,16 @@ async function handleFiles(files){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({documents:text})});
       if(r.error)throw new Error(r.error);total=r.chunks;
+    }
+    if(images.length){
+      if(!G.model){toast("select a model (top right) to caption images",true);}
+      else for(const im of images){
+        note.textContent="captioning "+im.id+"...";
+        const r=await api(bk("/api/ingest/image"),{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({id:im.id,b64:im.b64,ext:im.ext,model:G.model})}).catch(e=>({error:e.message}));
+        if(r.error){const d=G.docs.get(im.id);if(d)d.fail=r.error;renderDocList();toast(im.id+": "+r.error,true)}
+        else total++;
+      }
     }
     bar.querySelector("i").style.width="100%";
     note.textContent="indexed. "+total+" chunks total.";

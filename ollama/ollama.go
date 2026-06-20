@@ -5,6 +5,7 @@ package ollama
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -188,11 +189,12 @@ func (c *Client) EmbedOne(ctx context.Context, text string) ([]float32, error) {
 }
 
 type generateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	System string `json:"system,omitempty"`
-	Stream bool   `json:"stream"`
-	Think  bool   `json:"think"`
+	Model  string   `json:"model"`
+	Prompt string   `json:"prompt"`
+	System string   `json:"system,omitempty"`
+	Stream bool     `json:"stream"`
+	Think  bool     `json:"think"`
+	Images []string `json:"images,omitempty"` // base64-encoded images for a vision model
 }
 
 type generateResponse struct {
@@ -229,6 +231,50 @@ func (c *Client) Generate(ctx context.Context, model, system, prompt string) (st
 	}
 	// Fall back to the thinking channel if a model ignored think=false and left
 	// the response field empty.
+	if out.Response == "" && out.Thinking != "" {
+		return out.Thinking, nil
+	}
+	return out.Response, nil
+}
+
+// CaptionImage asks a vision-capable model (llava, llama3.2-vision, qwen2.5-vl,
+// and similar) to describe an image, returning the caption text. The image bytes
+// are sent base64-encoded in the native /api/generate images field. The caption
+// is what gets embedded and indexed, making figures and tables retrievable in the
+// same text vector space as everything else.
+func (c *Client) CaptionImage(ctx context.Context, model, prompt string, image []byte) (string, error) {
+	if prompt == "" {
+		prompt = "Describe this image, figure, or table in detail for search. " +
+			"State what it shows, any labels, axes, values, and the key takeaway."
+	}
+	body, err := json.Marshal(generateRequest{
+		Model:  model,
+		Prompt: prompt,
+		Stream: false,
+		Think:  false,
+		Images: []string{base64.StdEncoding.EncodeToString(image)},
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama caption: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
+		return "", fmt.Errorf("ollama caption: status %d: %s", resp.StatusCode, msg)
+	}
+	var out generateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("ollama caption decode: %w", err)
+	}
 	if out.Response == "" && out.Thinking != "" {
 		return out.Thinking, nil
 	}

@@ -51,6 +51,9 @@ type Server struct {
 	cfg       RuntimeConfig
 	cfgPath   string
 	factories Factories
+
+	// assets stores ingested image bytes for the multimodal path; nil disables it.
+	assets *assetStore
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -137,6 +140,8 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/save", s.handleSave)
 	mux.HandleFunc("POST /api/ingest/files", s.handleIngestFiles)
+	mux.HandleFunc("POST /api/ingest/image", s.handleIngestImage)
+	mux.HandleFunc("GET /api/asset/{id}", s.handleAsset)
 	mux.HandleFunc("POST /api/pull", s.handlePull)
 	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
 	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
@@ -296,7 +301,9 @@ type queryResult struct {
 	Text       string          `json:"text"`
 	Start      int             `json:"start"` // rune offset of this chunk in its document
 	End        int             `json:"end"`
-	Meta       json.RawMessage `json:"meta,omitempty"` // the source document's metadata
+	Meta       json.RawMessage `json:"meta,omitempty"`      // the source document's metadata
+	Kind       string          `json:"kind,omitempty"`      // "image" for an image-derived chunk
+	ImageRef   string          `json:"image_ref,omitempty"` // asset id of the source image
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {

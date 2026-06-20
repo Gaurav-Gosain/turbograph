@@ -510,6 +510,8 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 			Start:      r.Chunk.Start,
 			End:        r.Chunk.End,
 			Meta:       r.Meta,
+			Kind:       r.Chunk.Kind,
+			ImageRef:   r.Chunk.ImageRef,
 		}
 	}
 	return out

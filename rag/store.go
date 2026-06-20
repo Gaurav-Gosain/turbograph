@@ -151,6 +151,11 @@ type Document struct {
 	// each retrieved result, so callers can decide how to use it (parse it, filter
 	// on it, or feed selected fields to the model). nil means no metadata.
 	Meta map[string]any
+	// Kind and ImageRef mark an image-derived document: Text is then a caption of
+	// the image, Kind is "image", and ImageRef is the asset id of the source image.
+	// Both are empty for an ordinary text document.
+	Kind     string
+	ImageRef string
 }
 
 // New creates an empty store.
@@ -184,7 +189,7 @@ func (s *Store) Communities() *graph.Communities {
 func (s *Store) Build(ctx context.Context, docs []Document) error {
 	chunks := make([]Chunk, 0, len(docs))
 	for _, d := range docs {
-		chunks = append(chunks, s.chunkDoc(d.ID, d.Text)...)
+		chunks = append(chunks, s.chunkDoc(d)...)
 	}
 	if len(chunks) == 0 {
 		return fmt.Errorf("rag: no chunks produced from %d documents", len(docs))
@@ -366,7 +371,7 @@ func (s *Store) Embedder() Embedder { return s.embedder }
 // ChunkDocument splits a document using the store's chunk configuration. It is
 // exposed so an ingestion engine can chunk and embed off the write path.
 func (s *Store) ChunkDocument(d Document) []Chunk {
-	return s.chunkDoc(d.ID, d.Text)
+	return s.chunkDoc(d)
 }
 
 // Config returns the store's configuration (the custom Chunker, if any, is
