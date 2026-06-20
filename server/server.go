@@ -119,10 +119,15 @@ func (s *Server) routes(opt Options) http.Handler {
 		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
 		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	}
-	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	// Core endpoints. The /api/* paths are canonical and match the rest of the
+	// surface; the short paths are kept as aliases so existing clients keep working.
+	mux.HandleFunc("GET /stats", s.handleStats)
+	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /ingest", s.handleIngest)
+	mux.HandleFunc("POST /api/ingest", s.handleIngest)
 	mux.HandleFunc("POST /query", s.handleQuery)
+	mux.HandleFunc("POST /api/query", s.handleQuery)
 
 	// OpenAI-compatible chat completions, retrieval-augmented.
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)

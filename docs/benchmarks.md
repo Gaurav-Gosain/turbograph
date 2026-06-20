@@ -19,9 +19,11 @@ benchmarks forced, including changes to defaults that the data did not support.
   with nDCG@10, Recall@10, Recall@100. MultiHop-RAG follows the paper's protocol:
   a retrieved chunk is relevant if it contains a gold evidence sentence as a
   substring; metrics are MRR@10, MAP@10, Hits@4, Hits@10.
-- Everything runs locally on CPU through the turbograph library exactly as
-  shipped. The only benchmark-specific code is dataset parsing, which lives
-  outside the module, so nothing benchmark-specific is in the binary.
+- All measurements run on CPU through the turbograph library exactly as shipped.
+  The only benchmark-specific code is dataset parsing, which lives outside the
+  module, so nothing benchmark-specific is in the binary.
+- Test bench: Intel Core i7-10700 (8 cores / 16 threads, AVX2), Linux, Go
+  toolchain. Component timings in the comparison section below use this machine.
 
 ## Headline results
 
@@ -67,7 +69,7 @@ graph):
 | 0 (off, default)  | **0.790**       | **168**          | **0.48**              |
 | 0.2               | 0.790           | 190              | 0.45                  |
 | 0.5               | 0.768           | 197              | 0.40                  |
-| 1.0               | —               | —                | 0.35                  |
+| 1.0               | n/a               | n/a                | 0.35                  |
 
 \*MultiHop column is the dense-only sweep, where the decline is sharp; on SciFact
 the graph is neutral at a low mix and harmful at a high one.
@@ -95,7 +97,7 @@ weight sweep found a small value helps everywhere:
 | 0 (pure dense)    | 0.783           | 0.45                  |
 | **0.25 (default)**| **0.790**       | **0.54**              |
 | 0.5               | 0.774           | 0.56                  |
-| 1.0 (≈ RRF)       | 0.743           | —                     |
+| 1.0 (≈ RRF)       | 0.743           | n/a                     |
 
 \*MultiHop column is a fixed query subsample for the sweep; the full-set default
 (weight 0.25) is MRR@10 **0.563**, Hits@10 0.545.
@@ -135,11 +137,12 @@ target.
 ## How turbograph compares to other GraphRAG systems
 
 This section places turbograph against the popular graph and graph-adjacent RAG
-systems. Be clear about provenance: turbograph's component numbers below are
-measured on this machine (16 cores), while the cross-system numbers are taken
-from each project's own paper or repository, on their hardware and models. This
-is an architectural and capability comparison, not a controlled head-to-head
-re-run, which would require standing up every system on one corpus and model.
+systems. Provenance matters here: turbograph's component numbers below are measured on the
+test bench defined in the Methodology section, while the cross-system numbers are
+taken from each project's own paper or repository, on their own hardware and
+models. This is an architectural and capability comparison, not a controlled
+head-to-head re-run, which would require standing up every system on a single
+corpus and model.
 
 ### Measured turbograph component costs
 
@@ -223,14 +226,14 @@ cost (which LightRAG rightly criticizes in Microsoft GraphRAG); turbograph
 mitigates it by keeping summaries opt-in and invalidating them only when content
 changes, leaving the cheap default untouched.
 
-The remaining honest gap is **published retrieval-quality numbers**: turbograph
+The remaining gap is **published retrieval-quality numbers**: turbograph
 has measured component costs and the quality studies above, but not yet a
 head-to-head accuracy table against these systems on a shared corpus. That
 controlled comparison is the natural next benchmark.
 
 ## Reproducing
 
-These are honest local measurements rather than a committed harness (BEIR and
+These are local measurements rather than a committed harness (BEIR and
 MultiHop-RAG corpora and a running model server do not belong in the repo). To
 reproduce: download a dataset, ingest the corpus, retrieve the test queries, score
 against the labels (collapse chunks to documents for BEIR, or substring-match the

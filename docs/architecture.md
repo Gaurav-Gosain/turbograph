@@ -70,14 +70,14 @@ flowchart LR
 3. A 1-bit QJL sketch of the quantization residual corrects the bias the
    MSE-optimal quantizer would otherwise add to inner-product estimates.
 
-### Two estimators, on purpose
+### Two estimators by design
 
 The QJL residual removes inner-product bias but injects the variance of a 1-bit
-sketch. That variance helps when you need an accurate magnitude and hurts when you
-only need an ordering. So the codec exposes both, and callers pick:
+sketch. That variance helps when an accurate magnitude is needed and hurts when
+only an ordering is needed. The codec therefore exposes both, and callers pick:
 
 - `Score`, `CosineScore`, `L2Score`: the low-variance main term. Order-preserving,
-  slightly biased in scale, best for ranking. In tests this gives perfect
+  slightly biased in scale, best for ranking. In tests this yields perfect
   candidate recall at every bit rate.
 - `IP`, `L2`, `Cosine`: the unbiased estimators with the residual correction, for
   when a magnitude must be accurate.
@@ -97,8 +97,8 @@ metadata-filtered queries stay high-recall.
 
 The hottest function is the high-dimensional distance. It is hand-tuned with eight
 independent accumulators (to break the floating-point dependency chain) and
-bounds-check elimination, which the profiler showed is most of build time; the
-change was a 1.8x build speedup.
+bounds-check elimination. Profiling showed this function dominates build time, and
+the tuning produced a 1.8x build speedup.
 
 ## Hybrid graph retrieval
 
@@ -116,26 +116,26 @@ flowchart TB
 
 The direct relevance score adds the BM25 score to the dense cosine:
 `relevance = dense + LexicalWeight * bm25`, both normalized to their per-query
-max. This is an additive, score-based fusion on purpose. Reciprocal rank fusion
-(the usual hybrid) is rank-only: it discards the dense cosine magnitude, and when
-the dense model is much stronger than BM25 it flattens the good ranking and lets
-weaker lexical hits intrude, which measurably *lowered* nDCG on a dense-dominant
-benchmark. Keeping the dense magnitude and adding a bounded BM25 term instead
-preserves the strong ranking while letting an exact keyword or entity match lift a
-chunk. A small default weight improves both a dense-dominant benchmark (SciFact)
-and a keyword/entity-heavy one (MultiHop-RAG), so the lexical signal is on by
-default; `DisableLexical` or a negative weight turns it off.
+max. This is a deliberate additive, score-based fusion. Reciprocal rank fusion,
+the common hybrid approach, is rank-only: it discards the dense cosine magnitude,
+and when the dense model is much stronger than BM25 it flattens the good ranking
+and lets weaker lexical hits intrude, which measurably lowered nDCG on a
+dense-dominant benchmark. Keeping the dense magnitude and adding a bounded BM25
+term instead preserves the strong ranking while letting an exact keyword or entity
+match lift a chunk. A small default weight improves both a dense-dominant
+benchmark (SciFact) and a keyword/entity-heavy one (MultiHop-RAG), so the lexical
+signal is on by default; `DisableLexical` or a negative weight turns it off.
 
 The optional similarity graph connects each chunk to its nearest neighbors (plus
 document-order edges). Seeding Personalized PageRank with the hits and propagating
 means a chunk relevant by association, one hop from a strong hit, can be retrieved
 even with near-zero direct similarity, and the score becomes
-`relevance + GraphMix * pagerank` (additive, so the graph can only *lift* a chunk,
-never demote a strong direct hit). But benchmarks showed that similarity-graph
-reranking lowers precision on standard single-hop *and* multi-hop retrieval, so it
-is **off by default** (`GraphMix` zero) and opt-in for thematic or associative
+`relevance + GraphMix * pagerank` (additive, so the graph can only lift a chunk,
+never demote a strong direct hit). Benchmarks showed that similarity-graph
+reranking lowers precision on both standard single-hop and multi-hop retrieval, so
+it is off by default (`GraphMix` zero) and opt-in for thematic or associative
 queries. Communities are detected by label propagation and exposed for global
-queries and the visualization. The honest accounting is in
+queries and the visualization. The full accounting is in
 [benchmarks.md](benchmarks.md).
 
 ## Asymmetric embeddings

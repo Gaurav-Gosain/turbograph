@@ -2,10 +2,10 @@
 
 A `.tg` file is a complete turbograph corpus: its config, chunks, their
 embeddings, per-document metadata, content history, and an optional entity graph,
-in one portable file. Save one, copy it anywhere, load it, and you are back
-exactly where you left off without re-embedding a thing. This document is the
-format's specification: the wire encoding, every field, what is stored versus
-rebuilt, the interop paths for other languages, and the rules for extending it.
+in one portable file. Save one, copy it anywhere, and load it to restore the exact
+state without re-embedding. This document is the format's specification: the wire
+encoding, every field, what is stored versus rebuilt, the interop paths for other
+languages, and the rules for extending it.
 
 ## At a glance
 
@@ -243,9 +243,9 @@ Two routes, in order of preference:
 2. **Reimplement the gob decode (advanced).** gob is a documented wire format
    (the [gob package doc](https://pkg.go.dev/encoding/gob) describes the
    encoding), so a determined consumer can decode the stream directly against the
-   [snapshot struct](#the-snapshot-struct) above. This is awkward: gob is
-   type-driven and self-describing in a Go-specific way, and you would be
-   reimplementing a nontrivial decoder. Prefer the JSON export unless you have a
+   [snapshot struct](#the-snapshot-struct) above. This is cumbersome: gob is
+   type-driven and self-describing in a Go-specific way, and it requires
+   reimplementing a nontrivial decoder. Prefer the JSON export unless there is a
    strong reason not to.
 
 Writing a `.tg` file is only supported from Go (`Store.Save`). Other languages

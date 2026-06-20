@@ -24,6 +24,10 @@ swappable without touching the rest.
 - Indexes the text with BM25 for exact and rare-term matching.
 - Connects chunks into a similarity graph and detects communities, with an
   optional entity-relationship knowledge graph (GraphRAG style) on top.
+- Answers corpus-wide, thematic questions in a global mode that synthesizes over
+  generated community summaries, alongside the default local retrieval.
+- Makes images, figures, and tables retrievable by captioning them with a vision
+  model and embedding the caption in the same text vector space.
 - Retrieves by fusing dense and sparse hits, seeding Personalized PageRank, and
   optionally diversifying with MMR.
 - Grounds answers with numbered inline citations, an evidence-sufficiency
@@ -38,7 +42,10 @@ swappable without touching the rest.
 - Ingests at volume: parallel, resumable, crash-tolerant, with pluggable parsers
   including PDF and OCR.
 - Dedupes by content hash and versions documents: re-uploading a changed document
-  updates it in place and only re-embeds the chunks that changed.
+  updates it in place and only re-embeds the chunks that changed; documents can be
+  deleted, and any document can be previewed with its retrieved chunks highlighted.
+- Attaches arbitrary JSON metadata to each document, returns it with every
+  retrieved chunk, and can feed selected fields to the model.
 - Persists to the local disk or any S3-compatible service, and isolates corpora
   into named buckets.
 
@@ -278,6 +285,7 @@ turbograph ingest --src <dir|file> --out store.tg [flags]   # parallel, resumabl
 turbograph query  --store store.tg --q "..." [--gen-model M] # retrieve or answer
 turbograph serve  --store store.tg --addr :8080 [--gen-model M]
 turbograph stats  --store store.tg
+turbograph export --store store.tg [--out store.json --no-vectors]  # JSON for interop
 turbograph eval   --store store.tg --suite suite.jsonl [--k 10]  # score retrieval
 turbograph mcp    --store store.tg [--gen-model M]          # serve over MCP stdio
 turbograph quant  bench [--dim 768 --bits 1,2,4,8]          # benchmark the codec
@@ -314,6 +322,21 @@ turbograph serve --gen-model qwen3.5:2b \
 ```
 
 ## Integrations
+
+### HTTP API and client libraries
+
+Everything the web UI does is a documented HTTP+JSON API: ingestion (text, files,
+images), retrieval, streaming chat, documents, metadata, version history,
+communities, and global queries. The full surface is in
+[docs/api.md](docs/api.md). Two dependency-free official clients wrap it:
+
+- Python: [clients/python/](clients/python/) (`from turbograph import Client`).
+- TypeScript and JavaScript: [clients/typescript/](clients/typescript/)
+  (`@turbograph/client`, browser and Node).
+
+Other languages can call the API directly, or read a corpus through the
+language-neutral JSON export (`turbograph export`); see
+[docs/format.md](docs/format.md).
 
 ### Model backends
 
@@ -382,11 +405,11 @@ for how to:
 - use `quant`, `index`, `graph`, or `lexical` as standalone libraries,
 - tune quantization, graph construction, and retrieval.
 
-The deeper design is in [docs/architecture.md](docs/architecture.md), and the
-on-disk `.tg` store format is specified in [docs/format.md](docs/format.md). The
-stable data primitives (document metadata, chunk offsets and highlighting,
-versioning, retrieval) and how to build your own tools on them are in
-[docs/primitives.md](docs/primitives.md).
+The deeper design is in [docs/architecture.md](docs/architecture.md), the HTTP
+API is in [docs/api.md](docs/api.md), and the on-disk `.tg` store format is
+specified in [docs/format.md](docs/format.md). The stable data primitives
+(document metadata, chunk offsets and highlighting, versioning, retrieval) and how
+to build your own tools on them are in [docs/primitives.md](docs/primitives.md).
 
 ## Performance
 

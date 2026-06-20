@@ -148,7 +148,7 @@ vs := store.DocVersions("rfc-7231")          // []DocVersion{ N, Hash, Time, Byt
 text, ok := store.DocVersionText("rfc-7231", 2)  // full text of version 2 (1-based)
 ```
 
-Restoring is just re-ingesting an earlier version's text through the normal update
+Restoring re-ingests an earlier version's text through the normal update
 path: it appends a new version equal to the restored content (git-revert
 semantics) and reuses embeddings for unchanged chunks.
 
@@ -195,7 +195,7 @@ knobs.
 curl -X POST localhost:8080/query -d '{"query": "caching semantics", "top_k": 8}'
 ```
 
-Use `/query` when you want ranked chunks to do your own thing with; use
+Use `/query` when you want ranked chunks to process yourself; use
 `/api/chat` when you want a grounded, cited answer streamed back.
 
 ## Pluggability seams
