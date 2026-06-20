@@ -5,6 +5,13 @@ long-running builds, an OpenAI-compatible endpoint, and the embedded web UI. Thi
 document is the complete surface. Official clients wrap it for
 [Python](../clients/python/) and [TypeScript](../clients/typescript/).
 
+A machine-readable OpenAPI 3 description is served at `GET /openapi.json` (also
+`/api/openapi.json`) and shipped at
+[server/static/openapi.json](../server/static/openapi.json), so Swagger UI, code
+generators, and Postman can consume the API directly. For example, point Swagger
+UI at `http://localhost:8080/openapi.json`, or generate a client with
+`openapi-generator`.
+
 ## Conventions
 
 - Base URL defaults to `http://localhost:8080` (`turbograph serve --addr`).

@@ -18,6 +18,17 @@ import (
 //go:embed static/index.html
 var indexHTML []byte
 
+//go:embed static/openapi.json
+var openapiJSON []byte
+
+// handleOpenAPI serves the OpenAPI 3 description of the HTTP API, so tooling
+// (Swagger UI, code generators, Postman) can consume the surface directly.
+func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Write(openapiJSON)
+}
+
 const chatSystemPrompt = "You are a precise assistant answering from the provided context. " +
 	"Use only the context. If it does not contain the answer, say so plainly. " +
 	"Cite the passages you rely on with bracketed numbers that match the numbered context, like [1] or [2]. " +

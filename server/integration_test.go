@@ -278,3 +278,34 @@ func TestDocumentViewAndDelete(t *testing.T) {
 		t.Fatalf("after delete: %+v", docs.Documents)
 	}
 }
+
+func TestOpenAPISpec(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1})
+	store.Build(context.Background(), []rag.Document{{ID: "d", Text: "hello world content here"}})
+	ts := httptest.NewServer(New(store).Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("content type %q", resp.Header.Get("Content-Type"))
+	}
+	var spec struct {
+		OpenAPI string         `json:"openapi"`
+		Paths   map[string]any `json:"paths"`
+		Comps   map[string]any `json:"components"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&spec); err != nil {
+		t.Fatalf("spec is not valid json: %v", err)
+	}
+	if !strings.HasPrefix(spec.OpenAPI, "3.") {
+		t.Fatalf("openapi version %q", spec.OpenAPI)
+	}
+	for _, p := range []string{"/api/query", "/api/chat", "/api/document", "/api/communities", "/api/ingest/image"} {
+		if _, ok := spec.Paths[p]; !ok {
+			t.Errorf("spec missing documented path %s", p)
+		}
+	}
+}

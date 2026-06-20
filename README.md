@@ -328,7 +328,9 @@ turbograph serve --gen-model qwen3.5:2b \
 Everything the web UI does is a documented HTTP+JSON API: ingestion (text, files,
 images), retrieval, streaming chat, documents, metadata, version history,
 communities, and global queries. The full surface is in
-[docs/api.md](docs/api.md). Two dependency-free official clients wrap it:
+[docs/api.md](docs/api.md), with a machine-readable OpenAPI 3 spec served at
+`GET /openapi.json` (for Swagger UI, code generators, and Postman). Two
+dependency-free official clients wrap it:
 
 - Python: [clients/python/](clients/python/) (`from turbograph import Client`).
 - TypeScript and JavaScript: [clients/typescript/](clients/typescript/)

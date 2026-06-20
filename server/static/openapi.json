@@ -1,0 +1,391 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "turbograph API",
+    "description": "HTTP API for turbograph, a fast local graph RAG engine. Ingestion, retrieval, streaming chat, documents, metadata, version history, communities, and global queries. Streaming endpoints use server-sent events (text/event-stream). See docs/api.md for prose.",
+    "version": "1.0.0",
+    "license": { "name": "MIT" }
+  },
+  "servers": [{ "url": "http://localhost:8080", "description": "Local serve" }],
+  "tags": [
+    { "name": "ingestion" },
+    { "name": "retrieval" },
+    { "name": "documents" },
+    { "name": "versions" },
+    { "name": "graphs" },
+    { "name": "admin" },
+    { "name": "ops" }
+  ],
+  "security": [{ "bearer": [] }, { "apiKeyHeader": [] }, { "apiKeyQuery": [] }, {}],
+  "paths": {
+    "/api/ingest": {
+      "post": {
+        "tags": ["ingestion"],
+        "summary": "Add or replace text documents",
+        "description": "Alias: POST /ingest. Documents are added incrementally unless replace is true.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IngestRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "indexed", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" } } } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/ingest/files": {
+      "post": {
+        "tags": ["ingestion"],
+        "summary": "Ingest files; the server extracts text (PDF, OCR, plain text)",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "files": { "type": "array", "items": { "$ref": "#/components/schemas/IngestFile" } } }, "required": ["files"] } } }
+        },
+        "responses": {
+          "200": { "description": "result", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" }, "indexed": { "type": "integer" }, "failed": { "type": "array", "items": { "type": "object" } }, "saved": { "type": "boolean" } } } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/ingest/image": {
+      "post": {
+        "tags": ["ingestion"],
+        "summary": "Caption an image with a vision model and index the caption",
+        "description": "Describe-then-embed. Requires a vision-capable backend and a configured asset directory.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IngestImageRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "indexed", "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string" }, "image_ref": { "type": "string" }, "caption": { "type": "string" } } } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "502": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/query": {
+      "post": {
+        "tags": ["retrieval"],
+        "summary": "Retrieve chunks without generating an answer",
+        "description": "Alias: POST /query. No language model required.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QueryRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/QueryResult" } } } } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "tags": ["retrieval"],
+        "summary": "Retrieve and stream a grounded answer (SSE)",
+        "description": "Streams server-sent events: a 'sources' event with the retrieved chunks, then repeated 'token' events, then 'done'. May emit 'abstain' or 'error'. Set global=true to answer a corpus-wide question from community summaries.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of sources, token, done (or abstain, error)",
+            "content": { "text/event-stream": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/api/documents": {
+      "get": {
+        "tags": ["documents"],
+        "summary": "List documents in the bucket",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "responses": {
+          "200": { "description": "documents", "content": { "application/json": { "schema": { "type": "object", "properties": { "documents": { "type": "array", "items": { "$ref": "#/components/schemas/DocInfo" } } } } } } }
+        }
+      }
+    },
+    "/api/document": {
+      "get": {
+        "tags": ["documents"],
+        "summary": "Full document text, metadata, and chunk spans (for highlighting)",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }, { "$ref": "#/components/parameters/doc" }],
+        "responses": {
+          "200": { "description": "document view", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocView" } } } },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["documents"],
+        "summary": "Delete a document, its chunks, metadata, and history",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }, { "$ref": "#/components/parameters/doc" }],
+        "responses": {
+          "200": { "description": "deleted", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "string" }, "chunks": { "type": "integer" } } } } } },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/versions": {
+      "get": {
+        "tags": ["versions"],
+        "summary": "List a document's content history (oldest first)",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }, { "$ref": "#/components/parameters/doc" }],
+        "responses": { "200": { "description": "versions", "content": { "application/json": { "schema": { "type": "object", "properties": { "versions": { "type": "array", "items": { "$ref": "#/components/schemas/DocVersion" } } } } } } } }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": ["versions"],
+        "summary": "Text of one version",
+        "parameters": [
+          { "$ref": "#/components/parameters/bucket" }, { "$ref": "#/components/parameters/doc" },
+          { "name": "n", "in": "query", "required": true, "schema": { "type": "integer" }, "description": "1-based version number" }
+        ],
+        "responses": { "200": { "description": "version text", "content": { "application/json": { "schema": { "type": "object", "properties": { "text": { "type": "string" } } } } } } }
+      }
+    },
+    "/api/restore": {
+      "post": {
+        "tags": ["versions"],
+        "summary": "Make an earlier version current by re-ingesting it",
+        "parameters": [
+          { "$ref": "#/components/parameters/bucket" }, { "$ref": "#/components/parameters/doc" },
+          { "name": "n", "in": "query", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "restored", "content": { "application/json": { "schema": { "type": "object" } } } } }
+      }
+    },
+    "/api/graph": {
+      "get": { "tags": ["graphs"], "summary": "Chunk similarity graph for visualization", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "graph", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GraphView" } } } } } }
+    },
+    "/api/entity-graph": {
+      "get": { "tags": ["graphs"], "summary": "Entity-relationship graph for visualization", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "graph", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GraphView" } } } } } }
+    },
+    "/api/build-entities": {
+      "post": {
+        "tags": ["graphs"],
+        "summary": "Extract the entity graph with the language model (SSE)",
+        "parameters": [
+          { "$ref": "#/components/parameters/bucket" },
+          { "name": "model", "in": "query", "schema": { "type": "string" } },
+          { "name": "batch", "in": "query", "schema": { "type": "integer", "default": 4 } }
+        ],
+        "responses": { "200": { "description": "SSE: progress then done", "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/build-communities": {
+      "post": {
+        "tags": ["graphs"],
+        "summary": "Generate a thematic summary per community for global queries (SSE)",
+        "parameters": [
+          { "$ref": "#/components/parameters/bucket" },
+          { "name": "model", "in": "query", "schema": { "type": "string" } },
+          { "name": "max_passages", "in": "query", "schema": { "type": "integer", "default": 12 } }
+        ],
+        "responses": { "200": { "description": "SSE: progress then done", "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/communities": {
+      "get": {
+        "tags": ["graphs"],
+        "summary": "List generated community summaries",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "responses": { "200": { "description": "communities", "content": { "application/json": { "schema": { "type": "object", "properties": { "communities": { "type": "array", "items": { "$ref": "#/components/schemas/CommunitySummary" } } } } } } } }
+      }
+    },
+    "/api/buckets": {
+      "get": { "tags": ["admin"], "summary": "List buckets", "responses": { "200": { "description": "buckets", "content": { "application/json": { "schema": { "type": "array", "items": { "type": "object" } } } } } } },
+      "post": { "tags": ["admin"], "summary": "Create a bucket", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "created" } } },
+      "delete": { "tags": ["admin"], "summary": "Delete a bucket", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "deleted" } } }
+    },
+    "/api/config": {
+      "get": { "tags": ["admin"], "summary": "Read runtime configuration (secrets redacted)", "responses": { "200": { "description": "config", "content": { "application/json": { "schema": { "type": "object" } } } } } },
+      "post": { "tags": ["admin"], "summary": "Update runtime configuration", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } }, "responses": { "200": { "description": "updated", "content": { "application/json": { "schema": { "type": "object" } } } } } }
+    },
+    "/api/models": {
+      "get": { "tags": ["admin"], "summary": "List models and embedding readiness", "responses": { "200": { "description": "models", "content": { "application/json": { "schema": { "type": "object" } } } } } }
+    },
+    "/api/pull": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Pull an Ollama model (SSE)",
+        "parameters": [{ "name": "model", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "SSE progress", "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/save": {
+      "post": { "tags": ["admin"], "summary": "Persist the bucket to disk", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "saved", "content": { "application/json": { "schema": { "type": "object" } } } } } }
+    },
+    "/api/asset/{id}": {
+      "get": {
+        "tags": ["documents"],
+        "summary": "Serve a stored image by its content-addressed id",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "image bytes", "content": { "image/png": { "schema": { "type": "string", "format": "binary" } }, "image/jpeg": { "schema": { "type": "string", "format": "binary" } } } },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/status": {
+      "get": { "tags": ["ops"], "summary": "Corpus and backend status", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "status", "content": { "application/json": { "schema": { "type": "object" } } } } } }
+    },
+    "/api/stats": {
+      "get": { "tags": ["ops"], "summary": "Corpus stats (alias: GET /stats)", "parameters": [{ "$ref": "#/components/parameters/bucket" }], "responses": { "200": { "description": "stats", "content": { "application/json": { "schema": { "type": "object" } } } } } }
+    },
+    "/healthz": { "get": { "tags": ["ops"], "summary": "Liveness", "security": [{}], "responses": { "200": { "description": "ok" } } } },
+    "/readyz": { "get": { "tags": ["ops"], "summary": "Readiness (also checks the model backend)", "security": [{}], "responses": { "200": { "description": "ready" }, "503": { "description": "not ready" } } } },
+    "/v1/chat/completions": {
+      "post": {
+        "tags": ["retrieval"],
+        "summary": "OpenAI-compatible chat completions (retrieval-augmented)",
+        "description": "Accepts the standard OpenAI request shape; the last user message is the question. Retrieval knobs (top_k, graph_mix, rerank, min_sim) are accepted as extension fields.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "completion (streaming or not)" } }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "bucket": { "name": "bucket", "in": "query", "schema": { "type": "string", "default": "default" }, "description": "Corpus to operate on (one .tg file)." },
+      "doc": { "name": "doc", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Document id." }
+    },
+    "responses": {
+      "Error": { "description": "Error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "description": "Authorization: Bearer <api-key>, when --api-key is set." },
+      "apiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+      "apiKeyQuery": { "type": "apiKey", "in": "query", "name": "api_key" }
+    },
+    "schemas": {
+      "Error": { "type": "object", "properties": { "error": { "type": "string" } } },
+      "Document": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": "string" },
+          "meta": { "type": "object", "additionalProperties": true, "description": "Arbitrary JSON metadata, returned with every retrieved chunk." }
+        }
+      },
+      "IngestRequest": {
+        "type": "object",
+        "required": ["documents"],
+        "properties": {
+          "documents": { "type": "array", "items": { "$ref": "#/components/schemas/Document" } },
+          "replace": { "type": "boolean", "description": "Rebuild the bucket from scratch instead of adding incrementally." }
+        }
+      },
+      "IngestFile": {
+        "type": "object",
+        "required": ["id", "b64"],
+        "properties": {
+          "id": { "type": "string" },
+          "b64": { "type": "string", "description": "Base64-encoded file bytes." },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "IngestImageRequest": {
+        "type": "object",
+        "required": ["id", "b64"],
+        "properties": {
+          "id": { "type": "string" },
+          "b64": { "type": "string", "description": "Base64-encoded image bytes." },
+          "ext": { "type": "string", "example": "png" },
+          "model": { "type": "string", "description": "Vision model to caption with." },
+          "prompt": { "type": "string" },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "QueryRequest": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "top_k": { "type": "integer", "default": 6 },
+          "graph_mix": { "type": "number", "format": "float", "default": 0 },
+          "mmr_lambda": { "type": "number", "format": "float", "default": 0 },
+          "entity_mix": { "type": "number", "format": "float", "default": 0 }
+        }
+      },
+      "ChatRequest": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "model": { "type": "string" },
+          "top_k": { "type": "integer", "default": 6 },
+          "graph_mix": { "type": "number", "format": "float" },
+          "mmr_lambda": { "type": "number", "format": "float" },
+          "entity_mix": { "type": "number", "format": "float" },
+          "min_sim": { "type": "number", "format": "float", "description": "Abstention threshold." },
+          "rerank": { "type": "boolean", "description": "Pointwise LLM reranking." },
+          "global": { "type": "boolean", "description": "Answer corpus-wide from community summaries." },
+          "meta_keys": { "type": "array", "items": { "type": "string" }, "description": "Document metadata fields to inject into each passage." },
+          "history": { "type": "array", "items": { "type": "object", "properties": { "role": { "type": "string" }, "content": { "type": "string" } } } }
+        }
+      },
+      "QueryResult": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "doc_id": { "type": "string" },
+          "score": { "type": "number", "format": "float" },
+          "similarity": { "type": "number", "format": "float" },
+          "text": { "type": "string" },
+          "start": { "type": "integer", "description": "Rune offset of the chunk in its document." },
+          "end": { "type": "integer" },
+          "meta": { "type": "object", "additionalProperties": true },
+          "kind": { "type": "string", "description": "\"image\" for image chunks." },
+          "image_ref": { "type": "string" }
+        }
+      },
+      "DocInfo": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "chunks": { "type": "integer" }, "bytes": { "type": "integer" } }
+      },
+      "ChunkSpan": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "pos": { "type": "integer" }, "start": { "type": "integer" }, "end": { "type": "integer" } }
+      },
+      "DocView": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": "string" },
+          "meta": { "type": "object", "additionalProperties": true },
+          "spans": { "type": "array", "items": { "$ref": "#/components/schemas/ChunkSpan" } }
+        }
+      },
+      "DocVersion": {
+        "type": "object",
+        "properties": {
+          "n": { "type": "integer" }, "hash": { "type": "string" }, "time": { "type": "integer" },
+          "bytes": { "type": "integer" }, "chunks": { "type": "integer" }, "current": { "type": "boolean" }
+        }
+      },
+      "CommunitySummary": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "integer" }, "size": { "type": "integer" }, "summary": { "type": "string" },
+          "chunks": { "type": "array", "items": { "type": "string" } },
+          "doc_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "GraphView": {
+        "type": "object",
+        "properties": {
+          "nodes": { "type": "array", "items": { "type": "object" } },
+          "edges": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    }
+  }
+}

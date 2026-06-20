@@ -120,6 +120,8 @@ func (s *Server) routes(opt Options) http.Handler {
 		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	}
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
+	mux.HandleFunc("GET /api/openapi.json", s.handleOpenAPI)
 	// Core endpoints. The /api/* paths are canonical and match the rest of the
 	// surface; the short paths are kept as aliases so existing clients keep working.
 	mux.HandleFunc("GET /stats", s.handleStats)
