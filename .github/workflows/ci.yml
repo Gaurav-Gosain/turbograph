@@ -65,7 +65,7 @@ jobs:
           go-version: stable
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           # Build the linter from source with this repo's Go toolchain. The
