@@ -233,9 +233,28 @@ controlled comparison is the natural next benchmark.
 
 ## Reproducing
 
-These are local measurements rather than a committed harness (BEIR and
-MultiHop-RAG corpora and a running model server do not belong in the repo). To
-reproduce: download a dataset, ingest the corpus, retrieve the test queries, score
-against the labels (collapse chunks to documents for BEIR, or substring-match the
-evidence for MultiHop-RAG). The shipped `turbograph eval` command performs the
-same scoring for chunk-level suites.
+The harness is committed; the datasets and a model server are not, since the
+BEIR and MultiHop-RAG corpora are large and the model runs locally.
+
+The `turbograph bench` command ingests a labeled dataset and scores retrieval
+end to end. For a BEIR dataset such as SciFact:
+
+```
+turbograph bench --format beir \
+  --corpus scifact/corpus.jsonl --queries scifact/queries.jsonl \
+  --qrels scifact/qrels/test.tsv --k 10 --embed-model embeddinggemma
+```
+
+`scripts/bench/scifact.sh` downloads SciFact and runs that command, so the
+headline SciFact row regenerates with one script and a local Ollama. The `bench`
+package (loaders, the evaluation runner, and the deterministic embedder) backs
+both the command and the offline regression suite.
+
+A committed, deterministic quality gate runs in CI with no model and no network:
+`bench.TestRetrievalRegression` ingests a small topically-separated corpus
+through the full pipeline (chunk, embed with a deterministic hashing embedder,
+index, fuse, rank, collapse to documents, score) and fails if recall, MRR, or
+nDCG drop below a floor. It catches pipeline regressions everywhere; the absolute
+scores are not comparable to the literature numbers above, which use a real
+embedder. The `turbograph eval` command scores chunk-level JSONL suites the same
+way.
