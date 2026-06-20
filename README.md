@@ -383,7 +383,10 @@ for how to:
 - tune quantization, graph construction, and retrieval.
 
 The deeper design is in [docs/architecture.md](docs/architecture.md), and the
-on-disk `.tg` store format is specified in [docs/format.md](docs/format.md).
+on-disk `.tg` store format is specified in [docs/format.md](docs/format.md). The
+stable data primitives (document metadata, chunk offsets and highlighting,
+versioning, retrieval) and how to build your own tools on them are in
+[docs/primitives.md](docs/primitives.md).
 
 ## Performance
 

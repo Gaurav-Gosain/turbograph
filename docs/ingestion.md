@@ -129,6 +129,59 @@ in; remove that flag if your build is fine with it.
 Anything that reads a file path and writes text to stdout works here. PP-OCRv6 is
 one choice; swap in tesseract, a cloud OCR, or a document-AI service the same way.
 
+OCR is for text trapped in a scan. To make an actual figure, chart, or table
+retrievable as an image, use the multimodal path below instead.
+
+## Images, figures, and tables (describe then embed)
+
+turbograph makes images first-class retrievable content without a second vector
+space. A vision model captions the image, the caption is embedded and indexed
+like any other text, and the chunk keeps a reference to the stored image. A text
+query then finds the figure by what it depicts.
+
+```mermaid
+flowchart LR
+  img["image / figure / table"] --> cap["vision model caption"]
+  cap --> emb["text embedder"]
+  emb --> idx["same HNSW + BM25 index"]
+  img --> asset["content-addressed asset store"]
+  idx --> hit["retrieved chunk (kind=image, image_ref)"]
+  asset --> hit
+```
+
+This reuses the entire text pipeline: one embedding space, the same hybrid
+search, graph, reranking, and persistence. The trade-off is that a caption is a
+summary, so fine detail depends on the vision model; pick a capable one
+(`llava`, `llama3.2-vision`, `qwen2.5-vl`, and similar).
+
+The server stores image bytes in a content-addressed directory beside the
+buckets (`<data>/assets`, enabled automatically when `--data` is set) and serves
+them at `GET /api/asset/<id>`. The image bytes are never written into the `.tg`
+snapshot, which stays text and vectors only.
+
+Ingest an image over HTTP. `model` must name a vision-capable model the backend
+can run; `meta` is optional document metadata:
+
+```
+POST /api/ingest/image
+{ "id": "report.pdf#fig3", "b64": "<base64 image>", "ext": "png",
+  "model": "qwen2.5-vl", "prompt": "Describe this figure for search.",
+  "meta": { "source": "report.pdf", "page": 12 } }
+```
+
+The response carries the generated `caption` and the `image_ref`. From then on
+the image retrieves by its caption, and a retrieved result reports `kind:
+"image"` with its `image_ref` so a UI can show the picture (the bundled UI shows
+it above the caption when you click the citation). In the web UI, dropping an
+image file onto the upload zone runs the same path with the selected model.
+
+A vision-capable backend is detected automatically; the Ollama backend
+implements `CaptionImage` over the native `/api/generate` images field. To pull
+figures out of PDFs, extract them with a poppler tool such as
+`pdfimages -png in.pdf prefix` or `pdftoppm -png in.pdf prefix` and post each
+image to the endpoint above, associating it with the PDF via the document id and
+`meta`.
+
 ## Programmatic ingestion
 
 The same engine is available as a library for streaming sources:

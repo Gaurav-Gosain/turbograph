@@ -71,12 +71,14 @@ A `Chunk` (`rag/chunk.go`) is one unit of retrievable text with provenance:
 
 ```go
 type Chunk struct {
-    ID    string `json:"id"`     // stable identifier, "doc#pos"
-    DocID string `json:"doc_id"`
-    Pos   int    `json:"pos"`    // ordinal within the document
-    Text  string `json:"text"`
-    Start int    `json:"start"`  // rune offset of the body in the source, or -1
-    End   int    `json:"end"`    // rune offset (exclusive), or -1
+    ID       string `json:"id"`                  // stable identifier, "doc#pos"
+    DocID    string `json:"doc_id"`
+    Pos      int    `json:"pos"`                 // ordinal within the document
+    Text     string `json:"text"`
+    Start    int    `json:"start"`               // rune offset of the body in the source, or -1
+    End      int    `json:"end"`                 // rune offset (exclusive), or -1
+    Kind     string `json:"kind,omitempty"`      // "" text, or "image" for a captioned image
+    ImageRef string `json:"image_ref,omitempty"` // asset id of the source image, for image chunks
 }
 ```
 
@@ -84,6 +86,14 @@ type Chunk struct {
 chunk's body within the original document text. They give an exact
 document-to-chunk mapping that callers use to render a document with its retrieved
 chunks highlighted (see [primitives.md](primitives.md)).
+
+`Kind` and `ImageRef` mark a multimodal chunk. For an image, figure, or table,
+`Text` is a vision model's caption (so it retrieves in the same text vector space
+as everything else), `Kind` is `"image"`, and `ImageRef` is the asset id of the
+source image. The image bytes are not in the `.tg` file; they live in a
+content-addressed asset store beside the buckets and are served separately (for
+example `GET /api/asset/<ref>`). See [ingestion.md](ingestion.md) for the
+describe-then-embed path.
 
 The offsets are best-effort. At ingest, `chunkDoc` maps each piece back to the
 source with `locateSpan` (`rag/document.go`), a whitespace-insensitive forward
