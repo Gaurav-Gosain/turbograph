@@ -450,8 +450,22 @@ against exact search, BM25 and RRF against known rankings, communities against
 modularity, the codec against a fuzzer, the S3 client and SigV4 signer against an
 in-memory bucket, the server middleware (auth, body limits, panic recovery, CORS,
 metrics) against httptest, and ingestion (parallel, dedup, resume, error
-tolerance, cancellation) end to end. CI runs build, vet, gofmt, the race
-detector, the pure-stdlib `noasm` build, and govulncheck on every push.
+tolerance, cancellation) end to end. Native fuzzers cover the chunkers and the
+document-to-chunk offset mapping, and a committed, deterministic retrieval suite
+(`bench.TestRetrievalRegression`) gates quality with no model or network. CI runs
+the test suite across Linux, macOS, and Windows on two Go versions, the race
+detector, golangci-lint, govulncheck, the pure-stdlib `noasm` build, a benchmark
+smoke run, and the Python and TypeScript client test suites on every push.
+
+The reproducible benchmark harness and how to regenerate the headline numbers
+are in [docs/benchmarks.md](docs/benchmarks.md); the honest in-memory scaling
+envelope is in [docs/limits.md](docs/limits.md).
+
+## Project
+
+- [ROADMAP.md](ROADMAP.md): what is planned and what is honestly not done yet.
+- [CHANGELOG.md](CHANGELOG.md): notable changes per release.
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

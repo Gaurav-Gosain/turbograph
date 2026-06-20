@@ -1,9 +1,11 @@
-# turbograph developer tasks. Everything here uses only the Go toolchain.
+# turbograph developer tasks. Everything here uses only the Go toolchain
+# (plus golangci-lint for the lint target and the client toolchains).
 BIN := bin/turbograph
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build install test test-race test-short cover fuzz vet fmt lint bench clean docker run
+.PHONY: build install test test-race test-short cover fuzz vet fmt fmt-check \
+	lint bench clean docker run clients-test ci help
 
 build: ## build the single binary (embedded UI)
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/turbograph
@@ -32,11 +34,14 @@ vet: ## go vet
 fmt: ## format all Go code
 	gofmt -w .
 
-lint: fmt vet ## fmt + vet (CI gate)
+fmt-check: ## fail if any Go file is unformatted
 	@test -z "$$(gofmt -l .)" || (echo "unformatted files:"; gofmt -l .; exit 1)
 
-bench: build ## run the TurboQuant codec benchmark
-	$(BIN) quant bench
+lint: ## run golangci-lint (matches CI)
+	golangci-lint run
+
+bench: ## run the benchmark suite once (smoke)
+	go test -run=^$$ -bench=. -benchtime=1x ./...
 
 clean:
 	rm -rf bin
@@ -47,5 +52,11 @@ docker: ## build the container image
 run: build ## build and serve on :8080
 	$(BIN) serve
 
+clients-test: ## run the Python and TypeScript client test suites
+	cd clients/python && python -m pip install -e ".[dev]" && python -m pytest -q
+	cd clients/typescript && npm ci && npx tsc --noEmit && node --test "test/**/*.test.mjs"
+
+ci: fmt-check vet lint test-race bench ## run the full CI gate locally
+
 help: ## list targets
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'

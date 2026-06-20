@@ -30,28 +30,28 @@ type Query struct {
 }
 
 // PrepareQuery rotates q and builds its lookup tables.
-func (qz *Quantizer) PrepareQuery(q []float32) *Query {
-	qrot := make([]float32, qz.dim)
-	qz.rot.Apply(qrot, q)
+func (q *Quantizer) PrepareQuery(vec []float32) *Query {
+	qrot := make([]float32, q.dim)
+	q.rot.Apply(qrot, vec)
 	var n2 float32
 	for _, v := range qrot {
 		n2 += v * v
 	}
-	k := 1 << qz.bits
-	lut := make([]float32, qz.dim*k)
-	levels := qz.cb.levels
-	for i := 0; i < qz.dim; i++ {
+	k := 1 << q.bits
+	lut := make([]float32, q.dim*k)
+	levels := q.cb.levels
+	for i := 0; i < q.dim; i++ {
 		base := i * k
 		qi := qrot[i]
 		for c := 0; c < k; c++ {
 			lut[base+c] = qi * levels[c]
 		}
 	}
-	out := &Query{q: qz, qrot: qrot, qnorm2: n2, qlut: lut, k: k}
-	if qz.m > 0 {
-		projq := make([]float32, qz.m)
-		for j := 0; j < qz.m; j++ {
-			pv := qz.proj[j*qz.dim : (j+1)*qz.dim]
+	out := &Query{q: q, qrot: qrot, qnorm2: n2, qlut: lut, k: k}
+	if q.m > 0 {
+		projq := make([]float32, q.m)
+		for j := 0; j < q.m; j++ {
+			pv := q.proj[j*q.dim : (j+1)*q.dim]
 			var dot float32
 			for i, qi := range qrot {
 				dot += pv[i] * qi

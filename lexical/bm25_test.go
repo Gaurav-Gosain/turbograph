@@ -262,7 +262,8 @@ func TestAddAfterFinalizeRecomputes(t *testing.T) {
 		t.Fatalf("post-Add search wrong: %+v", got)
 	}
 	// IDF of "shared" must now reflect df=2 over N=2.
-	want := math.Log(1 + (2-2+0.5)/(2+0.5))
+	n, df := 2.0, 2.0
+	want := math.Log(1 + (n-df+0.5)/(n+0.5))
 	if math.Abs(ix.idf["shared"]-want) > 1e-9 {
 		t.Fatalf("IDF not recomputed after Add: got %v want %v", ix.idf["shared"], want)
 	}

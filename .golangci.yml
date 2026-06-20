@@ -1,0 +1,33 @@
+# golangci-lint configuration (v2 schema).
+# Sensible, not overbearing: catches real bugs without drowning a clean
+# codebase in style noise. Noisy linters (gochecknoglobals, wsl, ...) stay off.
+#
+# errcheck is intentionally omitted: on idiomatic Go it flags safe ignores (a
+# deferred Close on a read, writes to an HTTP response, a buffered writer) far
+# more than real bugs. staticcheck covers the unchecked errors that actually
+# matter, with much better signal to noise.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+  settings:
+    staticcheck:
+      # Run the bug (SA) and simplification (S) checks; drop the QF "quickfix"
+      # refactor suggestions, which are subjective style nudges, not defects.
+      checks:
+        - all
+        - -QF1001
+        - -QF1008
+
+formatters:
+  enable:
+    - gofmt

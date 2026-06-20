@@ -138,11 +138,6 @@ func (ix *Index) finalize() {
 	ix.finalized = true
 }
 
-// Search returns the top-k documents for query, ranked by descending BM25
-// score. Only query terms contribute, so cost is proportional to the combined
-// length of the matched postings lists rather than the corpus size. Ties break
-// by document ID so results are fully deterministic. A non-positive k or a
-// query with no scorable terms yields nil.
 // Finalize precomputes IDF and average document length. Search calls it lazily,
 // but callers that share an Index across goroutines should call it once after the
 // last Add so concurrent Search calls never trigger the mutation themselves.
@@ -152,6 +147,11 @@ func (ix *Index) Finalize() {
 	}
 }
 
+// Search returns the top-k documents for query, ranked by descending BM25
+// score. Only query terms contribute, so cost is proportional to the combined
+// length of the matched postings lists rather than the corpus size. Ties break
+// by document ID so results are fully deterministic. A non-positive k or a
+// query with no scorable terms yields nil.
 func (ix *Index) Search(query string, k int) []Result {
 	if k <= 0 || len(ix.ids) == 0 {
 		return nil

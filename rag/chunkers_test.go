@@ -15,10 +15,10 @@ func TestNewChunkerDispatch(t *testing.T) {
 		StrategySentence:  "sentenceChunker",
 		"":                "recursiveChunker", // unknown/empty -> recursive default
 	}
-	for strat, want := range cases {
-		got := typeName(NewChunker(ChunkConfig{Strategy: strat, TargetWords: 50}))
+	for strategy, want := range cases {
+		got := typeName(NewChunker(ChunkConfig{Strategy: strategy, TargetWords: 50}))
 		if !strings.Contains(got, want) {
-			t.Errorf("strategy %q: got %s, want %s", strat, got, want)
+			t.Errorf("strategy %q: got %s, want %s", strategy, got, want)
 		}
 	}
 }

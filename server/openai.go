@@ -79,7 +79,7 @@ func (req oaiChatRequest) toChatRequest() (chatRequest, bool) {
 	out.Query = req.Messages[lastUser].Content
 	for _, m := range req.Messages[:lastUser] {
 		if m.Role == "user" || m.Role == "assistant" {
-			out.History = append(out.History, chatTurn{Role: m.Role, Content: m.Content})
+			out.History = append(out.History, chatTurn(m))
 		}
 	}
 	return out, out.Query != ""
