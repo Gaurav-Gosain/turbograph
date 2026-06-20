@@ -64,14 +64,13 @@ jobs:
         with:
           go-version: stable
           cache: true
+      # Install golangci-lint from source with this repo's Go toolchain. The
+      # prebuilt action binaries are compiled with an older Go and refuse to lint
+      # a module whose go directive (1.26) is newer than their build toolchain.
+      - name: install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          # Build the linter from source with this repo's Go toolchain. The
-          # prebuilt binaries are compiled with an older Go and refuse to lint a
-          # module whose go directive is newer than their build toolchain.
-          install-mode: goinstall
+        run: golangci-lint run --timeout=5m ./...
 
   benchmarks:
     name: benchmarks smoke
