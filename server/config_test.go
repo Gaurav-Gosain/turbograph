@@ -149,3 +149,18 @@ func TestConfigDisabledWhenNotEnabled(t *testing.T) {
 		t.Fatalf("config edit should be 403 when disabled, got %d", resp.StatusCode)
 	}
 }
+
+func TestValidateBackendURLBlocksMetadataSSRF(t *testing.T) {
+	ok := []string{"", "http://127.0.0.1:11434", "https://api.openai.com", "http://localhost:8080", "http://10.0.0.5:1234"}
+	for _, u := range ok {
+		if err := validateBackendURL(u); err != nil {
+			t.Errorf("expected %q allowed, got %v", u, err)
+		}
+	}
+	bad := []string{"http://169.254.169.254/latest/meta-data/", "https://metadata.google.internal/", "file:///etc/passwd", "gopher://x", "http://"}
+	for _, u := range bad {
+		if err := validateBackendURL(u); err == nil {
+			t.Errorf("expected %q rejected", u)
+		}
+	}
+}

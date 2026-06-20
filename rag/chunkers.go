@@ -1,6 +1,9 @@
 package rag
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Chunker splits a document's text into ordered pieces. It is the seam for
 // document segmentation: the built-in strategies implement it with pure string
@@ -297,5 +300,9 @@ func lastWords(s string, n int) string {
 	return strings.Join(f[len(f)-n:], " ")
 }
 
-func isSpace(r rune) bool  { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }
+// isSpace reports Unicode whitespace, matching strings.Fields (which the chunkers
+// use to normalize text). Aligning the two is what lets locateSpan map a
+// whitespace-normalized chunk body back to a source that contains non-ASCII
+// whitespace such as a non-breaking space.
+func isSpace(r rune) bool  { return unicode.IsSpace(r) }
 func isLetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }

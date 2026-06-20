@@ -3,9 +3,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
@@ -171,10 +174,48 @@ func validateConfig(c RuntimeConfig) error {
 	if c.GenAPI == "openai" && c.GenURL == "" {
 		return fmt.Errorf("openai generation backend requires a base URL")
 	}
+	for _, u := range []string{c.GenURL, c.EmbedURL, c.OllamaURL} {
+		if err := validateBackendURL(u); err != nil {
+			return err
+		}
+	}
 	switch c.ChunkStrategy {
 	case "", rag.StrategyRecursive, rag.StrategyWord, rag.StrategyMarkdown, rag.StrategySentence:
 	default:
 		return fmt.Errorf("unknown chunk strategy %q", c.ChunkStrategy)
+	}
+	return nil
+}
+
+// validateBackendURL guards the configurable backend URLs against the obvious
+// SSRF footguns: the config endpoint controls where the server makes outbound
+// requests, so a configured URL must be a plain http(s) endpoint and must not
+// target the cloud instance-metadata address, which is never a legitimate model
+// backend and is the classic SSRF target. Loopback and private addresses are
+// allowed on purpose: a local Ollama at 127.0.0.1 is the default. Protect the
+// config endpoint with --api-key when the server is exposed.
+func validateBackendURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid backend URL %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("backend URL must be http or https, got %q", raw)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("backend URL must include a host: %q", raw)
+	}
+	// Block the link-local instance-metadata endpoints (AWS, GCP, Azure all use
+	// 169.254.169.254; its IPv6 form is fd00:ec2::254).
+	if host == "169.254.169.254" || host == "fd00:ec2::254" || strings.EqualFold(host, "metadata.google.internal") {
+		return fmt.Errorf("backend URL targets the instance metadata endpoint, which is not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("backend URL targets a link-local address, which is not allowed")
 	}
 	return nil
 }
