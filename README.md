@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/banner.png" alt="turbograph: fast, local, hackable graph RAG in Go" width="100%">
+</p>
+
 # turbograph
 
 [![ci](https://github.com/Gaurav-Gosain/turbograph/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaurav-Gosain/turbograph/actions/workflows/ci.yml)
@@ -206,6 +210,30 @@ docker compose exec ollama ollama pull embeddinggemma   # first run only
 ```
 
 ## The web UI
+
+<p align="center">
+  <img src="docs/images/chat.png" alt="turbograph answering a question with inline citations while lighting up the cited chunks in the graph" width="900">
+</p>
+<p align="center"><sub>a grounded answer with inline citations, lighting up the cited chunks in the graph</sub></p>
+
+<table>
+  <tr>
+    <td><img src="docs/images/hero.png" alt="chunk similarity graph colored by community"></td>
+    <td><img src="docs/images/entity.png" alt="entity-relationship knowledge graph"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>chunk similarity graph, colored by community</sub></td>
+    <td align="center"><sub>entity knowledge graph (GraphRAG style)</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/pipeline.png" alt="visual retrieval pipeline editor"></td>
+    <td><img src="docs/images/cmdk.png" alt="command palette"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>visual retrieval pipeline editor</sub></td>
+    <td align="center"><sub>command palette (Ctrl K)</sub></td>
+  </tr>
+</table>
 
 `serve` ships a self-contained interface (dark, JetBrains Mono, vanilla
 JavaScript, no build step). It lets you:
