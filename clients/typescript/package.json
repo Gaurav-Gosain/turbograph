@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test \"test/**/*.test.mjs\""
+    "test": "tsc && node --test test/*.test.mjs"
   },
   "keywords": [
     "turbograph",

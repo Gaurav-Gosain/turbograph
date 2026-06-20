@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,9 @@ func TestCommandExtractorTransforms(t *testing.T) {
 	}
 	// tr reads stdin, so feed via a shell-free pipeline is awkward; instead use
 	// sh to redirect the {in} file into tr. Guarded below.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -66,6 +70,9 @@ func TestCommandExtractorTransforms(t *testing.T) {
 }
 
 func TestCommandExtractorOutFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -81,6 +88,9 @@ func TestCommandExtractorOutFile(t *testing.T) {
 }
 
 func TestCommandExtractorPreservesExtension(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -97,6 +107,9 @@ func TestCommandExtractorPreservesExtension(t *testing.T) {
 }
 
 func TestCommandExtractorNonZeroExitIncludesStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -201,6 +214,9 @@ func TestCommandExtractorCallerDeadlineRespected(t *testing.T) {
 }
 
 func TestCommandExtractorCleansUpTempFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -221,6 +237,9 @@ func TestCommandExtractorCleansUpTempFiles(t *testing.T) {
 }
 
 func TestCommandExtractorCleansUpTempFilesOnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-command test uses a unix shell")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
