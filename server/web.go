@@ -383,6 +383,7 @@ type chatRequest struct {
 	History   []chatTurn `json:"history"` // recent turns, for query rewriting
 	Model     string     `json:"model"`
 	MetaKeys  []string   `json:"meta_keys"` // document metadata keys to include in each passage
+	Global    bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -424,6 +425,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	model := req.Model
 	if model == "" {
 		model = s.genModel
+	}
+
+	// Global mode answers corpus-wide, thematic questions from the community
+	// summaries (map-reduce style) instead of from individual passages.
+	if req.Global {
+		s.chatGlobal(w, r, st, req, model, send)
+		return
 	}
 
 	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model)

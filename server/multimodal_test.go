@@ -152,3 +152,69 @@ func BenchmarkAssetPut(b *testing.B) {
 		}
 	}
 }
+
+// genBackend is a stubBackend that returns canned text and streams it, for the
+// community-summary and global-answer paths.
+type genBackend struct {
+	stubBackend
+	text string
+}
+
+func (g genBackend) Generate(context.Context, string, string, string) (string, error) {
+	return g.text, nil
+}
+func (g genBackend) GenerateStream(_ context.Context, _, _, _ string, onTok func(string) error) error {
+	return onTok(g.text)
+}
+
+func TestCommunitySummariesAndGlobalChat(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, GraphKNN: 3, MinSimilarity: 0.02})
+	ctx := context.Background()
+	if err := store.Build(ctx, []rag.Document{
+		{ID: "a", Text: "rockets orbit planets gravity launch thrust astronauts space"},
+		{ID: "b", Text: "recipes bake oven flour sugar butter dough pastry cooking"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(store)
+	srv.SetGenerator(genBackend{text: "This section covers the main themes [1]."}, "m", "e")
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Build community summaries (SSE).
+	resp, err := http.Post(ts.URL+"/api/build-communities?model=m", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "event: done") {
+		t.Fatalf("build did not finish: %s", body)
+	}
+	if !store.HasCommunitySummaries() {
+		t.Fatal("no summaries after build")
+	}
+
+	// List them.
+	var list struct {
+		Communities []struct {
+			Summary string `json:"summary"`
+		} `json:"communities"`
+	}
+	getJSON(t, ts.URL+"/api/communities", &list)
+	if len(list.Communities) == 0 || list.Communities[0].Summary == "" {
+		t.Fatalf("communities not listed: %+v", list)
+	}
+
+	// A global question answers from the summaries.
+	cbody, _ := json.Marshal(chatRequest{Query: "what are the main themes?", Global: true, Model: "m"})
+	cr, err := http.Post(ts.URL+"/api/chat", "application/json", bytes.NewReader(cbody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctext, _ := io.ReadAll(cr.Body)
+	cr.Body.Close()
+	if !strings.Contains(string(ctext), "event: sources") || !strings.Contains(string(ctext), "main themes") {
+		t.Fatalf("global chat did not answer from summaries: %s", ctext)
+	}
+}

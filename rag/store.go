@@ -119,8 +119,9 @@ type Store struct {
 	hashes map[[32]byte]string // content hash -> owning doc id, for content-level dedup
 	idHash map[string][32]byte // doc id -> content hash, persisted so dedup survives reload
 
-	versions map[string][]docVersion    // doc id -> content history, oldest first
-	docMeta  map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
+	versions    map[string][]docVersion    // doc id -> content history, oldest first
+	docMeta     map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
+	commSummary map[int]string             // community label -> generated summary (global queries)
 
 	edges        []edgeRec
 	indexedUpTo  int  // chunks for which similarity edges have been discovered
@@ -219,6 +220,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	s.idHash = make(map[string][32]byte)
 	s.versions = make(map[string][]docVersion)
 	s.docMeta = make(map[string]json.RawMessage)
+	s.commSummary = nil // a fresh build invalidates any community summaries
 	if err := s.appendChunksLocked(chunks, vecs); err != nil {
 		return err
 	}
@@ -263,8 +265,14 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	changed := false
 	for _, p := range preps {
-		s.applyPreparedLocked(p)
+		if s.applyPreparedLocked(p) {
+			changed = true
+		}
+	}
+	if changed {
+		s.commSummary = nil // graph changed; community summaries are now stale
 	}
 	s.reindexLocked()
 	return nil

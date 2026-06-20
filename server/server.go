@@ -145,6 +145,8 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("POST /api/pull", s.handlePull)
 	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
 	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
+	mux.HandleFunc("GET /api/communities", s.handleCommunities)
+	mux.HandleFunc("POST /api/build-communities", s.handleBuildCommunities)
 
 	// Runtime configuration.
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)

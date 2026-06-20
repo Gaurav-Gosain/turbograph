@@ -114,6 +114,7 @@ func (s *Store) DeleteDocument(id string) int {
 	delete(s.docMeta, id)
 	delete(s.versions, id)
 	if removed > 0 {
+		s.commSummary = nil // graph changed; community summaries are now stale
 		s.reindexLocked()
 	}
 	return removed

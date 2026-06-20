@@ -34,6 +34,9 @@ type snapshot struct {
 	// DocMeta persists arbitrary per-document metadata as raw JSON. Absent in
 	// older snapshots.
 	DocMeta map[string]json.RawMessage `json:"doc_meta"`
+	// CommSummary persists per-community thematic summaries for global queries.
+	// Absent in older snapshots and when summaries were never built.
+	CommSummary map[int]string `json:"community_summaries"`
 }
 
 // Save serializes the store to w.
@@ -43,7 +46,7 @@ func (s *Store) Save(w io.Writer) error {
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta}
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta, CommSummary: s.commSummary}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
@@ -100,6 +103,7 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	}
 	s.versions = snap.Versions
 	s.docMeta = snap.DocMeta
+	s.commSummary = snap.CommSummary
 	if len(snap.Entities) > 0 {
 		s.eg = entity.Restore(snap.Entities, snap.Relations)
 		s.rebuildEntityLocked()
