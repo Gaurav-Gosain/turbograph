@@ -132,6 +132,102 @@ best systems score ~0.22-0.40 nDCG@10. turbograph's local, single-binary footpri
 makes the small reasoning split of BRIGHT (`pony`, ~7.9k docs) the natural next
 target.
 
+## How turbograph compares to other GraphRAG systems
+
+This section places turbograph against the popular graph and graph-adjacent RAG
+systems. Be clear about provenance: turbograph's component numbers below are
+measured on this machine (16 cores), while the cross-system numbers are taken
+from each project's own paper or repository, on their hardware and models. This
+is an architectural and capability comparison, not a controlled head-to-head
+re-run, which would require standing up every system on one corpus and model.
+
+### Measured turbograph component costs
+
+| Operation | Cost | Notes |
+|-----------|------|-------|
+| `dotf` (768-dim dot) | 151 ns SIMD vs 344 ns Go | the hot path, AVX kernel |
+| Encode a vector (TurboQuant) | 71 us | 4 bits/coord, once per chunk |
+| HNSW search (100k) | ~0.68 ms | approximate nearest neighbors |
+| Quantized flat search (100k) | 13.9 ms vs 77 ms brute float | 5.6x faster than float scan |
+| Hybrid retrieve (dense+BM25+fusion) | 259 us | per query, no graph |
+| Graph retrieve (+ Personalized PageRank) | 2.0 ms | per query, with PPR |
+| Chunk-to-document offset mapping | 333 ns | per chunk, for highlighting |
+
+The headline: turbograph builds its core retrieval graph with **zero LLM calls**
+(it is the chunk-similarity graph, derived from embeddings), and a query is a
+sub-millisecond to low-millisecond CPU operation with no per-query model call.
+
+### The landscape
+
+The systems split cleanly into two camps by how they answer corpus-wide,
+thematic ("global") questions:
+
+- **Summary-based** (Microsoft GraphRAG, RAPTOR, LightRAG's high-level mode):
+  pre-generate natural-language summaries of clusters/communities and answer
+  global questions from them. Best at sense-making; expensive to index.
+- **PageRank-based** (HippoRAG/HippoRAG 2, fast-graphrag, and turbograph): seed
+  Personalized PageRank from query-matched nodes and spread activation to
+  connected passages. Best and cheapest at local/multi-hop factual questions;
+  structurally weak at global questions, because there is no good seed set or
+  pre-aggregated thematic node for a whole-corpus query.
+
+| Dimension | MS GraphRAG | LightRAG | HippoRAG 2 | RAPTOR | **turbograph** |
+|---|---|---|---|---|---|
+| Indexing cost | very high (4-6 LLM calls/chunk + community reports) | low-med (1/chunk) | med-high (>=1 OpenIE call/passage) | low (1/cluster) | **lowest** (similarity graph is embedding-only; entity graph and summaries opt-in) |
+| Query latency | high (global map-reduce) | low | low (1 PPR pass) | low | **low** (PPR + RRF, no per-query LLM) |
+| Global/thematic queries | best | good | weak | good | **now supported** (community summaries) |
+| Local/multi-hop | good | good | **best** | weak | strong (same PPR mechanism) |
+| Hybrid lexical (BM25) fusion | no | partial | no | no | **yes** (RRF) |
+| Deploy footprint | Python + LLM API + vector store | Python | Python + embed model + vLLM | Python | **single Go binary, stdlib-only, local Ollama** |
+| External service required | LLM API | no | LLM | LLM API | **none** |
+
+Sources: Microsoft GraphRAG (arXiv:2404.16130), LightRAG (arXiv:2410.05779),
+HippoRAG / HippoRAG 2 (arXiv:2405.14831, arXiv:2502.14802), RAPTOR
+(arXiv:2401.18059), fast-graphrag (github.com/circlemind-ai/fast-graphrag).
+
+### Where turbograph wins, and where it trailed
+
+**Wins.** Deployment footprint (a single static binary, no vector DB, no graph
+DB, local by default) is category-leading; every competitor is a Python stack,
+and most default to a hosted LLM API. Indexing is the cheapest of the group: the
+core graph costs zero model calls. Local and multi-hop retrieval use exactly the
+Personalized PageRank mechanism that has the strongest independent QA evidence
+(HippoRAG 2). Hybrid dense+BM25 fusion with reciprocal rank fusion is a robust,
+free quality boost that the pure-graph systems do not foreground.
+
+**The gap that was real.** Global, thematic, sense-making questions ("what are
+the main themes across this corpus?"). This is the one dimension where a
+PageRank-based system is structurally beaten rather than merely lighter: PPR
+spreads from local seeds, so a whole-corpus question has no good seed and no
+thematic node to retrieve. Microsoft GraphRAG wins those questions specifically
+because of its **community summaries** (72-83% comprehensiveness over a vector
+baseline in their study), and RAPTOR gets a similar effect from its summary
+tree.
+
+### What was changed to close it
+
+turbograph already partitioned the chunk graph into communities; it was missing
+the summaries. So community summaries and a global query path were added (see
+[primitives.md](primitives.md) and the `/api/build-communities` and global
+`/api/chat` endpoints):
+
+1. Generate one thematic summary per community with the language model, once at
+   index time (far fewer calls than per-chunk extraction, and **opt-in**, so the
+   zero-LLM default is intact).
+2. For a global question, rank the summaries against the query and synthesize an
+   answer across the most relevant ones, citing them.
+
+This adopts the proven remedy from the summary-based camp while keeping
+turbograph's PageRank strengths and light footprint. It reintroduces a re-summarize-on-update
+cost (which LightRAG rightly criticizes in Microsoft GraphRAG); turbograph
+mitigates it by keeping summaries opt-in and invalidating them only when content
+changes, leaving the cheap default untouched.
+
+The remaining honest gap is **published retrieval-quality numbers**: turbograph
+has measured component costs and the quality studies above, but not yet a
+head-to-head accuracy table against these systems on a shared corpus. That
+controlled comparison is the natural next benchmark.
+
 ## Reproducing
 
 These are honest local measurements rather than a committed harness (BEIR and
