@@ -133,6 +133,13 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 		return err
 	}
 
+	// Clean up the raw extraction before materializing the graph: merge surface
+	// variants of the same entity (and rewrite the edges through the merge), then
+	// drop generic and malformed ghost nodes. This concentrates PageRank mass and
+	// reconnects the subgraph, improving entity-graph retrieval.
+	eg.Canonicalize()
+	eg.Prune()
+
 	s.mu.Lock()
 	s.eg = eg
 	s.rebuildEntityLocked()

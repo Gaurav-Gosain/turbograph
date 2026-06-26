@@ -22,13 +22,25 @@ type LLMExtractor struct {
 // NewLLMExtractor returns an extractor backed by gen.
 func NewLLMExtractor(gen Generator) *LLMExtractor { return &LLMExtractor{Gen: gen} }
 
+const extractRules = "Rules:\n" +
+	"- Use one canonical name per entity. If it is mentioned by a pronoun, alias, or short form, " +
+	"use its most complete identifier everywhere (he, Dr. Babbage -> Charles Babbage).\n" +
+	"- Use a basic type from: person, organization, location, date, event, product, concept. " +
+	"Avoid overly specific types (use person, not scientist) and vague ones (entity, thing).\n" +
+	"- Name relations with a short lowercase verb phrase (invented, born_in, works_at). " +
+	"Avoid vague relations like is, has, related_to.\n" +
+	"- Each relation description is one concrete fact naming both entities. " +
+	"Good: wrote the first algorithm for the Analytical Engine. Bad: describes a relationship.\n" +
+	"- Use only the text. Do not add outside knowledge or invent relationships.\n" +
+	"- Use the same entity names in relations as in the entity lines. Do not add commentary."
+
 const extractSystem = "You extract a knowledge graph from text. " +
 	"Identify the salient entities (people, organizations, places, products, concepts) " +
 	"and the relationships between them. " +
 	"Output one item per line and nothing else, in exactly these formats:\n" +
 	"entity|name|type|one short description\n" +
 	"relation|source entity|target entity|how they relate\n" +
-	"Use the same entity names in relations as in the entity lines. Do not add commentary."
+	extractRules
 
 const extractExample = "Example output:\n" +
 	"entity|Ada Lovelace|person|nineteenth century mathematician\n" +
@@ -58,7 +70,7 @@ const extractBatchSystem = "You extract a knowledge graph from several numbered 
 	"Output one item per line and nothing else, each tagged with its passage number, in exactly these formats:\n" +
 	"entity|<passage number>|name|type|one short description\n" +
 	"relation|<passage number>|source entity|target entity|how they relate\n" +
-	"Use the same entity names in relations as in the entity lines. Do not add commentary."
+	extractRules
 
 const extractBatchExample = "Example output for two passages:\n" +
 	"entity|1|Ada Lovelace|person|nineteenth century mathematician\n" +
