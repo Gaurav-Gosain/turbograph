@@ -131,6 +131,64 @@ func TestPullEndpoint(t *testing.T) {
 	}
 }
 
+func TestContextualIngestHTTP(t *testing.T) {
+	// The fake model returns "answer from [1]" for any generation, so an ingest
+	// with contextual retrieval on prefixes each chunk's indexed text with that
+	// phrase, a word ("answer") absent from the body. Retrieving "answer" then
+	// proves the contextual prefix entered the index over the HTTP path.
+	oll := fakeOllamaServer()
+	defer oll.Close()
+	client := ollama.New()
+	client.BaseURL = oll.URL
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, MinSimilarity: 0.01})
+	s := New(store)
+	s.SetGenerator(client, "qwen3.5:2b", "embeddinggemma")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	post := func(path, body string) *http.Response {
+		resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	rankOf := func(id string) int {
+		resp := post("/api/query", `{"query":"answer","top_k":5}`)
+		defer resp.Body.Close()
+		var out struct {
+			Results []struct {
+				DocID string `json:"doc_id"`
+			} `json:"results"`
+		}
+		json.NewDecoder(resp.Body).Decode(&out)
+		for i, r := range out.Results {
+			if r.DocID == id {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// One plain doc (ingested before the contextualizer is set) and one contextual
+	// doc whose generated prefix carries "answer", a word in neither body. The
+	// context-only word must rank the contextual doc above the plain one.
+	post(`/api/ingest`, `{"documents":[{"id":"plain","text":"green turtles swim slowly here"}]}`).Body.Close()
+	resp := post(`/api/ingest`, `{"documents":[{"id":"ctx","text":"purple mountains rise sharply now"}],"contextual":true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("contextual ingest status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	ctxRank, plainRank := rankOf("ctx"), rankOf("plain")
+	if ctxRank < 0 {
+		t.Fatal("contextual doc not retrieved for the context-only word")
+	}
+	if plainRank >= 0 && ctxRank > plainRank {
+		t.Fatalf("context-only word should rank the contextual doc first: ctx=%d plain=%d", ctxRank, plainRank)
+	}
+}
+
 func TestDocumentsEndpoint(t *testing.T) {
 	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05})
 	docs := []rag.Document{{ID: "readme.md", Text: "alpha beta gamma delta epsilon"}, {ID: "guide.md", Text: "one two three"}}

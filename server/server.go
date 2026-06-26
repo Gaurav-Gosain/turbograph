@@ -254,6 +254,11 @@ type ingestRequest struct {
 	Documents []rag.Document `json:"documents"`
 	// Replace rebuilds from scratch; otherwise documents are added incrementally.
 	Replace bool `json:"replace"`
+	// Contextual enables Anthropic-style contextual retrieval for this ingest: each
+	// chunk is prefixed, for indexing only, with a generated sentence situating it
+	// in its document. It costs one model call per chunk, so it is opt-in. It helps
+	// most on long documents whose later chunks lose the entity name to anaphora.
+	Contextual bool `json:"contextual"`
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +275,16 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if len(req.Documents) == 0 {
 		writeErr(w, http.StatusBadRequest, errEmpty("documents"))
 		return
+	}
+	// The Contextual flag is authoritative for this request: enable it when asked
+	// and a generator is configured, otherwise ensure it is off, so a bucket does
+	// not silently stay contextual across later plain ingests.
+	if s.gen != nil {
+		if req.Contextual {
+			st.SetContextualizer(genAdapter{c: s.gen, model: s.genModel})
+		} else {
+			st.SetContextualizer(nil)
+		}
 	}
 	if req.Replace {
 		err = st.Build(r.Context(), req.Documents)
