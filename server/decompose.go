@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
@@ -64,13 +65,29 @@ func (s *Server) retrieveDecomposed(ctx context.Context, st *rag.Store, subs []s
 		}
 		return st.Retrieve(ctx, q, p)
 	}
-	best := map[string]rag.Retrieved{}
-	order := []string{}
-	for _, sub := range subs {
-		res, err := st.Retrieve(ctx, sub, p)
+	// Each subquery's retrieval is independent and read-only, so run them
+	// concurrently: the multi-hop latency becomes the slowest single hop instead of
+	// the sum of all hops. Results are collected by subquery index, then merged in
+	// order, so the union is identical to the sequential version.
+	perSub := make([][]rag.Retrieved, len(subs))
+	errs := make([]error, len(subs))
+	var wg sync.WaitGroup
+	for i, sub := range subs {
+		wg.Add(1)
+		go func(i int, sub string) {
+			defer wg.Done()
+			perSub[i], errs[i] = st.Retrieve(ctx, sub, p)
+		}(i, sub)
+	}
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
+	}
+	best := map[string]rag.Retrieved{}
+	order := []string{}
+	for _, res := range perSub {
 		for _, r := range res {
 			id := r.Chunk.ID
 			if cur, ok := best[id]; !ok || r.Score > cur.Score {
