@@ -218,3 +218,22 @@ func TestCommunitySummariesAndGlobalChat(t *testing.T) {
 		t.Fatalf("global chat did not answer from summaries: %s", ctext)
 	}
 }
+
+func TestDecomposeQueryParsing(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 64}, rag.Config{Seed: 1})
+	store.Build(context.Background(), []rag.Document{{ID: "d", Text: "alpha beta gamma"}})
+	srv := New(store)
+	srv.SetGenerator(genBackend{text: "1. who founded Acme\n2. where is Acme headquartered\n- who founded Acme\n"}, "m", "e")
+	subs := srv.decomposeQuery(context.Background(), "m", "who founded Acme and where is it based")
+	if len(subs) != 2 {
+		t.Fatalf("want 2 deduped subqueries, got %d: %v", len(subs), subs)
+	}
+	if subs[0] != "who founded Acme" || subs[1] != "where is Acme headquartered" {
+		t.Fatalf("bad parse: %v", subs)
+	}
+	// No generator / empty falls open to the original query.
+	srv2 := New(store)
+	if got := srv2.decomposeQuery(context.Background(), "", "q"); len(got) != 1 || got[0] != "q" {
+		t.Fatalf("fallback failed: %v", got)
+	}
+}

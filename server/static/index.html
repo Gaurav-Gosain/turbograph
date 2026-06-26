@@ -378,8 +378,8 @@
   #composer{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
   #composer textarea{flex:1;resize:none;height:38px;line-height:1.4;max-height:140px}
   #composer button{align-self:stretch;padding:0 16px}
-  #globalBtn{padding:0 11px;font-size:11px;color:var(--muted)}
-  #globalBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+  #globalBtn,#hopBtn{padding:0 11px;font-size:11px;color:var(--muted)}
+  #globalBtn.on,#hopBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
   #stop{display:none;border-color:var(--danger);color:var(--danger)}
   #stop:hover{background:rgba(224,108,117,.12)}
 
@@ -525,6 +525,7 @@
       </div>
       <div id="composer">
         <button id="globalBtn" title="answer corpus-wide questions from community summaries">global</button>
+        <button id="hopBtn" title="split a multi-hop question into subqueries before retrieving">multi-hop</button>
         <textarea id="input" placeholder="ask the graph" rows="1"></textarea>
         <button id="send">send</button>
         <button id="stop">stop</button>
@@ -777,7 +778,7 @@ const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,hoverEdge:-1,selEdge:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false};
+  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false};
 
 // ---------- settings persistence + popover ----------
 const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim"];
@@ -1237,7 +1238,7 @@ async function sendChat(){
   let nb=true;
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
-      body:JSON.stringify({query:text,global:G.global,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
+      body:JSON.stringify({query:text,global:G.global,decompose:G.decompose,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
         min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,history,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
@@ -2341,6 +2342,7 @@ async function runBuildEntities(){
 $("#globalBtn").onclick=()=>{G.global=!G.global;$("#globalBtn").classList.toggle("on",G.global);
   $("#input").placeholder=G.global?"ask a corpus-wide question":"ask the graph";
   if(G.global)toast("global mode: answers from community summaries");};
+$("#hopBtn").onclick=()=>{G.decompose=!G.decompose;$("#hopBtn").classList.toggle("on",G.decompose);if(G.decompose)toast("multi-hop: question is split into subqueries");};
 async function runBuildCommunities(){
   if(!G.model){toast("select a model (top right) first",true);return}
   toast("summarizing communities with the model...");

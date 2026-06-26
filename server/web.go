@@ -395,6 +395,7 @@ type chatRequest struct {
 	Model     string     `json:"model"`
 	MetaKeys  []string   `json:"meta_keys"` // document metadata keys to include in each passage
 	Global    bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
+	Decompose bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -497,12 +498,22 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 			candK = 20
 		}
 	}
-	res, err := st.Retrieve(ctx, retrievalQuery, rag.RetrieveParams{
+	params := rag.RetrieveParams{
 		TopK:      candK,
 		GraphMix:  req.GraphMix,
 		MMRLambda: req.MMRLambda,
 		EntityMix: req.EntityMix,
-	})
+	}
+	var res []rag.Retrieved
+	var err error
+	if req.Decompose {
+		// One model call splits a multi-hop question into focused subqueries, then
+		// the candidate sets are unioned so each hop contributes evidence.
+		subs := s.decomposeQuery(ctx, model, retrievalQuery)
+		res, err = s.retrieveDecomposed(ctx, st, subs, params)
+	} else {
+		res, err = st.Retrieve(ctx, retrievalQuery, params)
+	}
 	if err != nil {
 		return nil, false, err
 	}
