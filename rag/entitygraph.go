@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -136,12 +137,51 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	s.eg = eg
 	s.rebuildEntityLocked()
 	s.mu.Unlock()
+
+	// Embed the entities (name plus description) so retrieval can seed PPR by
+	// semantic similarity to the query, not just literal token overlap. This is a
+	// best-effort enhancement: if embedding fails, seeding falls back to lexical.
+	s.embedEntities(ctx)
 	return nil
+}
+
+// embedEntities computes and stores an embedding per entity from its display name
+// and description, off the write lock. The entity count is small relative to the
+// chunk count, so this is one extra embedding batch at build time.
+func (s *Store) embedEntities(ctx context.Context) {
+	s.mu.RLock()
+	texts := make([]string, len(s.entList))
+	for i, e := range s.entList {
+		name := e.Display
+		if name == "" {
+			name = e.Name
+		}
+		if e.Description != "" {
+			texts[i] = name + ": " + e.Description
+		} else {
+			texts[i] = name
+		}
+	}
+	s.mu.RUnlock()
+	if len(texts) == 0 {
+		return
+	}
+	vecs, err := s.embedder.Embed(ctx, texts)
+	if err != nil || len(vecs) != len(texts) {
+		return
+	}
+	s.mu.Lock()
+	// Guard against a concurrent rebuild changing the entity list underneath us.
+	if len(vecs) == len(s.entList) {
+		s.entVec = vecs
+	}
+	s.mu.Unlock()
 }
 
 // rebuildEntityLocked materializes the entity list, CSR graph, and communities
 // from s.eg. The caller must hold the write lock.
 func (s *Store) rebuildEntityLocked() {
+	s.entVec = nil // entity list is changing; stale embeddings must not be used
 	if s.eg == nil {
 		s.entList, s.entIndex, s.entCSR, s.entComm = nil, nil, nil, nil
 		return
@@ -209,11 +249,11 @@ func (s *Store) EntityGraphView() GraphView {
 // Personalized PageRank and projects the resulting entity scores onto chunks,
 // returning a normalized score per chunk ordinal. The caller must hold the read
 // lock. It returns nil when there is no entity graph or nothing matched.
-func (s *Store) entityChunkScores(query string) map[int]float32 {
+func (s *Store) entityChunkScores(query string, qv []float32) map[int]float32 {
 	if s.entCSR == nil || len(s.entList) == 0 {
 		return nil
 	}
-	seeds := s.entitySeeds(query)
+	seeds := s.entitySeeds(query, qv)
 	if len(seeds) == 0 {
 		return nil
 	}
@@ -249,10 +289,57 @@ func (s *Store) entityChunkScores(query string) map[int]float32 {
 	return scores
 }
 
-// entitySeeds matches the query against entity names, returning a seed weight per
-// matched entity node. An entity is seeded when one of its name tokens appears in
-// the query.
-func (s *Store) entitySeeds(query string) map[int]float32 {
+// entitySeeds picks the entity nodes to seed Personalized PageRank for a query.
+// It scores every entity by the cosine similarity of its embedded name and
+// description to the query vector (so paraphrases match, "the CEO" finds "chief
+// executive"), keeps the top matches above a floor, and adds a lexical bonus for
+// entities whose name tokens literally appear in the query (an exact match is a
+// strong prior). When no entity embeddings are available (an older store, or
+// embedding failed) it falls back to the lexical-only seeding. The caller holds
+// the read lock and passes the already-embedded query vector.
+func (s *Store) entitySeeds(query string, qv []float32) map[int]float32 {
+	lex := s.lexicalEntityHits(query)
+	if len(s.entVec) != len(s.entList) || len(qv) == 0 {
+		return lex // no embeddings: lexical only (backward compatible)
+	}
+	const (
+		topK  = 24   // seed at most this many entities
+		floor = 0.30 // minimum cosine to be considered a match
+	)
+	type cand struct {
+		idx int
+		sim float32
+	}
+	cands := make([]cand, 0, len(s.entList))
+	for i, ev := range s.entVec {
+		if len(ev) == 0 {
+			continue
+		}
+		if c := cosine(qv, ev); c >= floor {
+			cands = append(cands, cand{i, c})
+		}
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].sim > cands[b].sim })
+	if len(cands) > topK {
+		cands = cands[:topK]
+	}
+	seeds := make(map[int]float32, len(cands)+len(lex))
+	for _, c := range cands {
+		seeds[c.idx] = c.sim
+	}
+	// A literal name match is a strong signal; add it on top of the dense score.
+	for i, hits := range lex {
+		seeds[i] += 0.5 * hits
+	}
+	if len(seeds) == 0 {
+		return lex
+	}
+	return seeds
+}
+
+// lexicalEntityHits returns entities whose name tokens appear in the query,
+// weighted by the number of matching tokens.
+func (s *Store) lexicalEntityHits(query string) map[int]float32 {
 	qtokens := map[string]struct{}{}
 	for _, t := range strings.FieldsFunc(strings.ToLower(query), notAlnum) {
 		if len(t) >= 2 {
@@ -265,7 +352,7 @@ func (s *Store) entitySeeds(query string) map[int]float32 {
 	seeds := map[int]float32{}
 	for i, e := range s.entList {
 		var hits float32
-		for _, t := range strings.FieldsFunc(e.Name, notAlnum) {
+		for _, t := range strings.FieldsFunc(strings.ToLower(e.Name), notAlnum) {
 			if _, ok := qtokens[t]; ok {
 				hits++
 			}

@@ -136,6 +136,7 @@ type Store struct {
 	entIndex map[string]int  // canonical entity name -> node id
 	entCSR   *graph.Graph
 	entComm  *graph.Communities
+	entVec   [][]float32 // embedding per entity (name + description), index == node id
 }
 
 type edgeRec struct {
@@ -667,7 +668,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	var escore map[int]float32
 	if p.EntityMix > 0 && s.entCSR != nil {
-		escore = s.entityChunkScores(query)
+		escore = s.entityChunkScores(query, qv[0])
 	}
 
 	type sc struct {

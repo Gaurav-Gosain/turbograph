@@ -27,6 +27,9 @@ type snapshot struct {
 	// expensive to extract (it uses an LLM), so it is not rebuilt on load.
 	Entities  []entity.Entity   `json:"entities"`
 	Relations []entity.Relation `json:"relations"`
+	// EntVec persists the per-entity embeddings used for dense PPR seeding, so a
+	// reload does not have to re-embed the entities. Absent in older snapshots.
+	EntVec [][]float32 `json:"ent_vec,omitempty"`
 	// Versions persists each document's content history. Absent in older
 	// snapshots, in which case a document has no recorded history until its next
 	// update.
@@ -51,6 +54,9 @@ func (s *Store) Save(w io.Writer) error {
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
 		snap.Relations = s.eg.Relations()
+		if len(s.entVec) == len(s.entList) {
+			snap.EntVec = s.entVec
+		}
 	}
 	return gob.NewEncoder(w).Encode(&snap)
 }
@@ -107,6 +113,9 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	if len(snap.Entities) > 0 {
 		s.eg = entity.Restore(snap.Entities, snap.Relations)
 		s.rebuildEntityLocked()
+		if len(snap.EntVec) == len(s.entList) {
+			s.entVec = snap.EntVec
+		}
 	}
 	s.reindexLocked()
 	return s, nil

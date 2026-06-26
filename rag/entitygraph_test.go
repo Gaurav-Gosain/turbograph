@@ -117,3 +117,62 @@ func docIDs(res []Retrieved) []string {
 	}
 	return out
 }
+
+func TestEntityDenseSeeding(t *testing.T) {
+	ctx := context.Background()
+	st := New(newKeywordEmbedder(96), Config{Seed: 1, GraphKNN: 3, MinSimilarity: 0.05,
+		Chunk: ChunkConfig{TargetWords: 30}})
+	docs := []Document{
+		{ID: "a", Text: "Ada Lovelace wrote the first algorithm for the Analytical Engine designed by Charles Babbage."},
+		{ID: "b", Text: "Charles Babbage invented the Difference Engine, a mechanical calculator."},
+	}
+	if err := st.Build(ctx, docs); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BuildEntityGraph(ctx, capExtractor{}, EntityBuildOptions{Workers: 2}); err != nil {
+		t.Fatal(err)
+	}
+	// Entity embeddings are populated and counted with the entity list.
+	st.mu.RLock()
+	gotVec, gotEnt := len(st.entVec), len(st.entList)
+	st.mu.RUnlock()
+	if gotEnt == 0 {
+		t.Fatal("no entities extracted")
+	}
+	if gotVec != gotEnt {
+		t.Fatalf("entVec=%d, want %d (one per entity)", gotVec, gotEnt)
+	}
+
+	// Dense seeding produces seeds for a query that shares vocabulary with an
+	// entity, and falls back to lexical when embeddings are absent.
+	qv, err := embedQuery(ctx, st.embedder, []string{"Babbage Analytical Engine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.mu.RLock()
+	dense := st.entitySeeds("Babbage Analytical Engine", qv[0])
+	saved := st.entVec
+	st.entVec = nil
+	lexOnly := st.entitySeeds("Babbage Analytical Engine", qv[0])
+	st.entVec = saved
+	st.mu.RUnlock()
+	if len(dense) == 0 {
+		t.Fatal("dense seeding produced no seeds")
+	}
+	if len(lexOnly) == 0 {
+		t.Fatal("lexical fallback produced no seeds")
+	}
+
+	// Embeddings survive a save/load round trip.
+	path := t.TempDir() + "/e.tg"
+	if err := saveTo(st, path); err != nil {
+		t.Fatal(err)
+	}
+	st2 := loadFrom(t, path)
+	st2.mu.RLock()
+	v2 := len(st2.entVec)
+	st2.mu.RUnlock()
+	if v2 != gotEnt {
+		t.Fatalf("entVec after reload=%d, want %d", v2, gotEnt)
+	}
+}
