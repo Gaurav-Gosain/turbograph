@@ -21,6 +21,23 @@ type Chunk struct {
 	// ImageRef is the asset id of the source image for an image chunk, served by
 	// the host application (for example GET /api/asset/<ref>). Empty for text.
 	ImageRef string `json:"image_ref,omitempty"`
+	// Context is an optional short, LLM-generated sentence that situates this chunk
+	// within its document (Anthropic's "contextual retrieval"). It is prepended to
+	// the body only for embedding and lexical indexing, never shown to the user or
+	// fed to the generator, so it sharpens retrieval without altering answers. It
+	// is empty unless a Contextualizer was set on the store at ingest time.
+	Context string `json:"context,omitempty"`
+}
+
+// IndexText is the text used for embedding and lexical indexing: the optional
+// contextual prefix followed by the chunk body. The body alone (Text) is what is
+// returned to callers and fed to the generator. When no context was generated
+// this is exactly Text, so the default pipeline is byte-for-byte unchanged.
+func (c Chunk) IndexText() string {
+	if c.Context == "" {
+		return c.Text
+	}
+	return c.Context + "\n\n" + c.Text
 }
 
 // ChunkConfig controls how documents are split.

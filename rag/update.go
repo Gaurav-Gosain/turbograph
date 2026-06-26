@@ -51,16 +51,19 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 	if len(chunks) == 0 {
 		return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta}, nil
 	}
+	s.contextualize(ctx, []Document{d}, chunks)
 	reuse := s.docEmbeddings(d.ID) // empty for a new document
 	vecs := make([][]float32, len(chunks))
 	var missText []string
 	var missIdx []int
 	for i, c := range chunks {
-		if emb, ok := reuse[contentHash(c.Text)]; ok && len(emb) > 0 {
+		// Reuse a cached embedding only on the plain path: a contextual prefix
+		// changes the indexed text, so a body-hash match would be the wrong vector.
+		if emb, ok := reuse[contentHash(c.Text)]; ok && len(emb) > 0 && c.Context == "" {
 			vecs[i] = emb
 		} else {
 			missIdx = append(missIdx, i)
-			missText = append(missText, c.Text)
+			missText = append(missText, c.IndexText())
 		}
 	}
 	if len(missText) > 0 {
@@ -140,7 +143,7 @@ func (s *Store) rebuildIndexesLocked() {
 	s.initIndexes()
 	for i := range s.chunks {
 		s.hnsw.Add(s.chunks[i].ID, s.embeds[i])
-		s.bm25.Add(s.chunks[i].ID, s.chunks[i].Text)
+		s.bm25.Add(s.chunks[i].ID, s.chunks[i].IndexText())
 	}
 	s.bm25.Finalize()
 }

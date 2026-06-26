@@ -108,6 +108,9 @@ type Store struct {
 
 	cfg      Config
 	embedder Embedder
+	// contextualizer, when set, generates an index-only situating prefix per chunk
+	// at ingest (Anthropic contextual retrieval). Off by default; never persisted.
+	contextualizer Contextualizer
 
 	dim    int
 	q      *quant.Quantizer
@@ -196,9 +199,10 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	if len(chunks) == 0 {
 		return fmt.Errorf("rag: no chunks produced from %d documents", len(docs))
 	}
+	s.contextualize(ctx, docs, chunks)
 	texts := make([]string, len(chunks))
 	for i, c := range chunks {
-		texts[i] = c.Text
+		texts[i] = c.IndexText()
 	}
 	vecs, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
@@ -444,7 +448,7 @@ func (s *Store) appendChunksLocked(chunks []Chunk, vecs [][]float32) error {
 			return fmt.Errorf("rag: inconsistent embedding dim at %d", i)
 		}
 		s.hnsw.Add(c.ID, vecs[i])
-		s.bm25.Add(c.ID, c.Text)
+		s.bm25.Add(c.ID, c.IndexText())
 		s.chunks = append(s.chunks, c)
 		s.embeds = append(s.embeds, vecs[i])
 		s.docSet[c.DocID] = struct{}{}
