@@ -164,3 +164,25 @@ func TestStrategySurvivesReload(t *testing.T) {
 		t.Errorf("strategy did not survive reload: %q", got)
 	}
 }
+
+func TestSentenceLookahead(t *testing.T) {
+	// A decimal and a lowercase continuation must not end a sentence; a real
+	// uppercase start must.
+	got := splitSentences("Pi is 3.14 and it is irrational. Newton studied it. e.g. this stays.")
+	for _, s := range got {
+		if strings.HasPrefix(s, "14") || strings.HasPrefix(s, "and") {
+			t.Fatalf("split inside a decimal/clause: %q in %v", s, got)
+		}
+	}
+	// The real boundary after "irrational." (next char 'N') should produce a
+	// segment starting with "Newton".
+	var hasNewton bool
+	for _, s := range got {
+		if strings.HasPrefix(s, "Newton") {
+			hasNewton = true
+		}
+	}
+	if !hasNewton {
+		t.Fatalf("did not split at a real boundary: %v", got)
+	}
+}

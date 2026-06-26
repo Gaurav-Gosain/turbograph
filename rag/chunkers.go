@@ -259,6 +259,15 @@ func splitSentences(text string) []string {
 		if c == '.' && isAbbrev(runes[:i+1]) {
 			continue
 		}
+		// A period is only a real boundary when the next non-space character
+		// starts a new sentence (uppercase or a digit). This avoids splitting on
+		// decimals ("3.14"), lowercased abbreviations, and initials the abbrev
+		// guard missed. Idea from cognee's is_real_paragraph_end lookahead.
+		if c == '.' {
+			if nx := nextNonSpace(runes, i+1); nx != 0 && !isUpper(nx) && !isDigit(nx) {
+				continue
+			}
+		}
 		seg := strings.TrimSpace(string(runes[start : i+1]))
 		if seg != "" {
 			out = append(out, seg)
@@ -306,3 +315,15 @@ func lastWords(s string, n int) string {
 // whitespace such as a non-breaking space.
 func isSpace(r rune) bool  { return unicode.IsSpace(r) }
 func isLetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
+func isUpper(r rune) bool  { return unicode.IsUpper(r) }
+func isDigit(r rune) bool  { return r >= '0' && r <= '9' }
+
+// nextNonSpace returns the first non-space rune at or after index i, or 0 at end.
+func nextNonSpace(runes []rune, i int) rune {
+	for ; i < len(runes); i++ {
+		if !isSpace(runes[i]) {
+			return runes[i]
+		}
+	}
+	return 0
+}

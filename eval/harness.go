@@ -9,10 +9,12 @@ import (
 )
 
 // Case is a single evaluation example: a query and the ids of the documents or
-// chunks considered relevant for it.
+// chunks considered relevant for it. Answer is the gold answer for QA datasets
+// (used by the answer-quality metrics) and is empty for retrieval-only suites.
 type Case struct {
 	Query    string   `json:"query"`
 	Relevant []string `json:"relevant"`
+	Answer   string   `json:"answer,omitempty"`
 }
 
 // Metrics bundles the computed scores for one query or for an aggregate mean.
