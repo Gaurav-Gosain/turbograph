@@ -374,3 +374,75 @@ func (s *Store) lexicalEntityHits(query string) map[int]float32 {
 func notAlnum(r rune) bool {
 	return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
 }
+
+// RelationContext returns up to maxRels knowledge-graph relationships grounded in
+// the given retrieved chunk ids, rendered as short "Subject -> Object: fact"
+// lines, most salient first. A relationship is fully grounded when both of its
+// endpoints are mentioned in the retrieved chunks: such a fact ties two retrieved
+// passages together and is exactly what a multi-hop answer needs but a single
+// chunk may not state. When too few are fully grounded, relationships with one
+// grounded endpoint are appended (ranked by weight) so a bridge to a neighbouring
+// entity is not lost. The result is deterministic and LLM-free; it returns nil
+// when no entity graph has been built. This is turbograph's analogue of feeding
+// the retrieved subgraph triplets into the prompt, not just the text passages.
+func (s *Store) RelationContext(chunkIDs []string, maxRels int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.eg == nil || len(s.entList) == 0 || maxRels <= 0 {
+		return nil
+	}
+	want := make(map[string]struct{}, len(chunkIDs))
+	for _, id := range chunkIDs {
+		want[id] = struct{}{}
+	}
+	// An entity is present when any chunk that mentions it was retrieved.
+	present := make(map[string]bool, len(s.entList))
+	display := make(map[string]string, len(s.entList))
+	for _, e := range s.entList {
+		display[e.Name] = e.Display
+		for _, c := range e.Chunks {
+			if _, ok := want[c]; ok {
+				present[e.Name] = true
+				break
+			}
+		}
+	}
+	type scored struct {
+		rel  entity.Relation
+		both bool
+	}
+	var cands []scored
+	for _, r := range s.eg.Relations() {
+		ps, pt := present[r.Source], present[r.Target]
+		if !ps && !pt {
+			continue // unrelated to anything retrieved
+		}
+		cands = append(cands, scored{r, ps && pt})
+	}
+	// Fully grounded facts first, then bridges; ties broken by edge weight.
+	sort.SliceStable(cands, func(a, b int) bool {
+		if cands[a].both != cands[b].both {
+			return cands[a].both
+		}
+		return cands[a].rel.Weight > cands[b].rel.Weight
+	})
+	if len(cands) > maxRels {
+		cands = cands[:maxRels]
+	}
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		src, tgt := display[c.rel.Source], display[c.rel.Target]
+		if src == "" {
+			src = c.rel.Source
+		}
+		if tgt == "" {
+			tgt = c.rel.Target
+		}
+		line := src + " -> " + tgt
+		if d := strings.TrimSpace(c.rel.Description); d != "" {
+			line += ": " + d
+		}
+		out = append(out, line)
+	}
+	return out
+}

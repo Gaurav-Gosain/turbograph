@@ -176,3 +176,38 @@ func TestEntityDenseSeeding(t *testing.T) {
 		t.Fatalf("entVec after reload=%d, want %d", v2, gotEnt)
 	}
 }
+
+// TestRelationContext checks that knowledge-graph triplets are surfaced only for
+// the retrieved chunks: facts whose endpoints are both present are returned, and
+// facts about entities outside the retrieved set are excluded.
+func TestRelationContext(t *testing.T) {
+	st := entityStore(t)
+	ctx := context.Background()
+	// Retrieve enough to pull in d1 (Alice, Acme) and d2 (Acme, Rockets) but not
+	// d3 (Bob, Tennis). "Acme" sits in both d1 and d2.
+	res, err := st.Retrieve(ctx, "Acme Alice Rockets", RetrieveParams{TopK: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(res))
+	for i, r := range res {
+		ids[i] = r.Chunk.ID
+	}
+	facts := st.RelationContext(ids, 12)
+	if len(facts) == 0 {
+		t.Fatal("expected grounded relationship facts, got none")
+	}
+	joined := strings.ToLower(strings.Join(facts, "\n"))
+	if !strings.Contains(joined, "acme") {
+		t.Fatalf("expected an Acme relationship in the facts, got %v", facts)
+	}
+	// Bob/Tennis live only in d3, which was not retrieved, so no fact may mention
+	// them.
+	if strings.Contains(joined, "bob") || strings.Contains(joined, "tennis") {
+		t.Fatalf("facts leaked an entity from an unretrieved chunk: %v", facts)
+	}
+	// No entity graph -> no facts, and the cap is honoured.
+	if got := st.RelationContext(ids, 0); got != nil {
+		t.Errorf("maxRels=0 should return nil, got %v", got)
+	}
+}

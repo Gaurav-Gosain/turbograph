@@ -467,7 +467,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildChatPrompt(req.Query, res, req.MetaKeys)
+	prompt := buildChatPrompt(req.Query, res, req.MetaKeys, graphFacts(st, res))
 	streamErr := s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
 		send("token", map[string]string{"text": tok})
 		return nil
@@ -551,7 +551,7 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 // same numbers the UI shows. The numbers, not chunk ids, are the citation tokens.
 // When metaKeys is non-empty, the selected document-metadata fields are prefixed
 // to each passage, so callers can feed structured metadata to the model verbatim.
-func buildChatPrompt(query string, res []rag.Retrieved, metaKeys []string) string {
+func buildChatPrompt(query string, res []rag.Retrieved, metaKeys []string, facts []string) string {
 	var sb strings.Builder
 	sb.WriteString("Context:\n")
 	for i, r := range res {
@@ -561,10 +561,33 @@ func buildChatPrompt(query string, res []rag.Retrieved, metaKeys []string) strin
 		}
 		fmt.Fprintf(&sb, "%s\n", r.Chunk.Text)
 	}
+	// Relationships from the knowledge graph that connect the passages above. They
+	// are supporting facts, not citable passages, so they carry no [n] number.
+	if len(facts) > 0 {
+		sb.WriteString("\nKnowledge graph facts:\n")
+		for _, f := range facts {
+			fmt.Fprintf(&sb, "- %s\n", f)
+		}
+	}
 	sb.WriteString("\nQuestion: ")
 	sb.WriteString(query)
 	sb.WriteString("\nAnswer:")
 	return sb.String()
+}
+
+// graphFacts pulls the knowledge-graph relationships grounded in the retrieved
+// chunks so the answer can use explicit relational facts that may be split across
+// passages. It returns nil when no entity graph exists, keeping the cheap default
+// path unchanged. The cap is small so the facts stay a focused hint, not a flood.
+func graphFacts(st *rag.Store, res []rag.Retrieved) []string {
+	if !st.HasEntityGraph() {
+		return nil
+	}
+	ids := make([]string, len(res))
+	for i, r := range res {
+		ids[i] = r.Chunk.ID
+	}
+	return st.RelationContext(ids, 12)
 }
 
 // selectMeta renders the chosen keys from a document's JSON metadata as a compact
