@@ -25,6 +25,21 @@ func TestExactMatchAndF1(t *testing.T) {
 	}
 }
 
+func TestCoverMatch(t *testing.T) {
+	if !CoverMatch("The reactor was built in the town of Northgate.", "Northgate") {
+		t.Error("a verbose answer containing the gold span should cover")
+	}
+	if !CoverMatch("Charles Babbage", "Charles Babbage") {
+		t.Error("identical answers cover")
+	}
+	if CoverMatch("It was built in Aldon City.", "Northgate") {
+		t.Error("a wrong answer must not cover")
+	}
+	if CoverMatch("Priya", "Priya Anand") {
+		t.Error("a partial answer missing a gold token must not cover")
+	}
+}
+
 func TestBootstrapCI(t *testing.T) {
 	scores := make([]float64, 100)
 	for i := range scores {

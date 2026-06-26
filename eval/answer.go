@@ -82,6 +82,30 @@ func AnswerF1(pred, gold string) float64 {
 	return 2 * precision * recall / (precision + recall)
 }
 
+// CoverMatch reports whether every token of the gold answer appears in the
+// prediction (after normalization). It is the verbosity-robust complement to
+// ExactMatch: a correct answer wrapped in explanation ("The reactor was built in
+// Northgate." for gold "Northgate") still counts, while a wrong answer does not.
+// This is the standard "cover"/answer-recall criterion used for short-answer QA
+// where the generator is not constrained to emit only the span. An empty gold
+// answer is vacuously covered.
+func CoverMatch(pred, gold string) bool {
+	g := normalizeAnswer(gold)
+	if len(g) == 0 {
+		return true
+	}
+	have := make(map[string]struct{})
+	for _, t := range normalizeAnswer(pred) {
+		have[t] = struct{}{}
+	}
+	for _, t := range g {
+		if _, ok := have[t]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // BootstrapCI returns the mean of scores and a 95% confidence interval estimated
 // by resampling with replacement. It lets a benchmark say whether a delta between
 // two runs is real or noise on a small set. A nil or single-element input returns
