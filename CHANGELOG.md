@@ -10,6 +10,38 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Multi-hop query decomposition: an optional one-call step that splits a
+  compositional question into focused subqueries, retrieves each, and unions the
+  candidates so evidence in different documents surfaces. Opt-in (`decompose`),
+  with the subquery retrievals run concurrently so latency is the slowest hop, not
+  the sum.
+- Knowledge-graph fact injection: the entity-graph relationships grounded in the
+  retrieved chunks are rendered as short triplets and added to the prompt under a
+  "Knowledge graph facts" heading, distinct from the numbered citable passages.
+  Measured to improve answer F1 when retrieval is held fixed.
+- Dense entity-graph seeding: the entity graph's Personalized PageRank is now
+  seeded by embedding similarity (so paraphrases match), with the prior
+  token-overlap seeding kept as a lexical prior and a backward-compatible
+  fallback.
+- Entity-graph canonicalization and pruning: near-duplicate entities are merged
+  (edit-ratio and salient-token containment) with relation endpoints rewritten
+  through the merge map, and generic or ghost nodes are dropped, reducing graph
+  fragmentation. The extraction prompt was tightened with a closed type
+  vocabulary and coreference rules.
+- Contextual retrieval (Anthropic): an opt-in `contextual` ingest flag prefixes
+  each chunk, for indexing only, with a short generated sentence situating it in
+  its document. The body shown to the user and fed to the model is unchanged. It
+  markedly improves retrieval of fragmented, anaphoric chunks; off by default
+  since it costs one model call per chunk.
+- Answer-quality metrics in the `eval` package: token-F1, exact match, a
+  verbosity-robust cover match, and a bootstrap confidence interval, all
+  deterministic and LLM-free, plus an optional gold `Answer` field on eval cases.
+- A model-backed A/B benchmark harness (gated by `TG_AB=1`, skipped in CI) that
+  measures the lift of these features end to end with a real embedder and chat
+  model; see [docs/benchmarks.md](docs/benchmarks.md).
+- Sentence-boundary lookahead in the sentence chunker, so a period is treated as
+  a boundary only when the next non-space character starts a new sentence,
+  avoiding splits inside decimals and lowercased abbreviations.
 - Document metadata: arbitrary per-document JSON, propagated to every chunk and
   returned with each retrieved result, so callers can filter on it or feed
   selected fields to the model.

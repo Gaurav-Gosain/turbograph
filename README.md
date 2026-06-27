@@ -144,15 +144,28 @@ turbograph ships two kinds of graph, and you can use either or both.
 - The **entity-relationship knowledge graph** is the classic GraphRAG structure
   and is opt-in. A language model extracts typed entities (people, places,
   concepts) and relationships from each chunk; nodes are entities and edges are
-  relationships. Two passages can then be connected because they mention the same
-  thing, not because they read alike. Query entities are propagated over this
-  graph with Personalized PageRank and projected back onto chunks.
+  relationships. Near-duplicate entities are canonicalized (with their relation
+  endpoints rewritten through the merge map) so the graph does not fragment. Two
+  passages can then be connected because they mention the same thing, not because
+  they read alike. A query's entities are matched by embedding similarity (so
+  paraphrases land), propagated over the graph with Personalized PageRank, and
+  projected back onto chunks; the relationships grounded in the retrieved chunks
+  are also injected into the prompt as short triplets, so the model sees a fact
+  that two passages only imply together.
 
 Build the knowledge graph from the web UI (the "entities" toggle on the graph, or
 the command palette), or during ingestion with `--entities --gen-model <model>`.
 It is extra work because it calls the model per chunk, so it stays off by
 default; the similarity path keeps working regardless. At query time the
 `entity_mix` control (UI slider or API field) blends the entity signal in.
+
+For compositional questions, an optional `decompose` step splits the query into
+focused subqueries, retrieves each (concurrently), and unions the results, so
+evidence that lives in different documents and never co-occurs with the full
+question still surfaces. Like the graph, it is opt-in and measured: it helps
+multi-hop corpora and adds noise on easy ones. See
+[docs/benchmarks.md](docs/benchmarks.md) for which features help under which
+conditions.
 
 ## Ingestion pipeline
 
@@ -176,6 +189,15 @@ been saved, so a "done" record always implies recoverable work. Re-ingestion is
 idempotent (documents are deduped by id), so resuming after a crash or a pause
 never duplicates or loses data. Interrupt with Ctrl-C to pause; re-run the same
 command to resume.
+
+Ingestion can optionally apply **contextual retrieval** (Anthropic): with the
+`contextual` flag set, each chunk is prefixed, for indexing only, with a short
+model-generated sentence situating it in its document, which is then embedded and
+BM25-indexed; the body returned to you and fed to the model is unchanged. This
+fixes the case a flat chunker handles worst, a long document that names an entity
+once and then refers to it anaphorically, so the later chunks keep the fact but
+lose the name. It is off by default because it costs one model call per chunk; on
+a fragmented corpus it tripled chunk-level recall@1 in the A/B harness.
 
 ## Quick start
 
@@ -415,7 +437,11 @@ command entry; no network port is opened.
 labeled suite (JSONL, one `{"query":..., "relevant":[chunk ids]}` per line) and
 reports recall, precision, MRR, NDCG, and context precision at a cut-off `k`. It
 is deterministic for a fixed store and embedder, so it gates retrieval
-regressions in CI; `--json` emits the full per-case report.
+regressions in CI; `--json` emits the full per-case report. For answer quality,
+the `eval` package also provides deterministic, LLM-free metrics, token-F1,
+exact match, a verbosity-robust cover match, and a bootstrap confidence interval,
+when a suite carries gold answers. The model-backed feature A/B harness that uses
+them is documented in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## PDF and OCR
 

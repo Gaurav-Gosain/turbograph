@@ -124,6 +124,60 @@ disk (38.5 MB to 18.5 MB; the vector portion shrinks 3x) and shaving per-query
 latency (168 to 145 ms). It is opt-in (`--embed-dim`), for when memory or
 vector-scan speed matters more than the last points of accuracy.
 
+## In-process feature A/B (local model, small corpus)
+
+The headline numbers above are BEIR / MultiHop-RAG. The graph, decomposition, and
+contextual-retrieval features are measured separately by a model-backed A/B
+harness committed in `server/ab_test.go` and `server/ab_hard_test.go`, run with
+`TG_AB=1` (skipped in CI) against a small self-contained fictional corpus with
+distractors, using `nomic-embed-text` and `qwen3.5:4b`. These numbers are
+**directional, not BEIR-scale**: a dozen questions on a tiny corpus with a 4B
+local model. They exist to show *under which conditions* a feature helps, since
+that is the part the headline aggregates hide. The harness is the durable asset;
+re-run it to ground any claim.
+
+What it showed:
+
+- **A strong baseline is already at ceiling.** On a clean corpus where every
+  document is one self-contained chunk with distinct entity names, dense+BM25
+  alone hits recall@5 = 1.00 and answers every question. There is no headroom, so
+  the advanced features are near-neutral to slightly negative there. This is why
+  entity seeding (`entity_mix`) and multi-hop decomposition are **opt-in**: they
+  are levers for harder corpora, and on an easy one they only add noise (recall@3
+  fell from 0.96 to ~0.83-0.88 when forced on).
+
+- **Knowledge-graph fact injection helps, measured cleanly.** Holding retrieval
+  fixed and toggling only the injected triplets, answer token-F1 rose 0.911 to
+  0.942 (cover stayed 1.00). An earlier run that looked like facts *hurt* turned
+  out to be a confound: that arm had also switched to the degraded
+  entity+decomposition retrieval, so the loss was the retrieval, not the facts.
+  Isolating one variable at a time is the whole point of the harness.
+
+- **Contextual retrieval earns its keep on fragmentation, not on clean text.**
+  Its target case is a long document that names an entity once and then refers to
+  it anaphorically ("the programme", "it"); chunking strips the name from the
+  later chunks. On that hard corpus, scoring chunk-level retrieval of the
+  anaphoric fact chunks:
+
+  | metric          | plain dense+BM25 | contextual retrieval |
+  | --------------- | ---------------- | -------------------- |
+  | chunkRecall@1   | 0.20             | **0.60**             |
+  | chunkRecall@3   | 0.80             | **1.00**             |
+  | MRR             | 0.49             | **0.78**             |
+
+  On a clean corpus it is near-neutral (a small recall@3 dip, answer-F1 slightly
+  up), which is why it is a deliberate, cost-bearing opt-in (one model call per
+  chunk at ingest), enabled with the `contextual` ingest flag.
+
+- **Quantized HNSW traversal was rejected after measuring.** A tempting "speed"
+  idea is to walk the graph on the compact TurboQuant codes instead of the exact
+  vectors. Measured on this CPU it is the opposite of a win: the exact dot product
+  has an AVX kernel (35 ns/op at dim 768) while the scalar quantized estimator is
+  461 ns/op, **13x slower**. turbograph keeps exact vectors in RAM and searches
+  with them precisely because they are both more accurate and, with AVX, faster.
+  The codes' value is compact storage and asymmetric scoring when you do *not*
+  have the exact vector, neither of which applies to in-memory search.
+
 ## Frontier benchmarks
 
 Two newer benchmarks set the current bar and are noted for context, not run here
@@ -258,3 +312,15 @@ nDCG drop below a floor. It catches pipeline regressions everywhere; the absolut
 scores are not comparable to the literature numbers above, which use a real
 embedder. The `turbograph eval` command scores chunk-level JSONL suites the same
 way.
+
+The feature A/B numbers come from a separate model-backed harness in the `server`
+package, gated so it never runs in CI:
+
+```
+TG_AB=1 go test ./server/ -run TestABRetrievalImprovements -v -timeout 40m
+TG_AB=1 go test ./server/ -run TestABContextualHardMode     -v -timeout 40m
+```
+
+It needs a local Ollama; models are overridable with `TG_AB_CHAT`,
+`TG_AB_EMBED`, and `TG_AB_URL`. Answer accuracy is scored with the `eval`
+package's token-F1, exact-match, and the verbosity-robust cover-match metric.

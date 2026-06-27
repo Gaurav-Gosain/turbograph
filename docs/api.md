@@ -34,10 +34,13 @@ UI at `http://localhost:8080/openapi.json`, or generate a client with
 Add or replace text documents.
 ```json
 { "documents": [ { "id": "notes.md", "text": "...", "meta": { "author": "ada" } } ],
-  "replace": false }
+  "replace": false, "contextual": false }
 ```
 `replace: true` rebuilds the bucket from scratch; otherwise documents are added
-incrementally (changed content updates in place). Returns `{ "chunks": <int> }`.
+incrementally (changed content updates in place). `contextual: true` enables
+contextual retrieval for this ingest (a generated, index-only situating prefix per
+chunk); it needs a configured generator and costs one model call per chunk, so it
+is off by default. Returns `{ "chunks": <int> }`.
 
 ### `POST /api/ingest/files`
 Ingest binary or text files; the server extracts text (PDF, OCR, plain text).
@@ -77,11 +80,17 @@ Retrieve and stream a grounded answer.
 ```json
 { "query": "...", "model": "qwen3.5:2b", "top_k": 6, "graph_mix": 0,
   "mmr_lambda": 0, "entity_mix": 0, "min_sim": 0, "rerank": false,
+  "decompose": false,
   "history": [ { "role": "user", "content": "..." } ],
   "meta_keys": ["author"], "global": false }
 ```
 - `global: true` answers a corpus-wide question from the community summaries
   rather than individual passages (build them first; see below).
+- `decompose: true` splits a multi-hop question into subqueries, retrieves each
+  concurrently, and unions the candidates before answering.
+- `entity_mix` blends in the entity-graph signal; when an entity graph exists, the
+  relationships grounded in the retrieved chunks are also added to the prompt as
+  short facts.
 - `meta_keys` injects those document-metadata fields into each passage given to
   the model.
 - `min_sim` sets the abstention threshold; `rerank` enables pointwise LLM
