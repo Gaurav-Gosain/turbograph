@@ -10,6 +10,17 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Retrieval score breakdown ("why was this retrieved"): every result carries an
+  additive breakdown of its score into the dense, lexical (BM25), similarity-graph
+  PageRank, and entity-graph signals, exposed on the query and chat APIs and
+  rendered in the web UI as a segmented bar with a legend when a source is opened.
+- Web-UI explainability: per-answer retrieval latency, a low-similarity warning on
+  weakly grounded passages, a "view prompt" inspector showing the exact assembled
+  context sent to the model, and a contextual-retrieval toggle on ingest (text and
+  files).
+- One-click demo corpus and an onboarding empty state, so a fresh install can
+  populate a small self-documenting corpus and see chat, the graph, communities,
+  and the score breakdown working immediately.
 - Multi-hop query decomposition: an optional one-call step that splits a
   compositional question into focused subqueries, retrieves each, and unions the
   candidates so evidence in different documents surfaces. Opt-in (`decompose`),
