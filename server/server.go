@@ -318,16 +318,17 @@ type queryRequest struct {
 }
 
 type queryResult struct {
-	ID         string          `json:"id"`
-	DocID      string          `json:"doc_id"`
-	Score      float32         `json:"score"`
-	Similarity float32         `json:"similarity"`
-	Text       string          `json:"text"`
-	Start      int             `json:"start"` // rune offset of this chunk in its document
-	End        int             `json:"end"`
-	Meta       json.RawMessage `json:"meta,omitempty"`      // the source document's metadata
-	Kind       string          `json:"kind,omitempty"`      // "image" for an image-derived chunk
-	ImageRef   string          `json:"image_ref,omitempty"` // asset id of the source image
+	ID         string              `json:"id"`
+	DocID      string              `json:"doc_id"`
+	Score      float32             `json:"score"`
+	Similarity float32             `json:"similarity"`
+	Text       string              `json:"text"`
+	Start      int                 `json:"start"` // rune offset of this chunk in its document
+	End        int                 `json:"end"`
+	Meta       json.RawMessage     `json:"meta,omitempty"`      // the source document's metadata
+	Kind       string              `json:"kind,omitempty"`      // "image" for an image-derived chunk
+	ImageRef   string              `json:"image_ref,omitempty"` // asset id of the source image
+	Components rag.ScoreComponents `json:"components"`          // additive score breakdown
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -345,6 +346,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errEmpty("query"))
 		return
 	}
+	start := time.Now()
 	res, err := st.Retrieve(r.Context(), req.Query, rag.RetrieveParams{
 		TopK:      req.TopK,
 		GraphMix:  req.GraphMix,
@@ -355,7 +357,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": toQueryResults(res)})
+	tookMS := float64(time.Since(start).Microseconds()) / 1000
+	writeJSON(w, http.StatusOK, map[string]any{"results": toQueryResults(res), "took_ms": tookMS})
 }
 
 // handleBuckets lists buckets with basic stats.

@@ -593,6 +593,20 @@ type Retrieved struct {
 	Score      float32         // blended retrieval score
 	Similarity float32         // direct cosine similarity to the query (0 if not a seed)
 	Meta       json.RawMessage // the source document's metadata, if any
+	Components ScoreComponents // additive breakdown of Score, for explainability
+}
+
+// ScoreComponents breaks a result's blended Score into its additive signals, so a
+// caller can show why a chunk was retrieved: how much came from dense similarity,
+// exact lexical (BM25) match, the similarity-graph PageRank boost, and the entity
+// knowledge graph. The four fields sum to Score (up to float rounding); each is
+// the contribution after its weight is applied, so a zero means that signal was
+// off or did not fire for this chunk.
+type ScoreComponents struct {
+	Dense   float32 `json:"dense"`
+	Lexical float32 `json:"lexical"`
+	Graph   float32 `json:"graph"`
+	Entity  float32 `json:"entity"`
 }
 
 // Retrieve runs hybrid graph retrieval for the query.
@@ -690,6 +704,32 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		}
 		return d
 	}
+	// comps mirrors the score math to recover the additive contribution of each
+	// signal, so the result can explain itself. The four parts sum to the final
+	// Score: in the fast path that is dense+lexical; with the graph active a
+	// PageRank boost is added; with the entity graph active everything is convex-
+	// blended, so the direct signals are scaled by (1-EntityMix) and the entity
+	// term carries EntityMix, exactly as the ranking does.
+	comps := func(ord int) ScoreComponents {
+		var c ScoreComponents
+		if simMax > 0 {
+			c.Dense = sim[ord] / simMax
+		}
+		if p.LexicalWeight > 0 && bm25Max > 0 {
+			c.Lexical = p.LexicalWeight * bm25[ord] / bm25Max
+		}
+		if ppr != nil && pprMax > 0 {
+			c.Graph = p.GraphMix * ppr[ord] / pprMax
+		}
+		if escore != nil {
+			k := 1 - p.EntityMix
+			c.Dense *= k
+			c.Lexical *= k
+			c.Graph *= k
+			c.Entity = p.EntityMix * escore[ord]
+		}
+		return c
+	}
 	if ppr == nil && escore == nil {
 		// Fast path: pure hybrid. Only seeds (dense or BM25 hits) have a nonzero
 		// score, so rank those directly and skip the full-corpus scan and the
@@ -754,7 +794,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		for i, idx := range order {
 			ord := scored[idx].ord
 			c := s.chunks[ord]
-			out[i] = Retrieved{Chunk: c, Score: scored[idx].val, Similarity: sim[ord], Meta: s.docMeta[c.DocID]}
+			out[i] = Retrieved{Chunk: c, Score: scored[idx].val, Similarity: sim[ord], Meta: s.docMeta[c.DocID], Components: comps(ord)}
 		}
 		return out, nil
 	}
@@ -765,7 +805,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	out := make([]Retrieved, len(scored))
 	for i, e := range scored {
 		c := s.chunks[e.ord]
-		out[i] = Retrieved{Chunk: c, Score: e.val, Similarity: sim[e.ord], Meta: s.docMeta[c.DocID]}
+		out[i] = Retrieved{Chunk: c, Score: e.val, Similarity: sim[e.ord], Meta: s.docMeta[c.DocID], Components: comps(e.ord)}
 	}
 	return out, nil
 }

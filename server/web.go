@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
@@ -330,11 +331,19 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Files []ingestFile `json:"files"`
+		Files      []ingestFile `json:"files"`
+		Contextual bool         `json:"contextual"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	if s.gen != nil {
+		if req.Contextual {
+			st.SetContextualizer(genAdapter{c: s.gen, model: s.genModel})
+		} else {
+			st.SetContextualizer(nil)
+		}
 	}
 	var docs []rag.Document
 	var failed []ingestFailure
@@ -446,11 +455,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	retrieveStart := time.Now()
 	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model)
 	if err != nil {
 		send("error", map[string]string{"error": err.Error()})
 		return
 	}
+	retrieveMS := float64(time.Since(retrieveStart).Microseconds()) / 1000
 
 	// Evidence-sufficiency gate: if the best hit is too weak, abstain rather than
 	// answer from the model's parametric memory.
@@ -460,7 +471,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	send("sources", map[string]any{"sources": toQueryResults(res)})
+	send("sources", map[string]any{"sources": toQueryResults(res), "retrieve_ms": retrieveMS})
 
 	if s.gen == nil || model == "" {
 		send("error", map[string]string{"error": "no language model configured"})
@@ -468,6 +479,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := buildChatPrompt(req.Query, res, req.MetaKeys, graphFacts(st, res))
+	// Surface the exact prompt the model receives, so a user can see what grounded
+	// (or failed to ground) an answer. It is the assembled context, already on hand.
+	send("prompt", map[string]string{"system": chatSystemPrompt, "prompt": prompt})
 	streamErr := s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
 		send("token", map[string]string{"text": tok})
 		return nil
@@ -542,6 +556,7 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 			Meta:       r.Meta,
 			Kind:       r.Chunk.Kind,
 			ImageRef:   r.Chunk.ImageRef,
+			Components: r.Components,
 		}
 	}
 	return out
