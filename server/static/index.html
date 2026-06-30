@@ -174,6 +174,10 @@
   .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
     gap:7px;text-align:center;color:var(--muted);padding:30px}
   .chat-empty .sub{color:var(--faint);font-size:11px}
+  .demo-row{flex-direction:column;align-items:center;gap:7px;margin:10px 0}
+  #demoBtn{border-color:var(--accent);color:var(--accent);padding:7px 14px;font-weight:500}
+  #demoBtn:hover{background:rgba(90,209,200,.08)}
+  #demoBtn:disabled{opacity:.5}
   .lnk{color:var(--accent);cursor:pointer}
   .lnk:hover{text-decoration:underline}
   .popover{position:absolute;top:42px;right:12px;width:266px;z-index:14;display:none;
@@ -538,6 +542,10 @@
         <div id="chatEmpty" class="chat-empty">
           <div>ask a question grounded in the graph</div>
           <div class="sub">answers cite the chunks they use and light them up</div>
+          <div id="demoRow" class="demo-row" style="display:none">
+            <button id="demoBtn">load a demo corpus</button>
+            <div class="sub">no documents yet &middot; try a small sample to see chat, the graph, and retrieval</div>
+          </div>
           <div class="sub"><kbd>Ctrl K</kbd> commands &middot; <span class="lnk" id="emptyHelp">how it works</span></div>
         </div>
       </div>
@@ -1063,6 +1071,9 @@ async function loadGraph(keepView){
 async function loadStats(){
   const s=await api(bk("/stats"));
   $("#sChunks").textContent=s.chunks||0;$("#sComm").textContent=s.communities||0;$("#sEnt").textContent=s.entities||0;
+  // Offer the demo corpus only on an empty bucket, so a fresh install is not a
+  // dead end but the prompt disappears once there is anything to explore.
+  const dr=$("#demoRow");if(dr)dr.style.display=(s.chunks||0)===0?"flex":"none";
 }
 async function loadModels(){
   try{
@@ -1662,6 +1673,33 @@ function showHelp(){helpEl.classList.add("open")}
 $("#helpClose").onclick=()=>helpEl.classList.remove("open");
 helpEl.addEventListener("click",e=>{if(e.target===helpEl)helpEl.classList.remove("open")});
 $("#emptyHelp").onclick=showHelp;
+
+// A small, self-documenting demo corpus: each document explains one turbograph
+// concept and references the others, so a fresh install lights up chat, the
+// similarity graph, and communities in one click instead of being a dead end.
+const DEMO_DOCS=[
+  {id:"hnsw.md",text:"HNSW is the vector index turbograph uses for approximate nearest-neighbor search. It builds a layered proximity graph so a query reaches its closest chunk embeddings in logarithmic time. The dense similarity score it returns is one of the signals blended into the final ranking."},
+  {id:"bm25.md",text:"BM25 is the lexical ranking function in turbograph's hybrid retrieval. It scores a chunk by term frequency and inverse document frequency, so an exact keyword or rare entity match is rewarded. Its score is fused additively with the dense HNSW similarity rather than by rank fusion, which preserves the dense ranking."},
+  {id:"turboquant.md",text:"TurboQuant is turbograph's vector quantizer. It compresses each embedding into a compact code while keeping a low-variance score estimate for ranking. The exact float vectors are also kept, because on modern CPUs an AVX dot product over them is both more accurate and faster than scoring the codes."},
+  {id:"pagerank.md",text:"Personalized PageRank spreads relevance across the chunk-similarity graph. Seeded from the dense and BM25 hits, it lifts a chunk that sits one hop from a strong match even when the query does not mention it directly. The graph boost is added on top of direct relevance so a strong hit keeps its rank."},
+  {id:"communities.md",text:"turbograph detects communities in the similarity graph by label propagation. Each community is a cluster of closely related chunks and can be summarized once by a language model. Those summaries power the global query mode, which answers corpus-wide questions across many documents."},
+  {id:"entity-graph.md",text:"The entity knowledge graph is the GraphRAG structure in turbograph. A language model extracts typed entities and relationships from each chunk; near-duplicate entities are canonicalized so the graph does not fragment. A query's entities are propagated with Personalized PageRank and the grounded relationships are injected into the prompt as facts."},
+  {id:"chunking.md",text:"Documents are split into chunks before embedding. turbograph offers recursive, markdown, sentence, and word chunkers, and the markdown chunker attaches heading breadcrumbs. Contextual retrieval can prepend a generated sentence situating each chunk in its document, which helps when later chunks lose the entity name to anaphora."},
+  {id:"contextual.md",text:"Contextual retrieval is an Anthropic technique adopted by turbograph. Before indexing, a model writes a short sentence describing where a chunk sits in its document, and that prefix is embedded and indexed alongside the body. It markedly improves retrieval of fragmented passages while leaving the answer text unchanged."},
+];
+async function loadDemo(){
+  const btn=$("#demoBtn");btn.disabled=true;btn.textContent="loading...";
+  try{
+    const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({documents:DEMO_DOCS})});
+    if(r.error)throw new Error(r.error);
+    DEMO_DOCS.forEach(d=>G.docs.set(d.id,{c:d.text.length}));
+    renderDocList();await loadDocuments();await loadStats();await loadGraph();loadBuckets();
+    toast("loaded "+DEMO_DOCS.length+" demo documents");
+  }catch(e){toast(e.message,true)}
+  finally{btn.disabled=false;btn.textContent="load a demo corpus"}
+}
+$("#demoBtn").onclick=loadDemo;
 
 // ---------- global keyboard ----------
 document.addEventListener("keydown",e=>{
