@@ -116,7 +116,9 @@
     vertical-align:-2px;margin-left:2px;animation:blink 1s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
 
-  .sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+  .src-time{font-size:10px;color:var(--muted);margin-top:9px}
+  .src-time b{color:var(--accent);font-weight:600}
+  .sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
   .chip{font-size:10px;color:var(--muted);background:var(--panel2);
     border:1px solid var(--border);border-radius:5px;padding:3px 7px;cursor:pointer;transition:.12s}
   .chip:hover{border-color:var(--accent);color:var(--accent)}
@@ -147,6 +149,22 @@
   #srcPreview .sp-cap{font-size:11.5px;color:var(--muted);line-height:1.5}
   #srcPreview .x{cursor:pointer;color:var(--faint)}
   #srcPreview .x:hover{color:var(--accent)}
+  /* score breakdown: a segmented bar showing why a chunk was retrieved */
+  .sp-score{margin-bottom:9px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+  .sp-score:empty{display:none}
+  .sp-score .sp-total{font-size:11px;color:var(--muted);margin-bottom:5px}
+  .sp-score .sp-total b{color:var(--text);font-weight:600}
+  .sbar{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--panel);width:100%}
+  .sbar i{height:100%;transition:width .2s ease}
+  .sb-d{background:var(--accent)} .sb-l{background:var(--accent2)} .sb-g{background:var(--warn)} .sb-e{background:var(--danger)}
+  .sb-leg{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:10px;color:var(--muted);margin-top:6px}
+  .sb-leg span{display:inline-flex;align-items:center;gap:4px}
+  .sb-leg i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none}
+  .lowconf{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--warn);
+    background:rgba(229,192,123,.1);border:1px solid rgba(229,192,123,.25);border-radius:5px;padding:4px 8px;margin-top:7px}
+  .prompt-link{margin-top:7px}
+  .prompt-link .lnk{font-size:10px}
+  #srcPreview .sp-text.sp-prompt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--muted)}
   .doc{position:relative}
   .doc .doc-del{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;
     color:var(--faint);font-size:14px;padding:0 4px;border-radius:4px;cursor:pointer;background:var(--panel)}
@@ -388,6 +406,10 @@
     color:var(--muted);cursor:pointer;transition:.15s}
   #drop:hover,#drop.over{border-color:var(--accent);color:var(--accent);background:rgba(90,209,200,.04)}
   #drop small{display:block;margin-top:6px;color:var(--faint);font-size:10px}
+  #ctxToggle{display:flex;align-items:center;gap:7px;margin-top:8px;cursor:pointer;flex-wrap:wrap}
+  #ctxToggle input{flex:none;accent-color:var(--accent);cursor:pointer}
+  #ctxToggle span{font-size:11px;color:var(--text)}
+  #ctxToggle small{flex-basis:100%;color:var(--faint);font-size:10px;margin-left:23px}
   .bar{height:4px;background:var(--panel2);border-radius:3px;overflow:hidden;display:none}
   .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
   .doclist{display:flex;flex-direction:column;gap:6px}
@@ -521,6 +543,7 @@
       </div>
       <div id="srcPreview">
         <div class="sp-head"><span>source <b id="spNum"></b> <span id="spDoc"></span></span><span class="x" id="spClose">close</span></div>
+        <div class="sp-score" id="spScore"></div>
         <div class="sp-text" id="spText"></div>
       </div>
       <div id="composer">
@@ -543,6 +566,10 @@
           <small id="dropTypes">.txt .md, .pdf</small>
         </div>
         <input id="file" type="file" multiple hidden>
+        <label id="ctxToggle" title="prefix each chunk with a model-generated sentence situating it in its document (improves retrieval of fragmented text; one model call per chunk)">
+          <input id="ctxOpt" type="checkbox"><span>contextual retrieval</span>
+          <small>generates an index-only context prefix per chunk &middot; needs a model &middot; slower</small>
+        </label>
         <div class="bar" id="progBar"><i></i></div>
         <div id="docNote" class="note"></div>
         <div class="row">
@@ -1246,7 +1273,8 @@ async function sendChat(){
       buf+=dec.decode(value,{stream:true});let i;
       while((i=buf.indexOf("\n\n"))>=0){
         const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
-        if(ev.event==="sources"){highlightIDs(ev.data.sources.map(s=>s.id));renderSources(msgEl,ev.data.sources)}
+        if(ev.event==="sources"){highlightIDs(ev.data.sources.map(s=>s.id));renderSources(msgEl,ev.data.sources,ev.data.retrieve_ms)}
+        else if(ev.event==="prompt"){msgEl._prompt=ev.data;addPromptLink(msgEl)}
         else if(ev.event==="token"){answer+=ev.data.text;nb=nearBottom();
           if(!renderQueued){renderQueued=true;requestAnimationFrame(flush)}}
         else if(ev.event==="abstain"){msgEl.classList.add("abstain");answer=ev.data.message;
@@ -1277,9 +1305,14 @@ function parseSSE(raw){
   try{data=JSON.parse(data)}catch(e){data={}}
   return {event,data};
 }
-function renderSources(msgEl,sources){
+function renderSources(msgEl,sources,retrieveMS){
   if(!sources||!sources.length||msgEl.querySelector(".sources"))return;
   msgEl._sources=sources;
+  if(retrieveMS!=null){
+    const t=document.createElement("div");t.className="src-time";
+    t.innerHTML='retrieved '+sources.length+' chunk'+(sources.length===1?"":"s")+' in <b>'+(+retrieveMS).toFixed(1)+' ms</b>';
+    msgEl.appendChild(t);
+  }
   const wrap=document.createElement("div");wrap.className="sources";
   sources.forEach((s,i)=>{
     const c=document.createElement("span");c.className="chip";
@@ -1292,6 +1325,48 @@ function renderSources(msgEl,sources){
     wrap.appendChild(c);
   });
   msgEl.appendChild(wrap);
+}
+// addPromptLink adds a "view prompt" affordance once the assembled prompt for a
+// message has arrived, and showPrompt reveals it in the inspector panel. Seeing
+// the exact context the model received is the fastest way to explain an answer.
+function addPromptLink(msgEl){
+  if(msgEl.querySelector(".prompt-link"))return;
+  const f=document.createElement("div");f.className="prompt-link";
+  f.innerHTML='<span class="lnk">view prompt</span>';
+  f.querySelector(".lnk").onclick=()=>showPrompt(msgEl);
+  msgEl.appendChild(f);
+}
+function showPrompt(msgEl){
+  const p=msgEl._prompt;if(!p)return;
+  $("#spNum").textContent="";
+  $("#spDoc").textContent="assembled prompt";
+  $("#spScore").innerHTML="";
+  const t=$("#spText");t.classList.add("sp-prompt");
+  t.textContent=(p.system?"[system]\n"+p.system+"\n\n":"")+p.prompt;
+  $("#srcPreview").classList.add("open");
+}
+// SBPARTS pairs each retrieval signal with its bar class and label, in display
+// order. The four contributions are returned by the API and sum to the score.
+const SBPARTS=[["dense","sb-d","dense"],["lexical","sb-l","lexical"],["graph","sb-g","graph"],["entity","sb-e","entity"]];
+function compVals(c){return c?{dense:c.dense||0,lexical:c.lexical||0,graph:c.graph||0,entity:c.entity||0}:null}
+// scoreBreakdown renders the "why was this retrieved" panel: the final score, a
+// segmented bar of the dense/lexical/graph/entity contributions, a labelled
+// legend, and a low-confidence note when the top signal is weak.
+function scoreBreakdown(s){
+  const c=compVals(s&&s.components);if(!c)return"";
+  const tot=c.dense+c.lexical+c.graph+c.entity;
+  if(tot<=0)return"";
+  const seg=SBPARTS.map(([k,cls])=>{const w=100*c[k]/tot;return w>0.05?'<i class="'+cls+'" style="width:'+w.toFixed(1)+'%"></i>':""}).join("");
+  const leg=SBPARTS.filter(([k])=>c[k]>0.0005).map(([k,cls,lbl])=>
+    '<span><i class="'+cls+'"></i>'+lbl+' '+Math.round(100*c[k]/tot)+'%</span>').join("");
+  const score=(s.score!=null?s.score:tot);
+  let warn="";
+  // The grounding signal is the dense cosine similarity; a low value means the
+  // chunk is only weakly related to the query and the answer may be unsupported.
+  if(s.similarity!=null&&s.similarity<0.35)
+    warn='<div class="lowconf">low similarity ('+s.similarity.toFixed(2)+') &mdash; this passage is only weakly related to the query</div>';
+  return '<div class="sp-total">retrieval score <b>'+score.toFixed(3)+'</b></div>'+
+    '<div class="sbar">'+seg+'</div><div class="sb-leg">'+leg+'</div>'+warn;
 }
 // metaHTML renders a document's metadata (a JSON object or its string form) as a
 // compact key/value strip, or "" when there is none.
@@ -1314,7 +1389,9 @@ async function openSource(msgEl,i){
   if(idx!=null){G.selected=idx;G.highlight=new Set([idx]);dirty=true;fit(G.highlight)}
   $("#spNum").textContent="["+(i+1)+"]";
   $("#spDoc").textContent=s.doc_id||s.id;
+  $("#spScore").innerHTML=scoreBreakdown(s);
   const body=$("#spText");const docId=s.doc_id||s.id;
+  body.classList.remove("sp-prompt");
   $("#srcPreview").classList.add("open");
   // An image chunk shows the source image above its caption.
   if(s.image_ref){
@@ -1701,14 +1778,14 @@ async function handleFiles(files){
     let total=0;
     if(binary.length){
       const r=await api(bk("/api/ingest/files"),{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({files:binary})});
+        body:JSON.stringify({files:binary,contextual:$("#ctxOpt").checked})});
       if(r.error)throw new Error(r.error);
       total=r.chunks;markFailures(r.failed);
     }
     bar.querySelector("i").style.width="55%";
     if(text.length){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({documents:text})});
+        body:JSON.stringify({documents:text,contextual:$("#ctxOpt").checked})});
       if(r.error)throw new Error(r.error);total=r.chunks;
     }
     if(images.length){
