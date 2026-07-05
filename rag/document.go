@@ -1,6 +1,10 @@
 package rag
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+)
 
 // locateSpan finds sub within text (both rune-indexed), ignoring differences in
 // whitespace runs, scanning forward from rune index from. It returns the
@@ -107,6 +111,51 @@ func (s *Store) DocumentView(id string) (DocView, bool) {
 		}
 	}
 	return view, true
+}
+
+// ExpandWindow returns the text of the chunk identified by id together with up to
+// window neighbouring chunks on each side that belong to the same document, joined
+// in positional order. It implements "small-to-big" retrieval at generation time:
+// the retrieved chunk stays the small, precise unit that was ranked and cited,
+// while the model reads the surrounding context so an answer is not truncated
+// mid-idea. window <= 0, or an unknown id, returns just the chunk's own text.
+// Image chunks are returned unexpanded (their caption is self-contained).
+func (s *Store) ExpandWindow(id string, window int) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var target Chunk
+	found := false
+	for i := range s.chunks {
+		if s.chunks[i].ID == id {
+			target = s.chunks[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+	if window <= 0 || target.Kind != "" {
+		return target.Text
+	}
+	lo, hi := target.Pos-window, target.Pos+window
+	type piece struct {
+		pos  int
+		text string
+	}
+	var pieces []piece
+	for i := range s.chunks {
+		c := s.chunks[i]
+		if c.DocID == target.DocID && c.Pos >= lo && c.Pos <= hi && c.Kind == "" {
+			pieces = append(pieces, piece{c.Pos, c.Text})
+		}
+	}
+	sort.Slice(pieces, func(a, b int) bool { return pieces[a].pos < pieces[b].pos })
+	parts := make([]string, len(pieces))
+	for i, p := range pieces {
+		parts[i] = p.text
+	}
+	return strings.Join(parts, "\n")
 }
 
 // currentTextLocked returns a document's current full text. The version history

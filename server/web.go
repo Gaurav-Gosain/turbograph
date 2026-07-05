@@ -405,6 +405,7 @@ type chatRequest struct {
 	MetaKeys  []string   `json:"meta_keys"` // document metadata keys to include in each passage
 	Global    bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
 	Decompose bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
+	Window    int        `json:"window"`    // expand each cited chunk with this many neighbor chunks for context
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -478,7 +479,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildChatPrompt(req.Query, res, req.MetaKeys, graphFacts(st, res))
+	// Small-to-big: the passages fed to the model can be expanded with neighbouring
+	// chunks for coherent context, while the sources shown and cited stay the small,
+	// precise retrieved chunks.
+	prompt := buildChatPrompt(req.Query, expandPassages(st, res, req.Window), req.MetaKeys, graphFacts(st, res))
 	// Surface the exact prompt the model receives, so a user can see what grounded
 	// (or failed to ground) an answer. It is the assembled context, already on hand.
 	send("prompt", map[string]string{"system": chatSystemPrompt, "prompt": prompt})
@@ -557,6 +561,24 @@ func toQueryResults(res []rag.Retrieved) []queryResult {
 			Kind:       r.Chunk.Kind,
 			ImageRef:   r.Chunk.ImageRef,
 			Components: r.Components,
+		}
+	}
+	return out
+}
+
+// expandPassages returns copies of the retrieved results whose text is widened to
+// a neighbour window in the source document (small-to-big retrieval). It leaves
+// the originals untouched, so the sources shown and cited remain the small ranked
+// chunks; only the text handed to the generator grows. window <= 0 is a no-op.
+func expandPassages(st *rag.Store, res []rag.Retrieved, window int) []rag.Retrieved {
+	if window <= 0 {
+		return res
+	}
+	out := make([]rag.Retrieved, len(res))
+	for i, r := range res {
+		out[i] = r
+		if expanded := st.ExpandWindow(r.Chunk.ID, window); expanded != "" {
+			out[i].Chunk.Text = expanded
 		}
 	}
 	return out

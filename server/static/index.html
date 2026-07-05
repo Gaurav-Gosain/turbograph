@@ -563,6 +563,11 @@
           <label class="tg-check"><input id="pRerank" type="checkbox"> re-score candidates with the model</label>
           <small>sharper ordering at the cost of one extra model call per query</small>
         </div>
+        <div class="po-row">
+          <div class="lab">context window <b id="vWindow">0</b></div>
+          <input id="pWindow" type="range" min="0" max="4" step="1" value="0">
+          <small>small-to-big: feed the model each cited chunk plus this many neighbor chunks for coherent context; citations stay the small chunks</small>
+        </div>
         <button id="resetSettings">reset to defaults</button>
       </div>
       <div id="messages">
@@ -872,7 +877,7 @@ const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false};
 
 // ---------- settings persistence + popover ----------
-const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim"];
+const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim","pWindow"];
 function loadSettings(){
   try{const s=JSON.parse(localStorage.getItem("tg.settings")||"{}");
     for(const id of SETTINGS)if(s[id]!=null)$("#"+id).value=s[id];
@@ -892,13 +897,14 @@ function syncReadouts(){
   $("#vEnt").textContent=(+$("#pEnt").value).toFixed(2);
   $("#vMinSim").textContent=(+$("#pMinSim").value).toFixed(2);
   $("#vRerank").textContent=$("#pRerank").checked?"on":"off";
+  $("#vWindow").textContent=$("#pWindow").value;
 }
 SETTINGS.forEach(id=>$("#"+id).addEventListener("input",()=>{syncReadouts();saveSettings()}));
 $("#pRerank").addEventListener("change",()=>{syncReadouts();saveSettings()});
 const settingsEl=$("#settings");
 $("#settingsBtn").onclick=e=>{e.stopPropagation();settingsEl.classList.toggle("open")};
 $("#settingsClose").onclick=()=>settingsEl.classList.remove("open");
-$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;syncReadouts();saveSettings()};
+$("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;$("#pWindow").value=0;syncReadouts();saveSettings()};
 document.addEventListener("click",e=>{
   if(settingsEl.classList.contains("open")&&!settingsEl.contains(e.target)&&e.target.id!=="settingsBtn")
     settingsEl.classList.remove("open");
@@ -1333,7 +1339,7 @@ async function sendChat(){
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
       body:JSON.stringify({query:text,global:G.global,decompose:G.decompose,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
-        min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,history,model:G.model})});
+        min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,window:+$("#pWindow").value||0,history,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
       const {value,done}=await reader.read();if(done)break;
