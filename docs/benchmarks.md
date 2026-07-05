@@ -178,6 +178,33 @@ What it showed:
   The codes' value is compact storage and asymmetric scoring when you do *not*
   have the exact vector, neither of which applies to in-memory search.
 
+## Low-storage snapshot modes
+
+Stored embeddings dominate a `.tg` file: on a 173-chunk real-prose corpus at
+768 dimensions, the exact float32 vectors are about half of the snapshot. LEANN
+([arXiv:2506.08276](https://arxiv.org/abs/2506.08276)) attacks this by storing no
+embeddings and recomputing every one per query; that trades away the speed
+turbograph is built for, and over Ollama's HTTP embedding it would be far slower
+than LEANN's GPU-batched figures. Because turbograph's corpora fit in RAM, two
+modes that materialize vectors *once* (not per query) capture most of the storage
+win without the latency. Measured with `nomic-embed-text`, recall is the top-10
+overlap with the exact-mode ranking (the query vector is identical across modes,
+so the delta is purely how much the stored representation perturbs the order):
+
+| `--lean` mode | `.tg` size | load     | recall@10 vs exact |
+| ------------- | ---------- | -------- | ------------------ |
+| exact (default) | 100%     | 139 ms   | 1.000              |
+| codes         | **41.6%**  | 139 ms   | **0.982**          |
+| text          | **23.9%**  | 1189 ms  | 1.000              |
+
+`codes` stores the compact TurboQuant codes and decodes them to approximate
+vectors on load: ~60% smaller, no load or query penalty, negligible recall loss.
+`text` stores no vectors and re-embeds from the chunk text on load: ~76% smaller
+and lossless (a deterministic embedder reproduces the vectors exactly), paid for
+by re-embedding the whole corpus at load time. Per-query recomputation, LEANN's
+actual mechanism, is deliberately not adopted; it only wins past the RAM ceiling,
+a scale regime turbograph does not target.
+
 ## Frontier benchmarks
 
 Two newer benchmarks set the current bar and are noted for context, not run here

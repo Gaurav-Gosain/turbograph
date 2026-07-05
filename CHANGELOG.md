@@ -10,6 +10,12 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Low-storage snapshot modes (`--lean` on `ingest` and `serve`, or
+  `Store.SaveLean` / `Manager.SetVectorMode`): `codes` persists compact TurboQuant
+  codes instead of float32 vectors (~40% of the file, ~98% recall, no load or
+  query penalty), and `text` persists no vectors and re-embeds from text on load
+  (~24% of the file, lossless, slower load). The default is unchanged (exact
+  float32). Numbers in [docs/benchmarks.md](docs/benchmarks.md).
 - Retrieval score breakdown ("why was this retrieved"): every result carries an
   additive breakdown of its score into the dense, lexical (BM25), similarity-graph
   PageRank, and entity-graph signals, exposed on the query and chat APIs and

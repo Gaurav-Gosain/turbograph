@@ -328,6 +328,16 @@ The S3 client is implemented on the standard library with SigV4 signing, so ther
 is no AWS SDK dependency. Storage sits behind a small `storage.Blob` interface, so
 adding another backend is one type.
 
+Stored embeddings dominate a `.tg` file, so `--lean` (on `ingest` and `serve`)
+offers two smaller layouts for the common case where the corpus fits in RAM.
+`--lean codes` keeps the compact TurboQuant codes instead of the float32 vectors
+and decodes them on load: about 40% of the file at ~98% recall, with no load or
+query penalty. `--lean text` keeps no vectors and re-embeds from the chunk text on
+load: about 24% of the file and lossless, paid for by re-embedding at load time.
+The default stays exact float32. This is turbograph's answer to low-storage
+indexing (see [docs/benchmarks.md](docs/benchmarks.md)); it materializes vectors
+once rather than recomputing them per query, which keeps retrieval fast.
+
 ## Command line
 
 ```

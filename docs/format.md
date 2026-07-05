@@ -56,7 +56,8 @@ type snapshot struct {
     Cfg       Config                       `json:"config"`    // how this corpus was built
     Dim       int                          `json:"dim"`       // embedding dimension
     Chunks    []Chunk                      `json:"chunks"`    // the text, in ingestion order
-    Embeds    [][]float32                  `json:"embeds"`    // raw embeddings, one per chunk
+    Embeds    [][]float32                  `json:"embeds"`    // raw embeddings, one per chunk (exact mode)
+    Codes     []quant.Code                 `json:"codes"`     // TurboQuant codes instead of Embeds (codes mode)
     Hashes    map[string][32]byte          `json:"hashes"`    // doc id -> content sha256 (dedup)
     Entities  []entity.Entity              `json:"entities"`  // entity graph nodes (optional)
     Relations []entity.Relation            `json:"relations"` // entity graph edges (optional)
@@ -137,7 +138,8 @@ deterministically rebuilds everything else on load.
 | `Cfg`       | chunking, quantization, HNSW, graph, and fusion knobs | so a reload reproduces the same build; a bring-your-own `Chunker` is **not** stored (it is code, not data) and is nulled out on save (`snap.Cfg.Chunker = nil`); only `Cfg.Chunk.Strategy` survives |
 | `Dim`       | the embedding width                                  | to size the indexes before adding vectors |
 | `Chunks`    | each chunk's id, doc id, ordinal, text, and offsets  | the source of truth for the lexical index, previews, and highlighting |
-| `Embeds`    | one raw `float32` vector per chunk, in chunk order    | the source of truth for the vector index and MMR; storing these is what makes a reload skip embedding. `Embeds[i]` is the embedding of `Chunks[i]` |
+| `Embeds`    | one raw `float32` vector per chunk, in chunk order    | the source of truth for the vector index and MMR; storing these is what makes a reload skip embedding. `Embeds[i]` is the embedding of `Chunks[i]`. Present in the default `exact` mode |
+| `Codes`     | one TurboQuant code per chunk, in chunk order         | written instead of `Embeds` in `--lean codes` mode (much smaller); decoded to approximate vectors on load. In `--lean text` mode neither is written and the vectors are recomputed from `Chunks` text on load |
 | `Hashes`    | a content sha256 per document id                     | so content-level dedup survives a reload |
 | `Entities`  | entity-graph nodes                                    | the entity graph is extracted with an LLM, far too costly to rebuild on load |
 | `Relations` | typed, weighted edges between entities               | same reason; together with `Entities` it restores the GraphRAG graph |
