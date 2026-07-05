@@ -22,11 +22,21 @@ import (
 // The Manager is safe for concurrent use. Individual stores are themselves
 // concurrency-safe for reads.
 type Manager struct {
-	mu       sync.RWMutex
-	blob     storage.Blob
-	embedder Embedder
-	cfg      Config
-	stores   map[string]*Store
+	mu         sync.RWMutex
+	blob       storage.Blob
+	embedder   Embedder
+	cfg        Config
+	stores     map[string]*Store
+	vectorMode VectorMode // how snapshots persist embeddings; VectorsExact default
+}
+
+// SetVectorMode selects how buckets persist their embeddings when saved: exact
+// float32 (default), compact TurboQuant codes, or none (recomputed on load). See
+// VectorMode. It affects future saves only; it does not rewrite existing files.
+func (m *Manager) SetVectorMode(mode VectorMode) {
+	m.mu.Lock()
+	m.vectorMode = mode
+	m.mu.Unlock()
 }
 
 // SetConfig updates the configuration used when new buckets are created (for
@@ -191,8 +201,11 @@ func (m *Manager) Save(name string) error {
 	if !ok {
 		return fmt.Errorf("rag: no such bucket %q", name)
 	}
+	m.mu.RLock()
+	mode := m.vectorMode
+	m.mu.RUnlock()
 	var buf bytes.Buffer
-	if err := st.Save(&buf); err != nil {
+	if err := st.SaveLean(&buf, mode); err != nil {
 		return err
 	}
 	return m.blob.Put(context.Background(), name+storeExt, buf.Bytes())

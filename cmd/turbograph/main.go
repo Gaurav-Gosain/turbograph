@@ -185,6 +185,7 @@ func cmdServe(args []string) error {
 	maxBody := fs.Int64("max-body", server.DefaultMaxBodyBytes, "max JSON/query request body in bytes (0 uses the default, negative disables)")
 	maxUpload := fs.Int64("max-upload", server.DefaultMaxUploadBytes, "max file-upload request body in bytes (0 uses the default, negative disables)")
 	configPath := fs.String("config", "", "persisted settings JSON, editable in the UI (default <data>/config.json)")
+	lean := fs.String("lean", "exact", "vector storage when buckets are saved: exact (float32), codes (compact TurboQuant, ~40% size, ~98% recall), or text (no vectors, re-embed on load, smallest and lossless)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -247,6 +248,13 @@ func cmdServe(args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if *lean != "exact" {
+		mode, merr := parseVectorMode(*lean)
+		if merr != nil {
+			return merr
+		}
+		mgr.SetVectorMode(mode)
 	}
 	// Ensure the default bucket exists so the UI works immediately.
 	if _, err := mgr.GetOrCreate(server.DefaultBucket); err != nil {
@@ -391,10 +399,15 @@ func cmdIngest(args []string) error {
 	entities := fs.Bool("entities", false, "after indexing, extract an entity-relationship knowledge graph (GraphRAG style)")
 	entModel := fs.String("gen-model", "", "model used to extract entities when --entities is set")
 	entBatch := fs.Int("entity-batch", 4, "chunks per model call during entity extraction (1 = one call per chunk; higher is faster but can dilute a small model)")
+	lean := fs.String("lean", "exact", "vector storage in the .tg file: exact (float32), codes (compact TurboQuant, ~40% size, ~98% recall), or text (no vectors, re-embed on load, smallest and lossless)")
 	fs.Parse(args)
 
 	if *src == "" {
 		return fmt.Errorf("--src is required")
+	}
+	vmode, verr := parseVectorMode(*lean)
+	if verr != nil {
+		return verr
 	}
 
 	embedBase := *ollamaURL
@@ -455,7 +468,7 @@ func cmdIngest(args []string) error {
 	prog, ingErr := store.Ingest(ctx, docs, 0, rag.IngestOptions{
 		Workers:         *workers,
 		Journal:         journal,
-		Save:            func() error { return saveStore(store, *out) },
+		Save:            func() error { return saveStore(store, *out, vmode) },
 		CheckpointEvery: *checkpoint,
 		OnProgress: func(p rag.Progress) {
 			fmt.Fprintf(os.Stderr, "\rdone %d  failed %d  skipped %d  chunks %d", p.Done, p.Failed, p.Skipped, p.Chunks)
@@ -463,7 +476,7 @@ func cmdIngest(args []string) error {
 	})
 	fmt.Fprintln(os.Stderr)
 
-	if err := saveStore(store, *out); err != nil {
+	if err := saveStore(store, *out, vmode); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "indexed %d new documents (%d chunks) in %s; store has %d documents, %d chunks\n",
@@ -495,7 +508,7 @@ func cmdIngest(args []string) error {
 		if eerr != nil {
 			return eerr
 		}
-		if err := saveStore(store, *out); err != nil {
+		if err := saveStore(store, *out, vmode); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "entity graph: %d entities, saved to %s\n", store.EntityCount(), *out)
@@ -593,13 +606,31 @@ func (d dirEntry) IsDir() bool                { return d.fi.IsDir() }
 func (d dirEntry) Type() os.FileMode          { return d.fi.Mode().Type() }
 func (d dirEntry) Info() (os.FileInfo, error) { return d.fi, nil }
 
-func saveStore(store *rag.Store, path string) error {
+func saveStore(store *rag.Store, path string, mode rag.VectorMode) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return store.Save(f)
+	return store.SaveLean(f, mode)
+}
+
+// parseVectorMode maps the --lean flag to a VectorMode. "exact" (or "" / "full")
+// stores raw float32; "codes" stores compact TurboQuant codes (about 40% the
+// size, decoded on load, ~98% recall); "text"/"none" stores no vectors and
+// re-embeds from text on load (smallest and lossless, but the load re-embeds the
+// whole corpus with the same model).
+func parseVectorMode(s string) (rag.VectorMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "exact", "full", "float32":
+		return rag.VectorsExact, nil
+	case "codes", "quant", "quantized":
+		return rag.VectorsCodes, nil
+	case "text", "none", "recompute":
+		return rag.VectorsNone, nil
+	default:
+		return rag.VectorsExact, fmt.Errorf("unknown --lean mode %q (use exact, codes, or text)", s)
+	}
 }
 
 func cmdQuery(args []string) error {

@@ -1,12 +1,35 @@
 package rag
 
 import (
+	"context"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
+	"github.com/Gaurav-Gosain/turbograph/quant"
+)
+
+// VectorMode selects how chunk embeddings are persisted, trading storage for
+// load cost. It is the turbograph-native answer to low-storage indexing: the
+// corpus fits in RAM, so vectors are materialized once at load rather than
+// recomputed per query.
+type VectorMode int
+
+const (
+	// VectorsExact stores the raw float32 embeddings. Largest on disk, fastest to
+	// load (no recomputation), exact search. The default and backward-compatible.
+	VectorsExact VectorMode = iota
+	// VectorsCodes stores the compact TurboQuant codes instead of the float32
+	// vectors and decodes them to approximate vectors on load. Much smaller, still
+	// no recomputation, at quantization-level accuracy.
+	VectorsCodes
+	// VectorsNone stores no vectors at all; the embeddings are recomputed from the
+	// chunk text with the attached embedder on load. Smallest on disk and exact,
+	// but the load re-embeds the whole corpus, so it is slow. Requires the same
+	// embedding model that built the store.
+	VectorsNone
 )
 
 // snapshot is the on-disk representation of a Store. Only the inputs that are
@@ -19,6 +42,9 @@ type snapshot struct {
 	Dim    int         `json:"dim"`
 	Chunks []Chunk     `json:"chunks"`
 	Embeds [][]float32 `json:"embeds"`
+	// Codes holds the TurboQuant codes when the store was saved in VectorsCodes
+	// mode (Embeds is then empty). Decoded to approximate vectors on load.
+	Codes []quant.Code `json:"codes,omitempty"`
 	// Hashes maps document id to content hash, persisted so content-level dedup
 	// survives a reload. Absent in older snapshots, in which case dedup falls back
 	// to ids until the documents are seen again.
@@ -42,15 +68,33 @@ type snapshot struct {
 	CommSummary map[int]string `json:"community_summaries"`
 }
 
-// Save serializes the store to w.
-func (s *Store) Save(w io.Writer) error {
+// Save serializes the store to w with exact float32 embeddings (VectorsExact).
+func (s *Store) Save(w io.Writer) error { return s.SaveLean(w, VectorsExact) }
+
+// SaveLean serializes the store to w, choosing how embeddings are persisted per
+// mode. VectorsCodes and VectorsNone shrink the snapshot substantially; see
+// VectorMode for the trade-offs. Everything else (chunks, hashes, versions,
+// metadata, the entity graph) is stored identically regardless of mode.
+func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Embeds: s.embeds, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta, CommSummary: s.commSummary}
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta, CommSummary: s.commSummary}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
+	switch mode {
+	case VectorsCodes:
+		// Compact codes in place of the float32 vectors; decoded on load.
+		snap.Codes = make([]quant.Code, len(s.embeds))
+		for i, v := range s.embeds {
+			snap.Codes[i] = s.q.Encode(v)
+		}
+	case VectorsNone:
+		// Store no vectors; they are recomputed from text on load.
+	default:
+		snap.Embeds = s.embeds
+	}
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
 		snap.Relations = s.eg.Relations()
@@ -59,6 +103,41 @@ func (s *Store) Save(w io.Writer) error {
 		}
 	}
 	return gob.NewEncoder(w).Encode(&snap)
+}
+
+// loadVectors materializes the chunk embeddings from whichever representation the
+// snapshot carries: the stored float32 vectors (VectorsExact), TurboQuant codes
+// decoded through the store's quantizer (VectorsCodes), or a re-embedding of the
+// chunk text with the attached embedder (VectorsNone). The store must already be
+// initialized so its quantizer exists. It is called under construction, before
+// the store is published, so no lock is needed.
+func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
+	switch {
+	case len(snap.Embeds) == len(snap.Chunks):
+		return snap.Embeds, nil
+	case len(snap.Codes) == len(snap.Chunks):
+		out := make([][]float32, len(snap.Codes))
+		for i := range snap.Codes {
+			out[i] = s.q.Decode(snap.Codes[i])
+		}
+		return out, nil
+	default:
+		if s.embedder == nil {
+			return nil, fmt.Errorf("rag: snapshot has no stored vectors and no embedder to recompute them")
+		}
+		texts := make([]string, len(snap.Chunks))
+		for i, c := range snap.Chunks {
+			texts[i] = c.IndexText()
+		}
+		out, err := s.embedder.Embed(context.Background(), texts)
+		if err != nil {
+			return nil, fmt.Errorf("rag: recompute embeddings on load: %w", err)
+		}
+		if len(out) != len(texts) {
+			return nil, fmt.Errorf("rag: recompute returned %d vectors for %d chunks", len(out), len(texts))
+		}
+		return out, nil
+	}
 }
 
 // ExportJSON reads a gob-encoded .tg snapshot from r and writes an equivalent,
@@ -101,7 +180,11 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	s.docSet = make(map[string]struct{})
 	s.hashes = make(map[[32]byte]string)
 	s.idHash = make(map[string][32]byte)
-	if err := s.appendChunksLocked(snap.Chunks, snap.Embeds); err != nil {
+	embeds, err := s.loadVectors(&snap)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.appendChunksLocked(snap.Chunks, embeds); err != nil {
 		return nil, err
 	}
 	for id, h := range snap.Hashes {
