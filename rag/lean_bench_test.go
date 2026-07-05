@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,12 @@ func TestLeanStorageModes(t *testing.T) {
 	t.Logf("corpus: %d docs from repo prose, embed=%s", len(docs), embedModel)
 
 	cfg := Config{Seed: 1, GraphKNN: 6, MinSimilarity: 0.05, Chunk: ChunkConfig{TargetWords: 120}}
+	if b := os.Getenv("TG_LEAN_BITS"); b != "" {
+		if n, err := strconv.Atoi(b); err == nil {
+			cfg.Bits = n
+		}
+	}
+	t.Logf("quantizer bits=%d (codes-mode fidelity; storage is bits-independent)", cfg.Bits)
 	base := New(client, cfg)
 	if err := base.Build(ctx, docs); err != nil {
 		t.Fatalf("build: %v", err)

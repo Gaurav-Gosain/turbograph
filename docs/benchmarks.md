@@ -205,6 +205,11 @@ by re-embedding the whole corpus at load time. Per-query recomputation, LEANN's
 actual mechanism, is deliberately not adopted; it only wins past the RAM ceiling,
 a scale regime turbograph does not target.
 
+A code is one byte per dimension regardless of `--bits`, so codes-mode storage is
+**independent of the bit width** while recall improves with it: raising `--bits`
+to 8 lifts codes recall from 0.982 to **0.996** at the same ~41% size, so
+`--lean codes --bits 8` is the recommended near-lossless low-storage setting.
+
 ## Frontier benchmarks
 
 Two newer benchmarks set the current bar and are noted for context, not run here
