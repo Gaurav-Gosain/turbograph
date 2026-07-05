@@ -209,6 +209,33 @@
   .cmdk-overlay{position:fixed;inset:0;z-index:30;display:none;background:rgba(5,6,8,.55);
     backdrop-filter:blur(2px);align-items:flex-start;justify-content:center;padding-top:14vh}
   .cmdk-overlay.open{display:flex}
+  /* A/B retrieval comparison */
+  .cfg.ab{width:min(920px,94vw);max-height:88vh}
+  .cfg-head small{color:var(--faint);font-weight:400;font-size:11px}
+  .ab-body{padding:14px 16px;overflow:auto}
+  .ab-query{display:flex;gap:8px;margin-bottom:12px}
+  .ab-query input{flex:1}
+  .ab-configs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+  .ab-cfg{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:11px 12px}
+  .ab-cfg h4{margin:0 0 8px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .ab-cfg label{display:grid;grid-template-columns:1fr auto;align-items:center;gap:4px 8px;font-size:11px;color:var(--muted);margin-bottom:7px}
+  .ab-cfg label b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+  .ab-cfg label input[type=range]{grid-column:1 / -1}
+  .ab-tag{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;font-size:10px;font-weight:700;color:var(--bg)}
+  .ab-tag.ab-a{background:var(--accent)} .ab-tag.ab-b{background:var(--accent2)}
+  .ab-results{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .ab-colhead{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin-bottom:7px}
+  .ab-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:5px;background:var(--panel2);font-size:11px}
+  .ab-rank{color:var(--faint);font-variant-numeric:tabular-nums;min-width:16px}
+  .ab-doc{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+  .ab-score{color:var(--muted);font-variant-numeric:tabular-nums}
+  .ab-delta{font-size:9px;padding:1px 4px;border-radius:3px;font-weight:600}
+  .ab-up{color:var(--accent);background:rgba(90,209,200,.12)} .ab-down{color:var(--danger);background:rgba(224,108,117,.12)}
+  .ab-same{color:var(--faint)} .ab-new{color:var(--warn);background:rgba(229,192,123,.12)}
+  .ab-mini{display:flex;height:3px;border-radius:2px;overflow:hidden;background:var(--panel);width:46px;flex:none}
+  .ab-mini i{height:100%}
+  .ab-empty{color:var(--faint);font-size:11px;padding:14px;text-align:center}
+  @media(max-width:640px){.ab-configs,.ab-results{grid-template-columns:1fr}}
   .cmdk{width:min(560px,92vw);background:var(--panel);border:1px solid var(--border);
     border-radius:11px;box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden;animation:pop .12s ease-out}
   #cmdkInput{width:100%;border:0;border-bottom:1px solid var(--border);border-radius:0;
@@ -771,6 +798,35 @@
         <div class="ver-meta" id="verMeta"></div>
         <div class="ver-diffbar" id="verDiffBar"></div>
         <div class="ver-diff" id="verDiff"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="abcompare" class="cmdk-overlay">
+  <div class="cfg ab">
+    <div class="cfg-head"><span>A/B retrieval comparison &middot; <small>run one query under two configs on your corpus</small></span><span class="x" id="abClose">close</span></div>
+    <div class="ab-body">
+      <div class="ab-query"><input id="abQuery" placeholder="a query to compare across two retrieval configs..." spellcheck="false"><button id="abRun">compare</button></div>
+      <div class="ab-configs">
+        <div class="ab-cfg" data-side="a">
+          <h4><span class="ab-tag ab-a">A</span> config A</h4>
+          <label>results <b class="abv" data-k="topk">6</b><input type="range" data-side="a" data-k="topk" min="1" max="20" step="1" value="6"></label>
+          <label>graph boost <b class="abv" data-k="graph_mix">0.00</b><input type="range" data-side="a" data-k="graph_mix" min="0" max="1" step="0.05" value="0"></label>
+          <label>entity mix <b class="abv" data-k="entity_mix">0.00</b><input type="range" data-side="a" data-k="entity_mix" min="0" max="1" step="0.05" value="0"></label>
+          <label>diversify (MMR) <b class="abv" data-k="mmr_lambda">0.00</b><input type="range" data-side="a" data-k="mmr_lambda" min="0" max="1" step="0.05" value="0"></label>
+        </div>
+        <div class="ab-cfg" data-side="b">
+          <h4><span class="ab-tag ab-b">B</span> config B</h4>
+          <label>results <b class="abv" data-k="topk">6</b><input type="range" data-side="b" data-k="topk" min="1" max="20" step="1" value="6"></label>
+          <label>graph boost <b class="abv" data-k="graph_mix">0.30</b><input type="range" data-side="b" data-k="graph_mix" min="0" max="1" step="0.05" value="0.3"></label>
+          <label>entity mix <b class="abv" data-k="entity_mix">0.50</b><input type="range" data-side="b" data-k="entity_mix" min="0" max="1" step="0.05" value="0.5"></label>
+          <label>diversify (MMR) <b class="abv" data-k="mmr_lambda">0.00</b><input type="range" data-side="b" data-k="mmr_lambda" min="0" max="1" step="0.05" value="0"></label>
+        </div>
+      </div>
+      <div class="ab-results">
+        <div class="ab-col"><div class="ab-colhead"><span class="ab-tag ab-a">A</span> <span id="abTimeA"></span></div><div id="abColA"></div></div>
+        <div class="ab-col"><div class="ab-colhead"><span class="ab-tag ab-b">B</span> <span id="abTimeB"></span></div><div id="abColB"></div></div>
       </div>
     </div>
   </div>
@@ -1575,6 +1631,66 @@ $("#cfgSave").onclick=async()=>{
   }catch(e){msg.textContent=e.message;msg.className="warn";toast(e.message,true)}
 };
 
+// ---------- A/B retrieval comparison ----------
+// Runs one query under two retrieval configs against the current bucket and shows
+// the rankings side by side with per-result score breakdowns and rank-change
+// badges, so a user can see whether graph boost / entity mix / MMR actually helps
+// on their own corpus. Pure client side over two /api/query calls.
+function scoreMini(c){
+  const v=compVals(c);if(!v)return'<span class="ab-mini"></span>';
+  const tot=v.dense+v.lexical+v.graph+v.entity;if(tot<=0)return'<span class="ab-mini"></span>';
+  const seg=SBPARTS.map(([k,cls])=>{const w=100*v[k]/tot;return w>0.05?'<i class="'+cls+'" style="width:'+w.toFixed(1)+'%"></i>':""}).join("");
+  return '<span class="ab-mini" title="dense/lexical/graph/entity">'+seg+'</span>';
+}
+function abParams(side){
+  const p={query:$("#abQuery").value.trim()};
+  document.querySelectorAll('.ab-cfg[data-side="'+side+'"] input[data-k]').forEach(inp=>{
+    p[inp.dataset.k==="topk"?"top_k":inp.dataset.k]=+inp.value;
+  });
+  return p;
+}
+async function runAB(){
+  const q=$("#abQuery").value.trim();if(!q){toast("enter a query to compare");return}
+  const btn=$("#abRun");btn.disabled=true;btn.textContent="running...";
+  try{
+    const [ra,rb]=await Promise.all([
+      api(bk("/api/query"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(abParams("a"))}),
+      api(bk("/api/query"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(abParams("b"))}),
+    ]);
+    const ma=abRankMap(ra),mb=abRankMap(rb);
+    $("#abTimeA").textContent=ra.took_ms!=null?(+ra.took_ms).toFixed(1)+" ms":"";
+    $("#abTimeB").textContent=rb.took_ms!=null?(+rb.took_ms).toFixed(1)+" ms":"";
+    $("#abColA").innerHTML=abRenderCol(ra.results,mb);
+    $("#abColB").innerHTML=abRenderCol(rb.results,ma);
+  }catch(e){toast(e.message,true)}
+  finally{btn.disabled=false;btn.textContent="compare"}
+}
+function abRankMap(res){const m=new Map();(res.results||[]).forEach((r,i)=>m.set(r.id,i));return m}
+function abRenderCol(results,other){
+  if(!results||!results.length)return '<div class="ab-empty">no results</div>';
+  return results.map((r,i)=>{
+    const o=other.get(r.id);let d;
+    if(o==null)d='<span class="ab-delta ab-new">only here</span>';
+    else if(o===i)d='<span class="ab-delta ab-same">=</span>';
+    else if(o>i)d='<span class="ab-delta ab-up" title="ranked '+(o-i)+' higher than the other config">&#9650;'+(o-i)+'</span>';
+    else d='<span class="ab-delta ab-down" title="ranked '+(i-o)+' lower than the other config">&#9660;'+(i-o)+'</span>';
+    return '<div class="ab-row"><span class="ab-rank">'+(i+1)+'</span>'+scoreMini(r.components)+
+      '<span class="ab-doc" title="'+esc(r.text||"")+'">'+esc(r.doc_id||r.id)+'</span>'+
+      '<span class="ab-score">'+(r.score!=null?r.score.toFixed(2):"")+'</span>'+d+'</div>';
+  }).join("");
+}
+function openAB(){$("#abcompare").classList.add("open");const qi=$("#abQuery");if(!qi.value)qi.focus()}
+$("#abClose").onclick=()=>$("#abcompare").classList.remove("open");
+$("#abcompare").addEventListener("click",e=>{if(e.target===$("#abcompare"))$("#abcompare").classList.remove("open")});
+$("#abRun").onclick=runAB;
+$("#abQuery").addEventListener("keydown",e=>{if(e.key==="Enter")runAB()});
+document.querySelectorAll('.ab-cfg input[data-k]').forEach(inp=>{
+  inp.addEventListener("input",()=>{
+    const lab=inp.parentElement.querySelector(".abv");
+    if(lab)lab.textContent=inp.dataset.k==="topk"?inp.value:(+inp.value).toFixed(2);
+  });
+});
+
 // ---------- command palette (Ctrl K) ----------
 const cmdkEl=$("#cmdk"),cmdkInput=$("#cmdkInput"),cmdkList=$("#cmdkList");
 let cmdkItems=[],cmdkSel=0;
@@ -1607,6 +1723,7 @@ function commands(){
   c.push(
     {label:"Pipeline editor",hint:"pipeline",run:openFlow},
     {label:"Retrieval settings",run:()=>settingsEl.classList.add("open")},
+    {label:"A/B retrieval compare",hint:"benchmark two configs",run:openAB},
     {label:"Settings & configuration",hint:"backends, chunking, S3",run:openConfig},
     {label:"Build entity graph",hint:"llm",run:runBuildEntities},
     {label:"Build community summaries",hint:"global queries",run:runBuildCommunities},
@@ -1716,6 +1833,7 @@ document.addEventListener("keydown",e=>{
     if(cfgOpen()){closeConfig();return}
     if(verEl.classList.contains("open")){closeVersions();return}
     if(tgInfoEl.classList.contains("open")){tgInfoEl.classList.remove("open");return}
+    if($("#abcompare").classList.contains("open")){$("#abcompare").classList.remove("open");return}
     if($("#srcPreview").classList.contains("open")){$("#srcPreview").classList.remove("open");return}
     if(chatAbort)chatAbort.abort();
     return;
