@@ -184,17 +184,26 @@ func (c markdownChunker) Split(text string) []Piece {
 	}
 	var stack []head
 	var body []string
+	var table []string
+	var caption string
 	var out []Piece
 	inFence := false
 
-	flush := func() {
-		if len(body) == 0 {
-			return
+	headPath := func() []string {
+		if len(stack) == 0 {
+			return nil
 		}
 		path := make([]string, len(stack))
 		for i, h := range stack {
 			path[i] = h.title
 		}
+		return path
+	}
+	flush := func() {
+		if len(body) == 0 {
+			return
+		}
+		path := headPath()
 		for _, p := range packFragments(splitRecursive(strings.Join(body, "\n"), recursiveSeparators, c.target), c.target, c.overlap) {
 			if len(path) > 0 {
 				p.Headings = append([]string(nil), path...)
@@ -203,8 +212,33 @@ func (c markdownChunker) Split(text string) []Piece {
 		}
 		body = body[:0]
 	}
+	// flushTable emits a pending table as one atomic piece, never size-split, with
+	// its heading breadcrumb and the nearest preceding line as a caption, so a table
+	// stays whole and retrievable instead of being shredded row by row.
+	flushTable := func() {
+		if len(table) == 0 {
+			return
+		}
+		text := strings.Join(table, "\n")
+		if caption != "" {
+			text = caption + "\n" + text
+		}
+		p := Piece{Text: strings.TrimSpace(text), Headings: headPath()}
+		out = append(out, p)
+		table = table[:0]
+		caption = ""
+	}
 
 	for _, line := range strings.Split(text, "\n") {
+		if !inFence && isTableRow(line) {
+			if len(table) == 0 {
+				caption = lastNonEmpty(body) // capture before flush clears body
+				flush()                      // separate the prose before the table
+			}
+			table = append(table, line)
+			continue
+		}
+		flushTable() // any non-table line ends a pending table
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			inFence = !inFence
 			body = append(body, line)
@@ -222,8 +256,27 @@ func (c markdownChunker) Split(text string) []Piece {
 		}
 		body = append(body, line)
 	}
+	flushTable()
 	flush()
 	return out
+}
+
+// isTableRow reports whether a line looks like a Markdown table row: it starts
+// with a pipe and has at least two, which excludes prose that merely contains a
+// single pipe.
+func isTableRow(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "|") && strings.Count(t, "|") >= 2
+}
+
+// lastNonEmpty returns the last non-blank line, the natural caption for a table.
+func lastNonEmpty(lines []string) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // atxHeading parses a Markdown ATX heading line ("## Title"), returning its level
