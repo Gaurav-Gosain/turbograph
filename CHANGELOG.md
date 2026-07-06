@@ -10,6 +10,9 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Table-aware Markdown chunking: a table is kept as one atomic chunk (never split
+  mid-rows), prefixed with its caption and carrying its heading breadcrumb, instead
+  of being shredded by the size splitter.
 - Answer faithfulness audit: an opt-in "verify" toggle that, after an answer, checks
   each claim against the retrieved evidence in one model call and shows a
   "faithfulness: N/M claims supported" summary with per-claim supported / partial /
