@@ -10,6 +10,18 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Answer faithfulness audit: an opt-in "verify" toggle that, after an answer, checks
+  each claim against the retrieved evidence in one model call and shows a
+  "faithfulness: N/M claims supported" summary with per-claim supported / partial /
+  unsupported verdicts. Read-only; it never edits the answer.
+- Small-to-big retrieval: a "context window" setting (and `window` chat field) that
+  feeds the model each cited chunk plus its neighbouring chunks for coherent
+  context, while the sources shown and cited stay the small ranked chunks. Off by
+  default.
+- A/B retrieval comparison view (command palette): run one query under two retrieval
+  configs and see the rankings side by side with per-result score breakdowns and
+  rank-change badges, to check whether graph boost / entity mix / MMR helps on your
+  own corpus.
 - Low-storage snapshot modes (`--lean` on `ingest` and `serve`, or
   `Store.SaveLean` / `Manager.SetVectorMode`): `codes` persists compact TurboQuant
   codes instead of float32 vectors (~40% of the file, ~98% recall, no load or

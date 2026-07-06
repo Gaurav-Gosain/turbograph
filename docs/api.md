@@ -80,7 +80,7 @@ Retrieve and stream a grounded answer.
 ```json
 { "query": "...", "model": "qwen3.5:2b", "top_k": 6, "graph_mix": 0,
   "mmr_lambda": 0, "entity_mix": 0, "min_sim": 0, "rerank": false,
-  "decompose": false,
+  "decompose": false, "window": 0, "verify": false,
   "history": [ { "role": "user", "content": "..." } ],
   "meta_keys": ["author"], "global": false }
 ```
@@ -88,6 +88,10 @@ Retrieve and stream a grounded answer.
   rather than individual passages (build them first; see below).
 - `decompose: true` splits a multi-hop question into subqueries, retrieves each
   concurrently, and unions the candidates before answering.
+- `window: N` expands each cited chunk with N neighbouring chunks of the same
+  document for the generator's context (small-to-big); the cited sources stay the
+  small chunks. `verify: true` audits the answer after generation and emits a
+  `verify` event with a per-claim supported/partial/unsupported verdict.
 - `entity_mix` blends in the entity-graph signal; when an entity graph exists, the
   relationships grounded in the retrieved chunks are also added to the prompt as
   short facts.
@@ -96,9 +100,12 @@ Retrieve and stream a grounded answer.
 - `min_sim` sets the abstention threshold; `rerank` enables pointwise LLM
   reranking.
 
-Events: `sources` (a `{ "sources": [QueryResult] }` payload), then `token`
-(`{ "text": "..." }`) repeatedly, then `done`. May emit `abstain`
-(`{ "message": "..." }`) or `error` (`{ "error": "..." }`).
+Events: `sources` (a `{ "sources": [QueryResult], "retrieve_ms": n }` payload),
+a `prompt` (`{ "system": "...", "prompt": "..." }` — the exact assembled context),
+then `token` (`{ "text": "..." }`) repeatedly, then `done`. With `verify: true` a
+`verify` event (`{ "claims": [{ "claim": "...", "verdict": "supported" }] }`) is
+emitted before `done`. May emit `abstain` (`{ "message": "..." }`) or `error`
+(`{ "error": "..." }`).
 
 ## Documents
 
