@@ -427,8 +427,18 @@
   #composer{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
   #composer textarea{flex:1;resize:none;height:38px;line-height:1.4;max-height:140px}
   #composer button{align-self:stretch;padding:0 16px}
-  #globalBtn,#hopBtn{padding:0 11px;font-size:11px;color:var(--muted)}
-  #globalBtn.on,#hopBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+  #globalBtn,#hopBtn,#verifyBtn{padding:0 11px;font-size:11px;color:var(--muted)}
+  #globalBtn.on,#hopBtn.on,#verifyBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+  .verify-box{margin-top:9px;font-size:11px}
+  .verify-head{color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px}
+  .verify-head b{color:var(--text);font-weight:600}
+  .verify-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .vd-supported{background:var(--accent)} .vd-partial{background:var(--warn)} .vd-unsupported{background:var(--danger)}
+  .verify-list{margin-top:6px;display:none;flex-direction:column;gap:4px}
+  .verify-list.open{display:flex}
+  .verify-claim{display:flex;gap:7px;align-items:flex-start;color:var(--muted);line-height:1.4}
+  .verify-claim .vd-tag{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;flex:none;text-transform:uppercase;margin-top:1px}
+  .vt-supported{color:var(--bg);background:var(--accent)} .vt-partial{color:var(--bg);background:var(--warn)} .vt-unsupported{color:#fff;background:var(--danger)}
   #stop{display:none;border-color:var(--danger);color:var(--danger)}
   #stop:hover{background:rgba(224,108,117,.12)}
 
@@ -589,6 +599,7 @@
       <div id="composer">
         <button id="globalBtn" title="answer corpus-wide questions from community summaries">global</button>
         <button id="hopBtn" title="split a multi-hop question into subqueries before retrieving">multi-hop</button>
+        <button id="verifyBtn" title="after answering, check each claim against the retrieved evidence (one extra model call)">verify</button>
         <textarea id="input" placeholder="ask the graph" rows="1"></textarea>
         <button id="send">send</button>
         <button id="stop">stop</button>
@@ -874,7 +885,7 @@ const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,hoverEdge:-1,selEdge:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false};
+  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false,verify:false};
 
 // ---------- settings persistence + popover ----------
 const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim","pWindow"];
@@ -1339,7 +1350,7 @@ async function sendChat(){
   try{
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:chatAbort.signal,
       body:JSON.stringify({query:text,global:G.global,decompose:G.decompose,top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,mmr_lambda:+$("#pMMR").value,entity_mix:+$("#pEnt").value,
-        min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,window:+$("#pWindow").value||0,history,model:G.model})});
+        min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked,window:+$("#pWindow").value||0,verify:G.verify,history,model:G.model})});
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
       const {value,done}=await reader.read();if(done)break;
@@ -1348,6 +1359,7 @@ async function sendChat(){
         const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
         if(ev.event==="sources"){highlightIDs(ev.data.sources.map(s=>s.id));renderSources(msgEl,ev.data.sources,ev.data.retrieve_ms)}
         else if(ev.event==="prompt"){msgEl._prompt=ev.data;addPromptLink(msgEl)}
+        else if(ev.event==="verify"){renderVerify(msgEl,ev.data.claims)}
         else if(ev.event==="token"){answer+=ev.data.text;nb=nearBottom();
           if(!renderQueued){renderQueued=true;requestAnimationFrame(flush)}}
         else if(ev.event==="abstain"){msgEl.classList.add("abstain");answer=ev.data.message;
@@ -1402,6 +1414,24 @@ function renderSources(msgEl,sources,retrieveMS){
 // addPromptLink adds a "view prompt" affordance once the assembled prompt for a
 // message has arrived, and showPrompt reveals it in the inspector panel. Seeing
 // the exact context the model received is the fastest way to explain an answer.
+// renderVerify shows the faithfulness audit under an answer: a one-line summary
+// (how many claims the evidence supports) that expands to the per-claim verdicts.
+function renderVerify(msgEl,claims){
+  if(!claims||!claims.length||msgEl.querySelector(".verify-box"))return;
+  const n=claims.length,sup=claims.filter(c=>c.verdict==="supported").length,
+        weak=claims.filter(c=>c.verdict==="unsupported").length;
+  const box=document.createElement("div");box.className="verify-box";
+  const dot=weak>0?"vd-unsupported":(sup<n?"vd-partial":"vd-supported");
+  box.innerHTML='<div class="verify-head"><span class="verify-dot '+dot+'"></span>'+
+    '<span>faithfulness: <b>'+sup+'/'+n+'</b> claims supported by the evidence</span>'+
+    '<span style="color:var(--faint)">details</span></div>'+
+    '<div class="verify-list">'+claims.map(c=>{
+      const v=(c.verdict||"partial");
+      return '<div class="verify-claim"><span class="vd-tag vt-'+v+'">'+v+'</span><span>'+esc(c.claim)+'</span></div>';
+    }).join("")+'</div>';
+  box.querySelector(".verify-head").onclick=()=>box.querySelector(".verify-list").classList.toggle("open");
+  msgEl.appendChild(box);
+}
 function addPromptLink(msgEl){
   if(msgEl.querySelector(".prompt-link"))return;
   const f=document.createElement("div");f.className="prompt-link";
@@ -2582,6 +2612,7 @@ $("#globalBtn").onclick=()=>{G.global=!G.global;$("#globalBtn").classList.toggle
   $("#input").placeholder=G.global?"ask a corpus-wide question":"ask the graph";
   if(G.global)toast("global mode: answers from community summaries");};
 $("#hopBtn").onclick=()=>{G.decompose=!G.decompose;$("#hopBtn").classList.toggle("on",G.decompose);if(G.decompose)toast("multi-hop: question is split into subqueries");};
+$("#verifyBtn").onclick=()=>{G.verify=!G.verify;$("#verifyBtn").classList.toggle("on",G.verify);if(G.verify)toast("verify: each claim is checked against the evidence");};
 async function runBuildCommunities(){
   if(!G.model){toast("select a model (top right) first",true);return}
   toast("summarizing communities with the model...");

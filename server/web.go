@@ -406,6 +406,7 @@ type chatRequest struct {
 	Global    bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
 	Decompose bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
 	Window    int        `json:"window"`    // expand each cited chunk with this many neighbor chunks for context
+	Verify    bool       `json:"verify"`    // after answering, audit each claim's support in the evidence
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -486,13 +487,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Surface the exact prompt the model receives, so a user can see what grounded
 	// (or failed to ground) an answer. It is the assembled context, already on hand.
 	send("prompt", map[string]string{"system": chatSystemPrompt, "prompt": prompt})
+	var answer strings.Builder
 	streamErr := s.gen.GenerateStream(r.Context(), model, chatSystemPrompt, prompt, func(tok string) error {
+		answer.WriteString(tok)
 		send("token", map[string]string{"text": tok})
 		return nil
 	})
 	if streamErr != nil {
 		send("error", map[string]string{"error": streamErr.Error()})
 		return
+	}
+	// Optional faithfulness audit: check each answer sentence against the retrieved
+	// evidence and report which claims are supported. One extra model call, so it is
+	// opt-in; it never changes the answer, only annotates it.
+	if req.Verify {
+		if verdicts := s.auditFaithfulness(r.Context(), model, answer.String(), res); len(verdicts) > 0 {
+			send("verify", map[string]any{"claims": verdicts})
+		}
 	}
 	send("done", map[string]bool{"done": true})
 }
