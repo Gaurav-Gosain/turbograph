@@ -26,6 +26,12 @@ const rerankSystem = "You are a search relevance judge. " +
 // the input truncated to topK, so enabling it can never make results worse than
 // the base ranking. Passages are truncated to keep the prompt bounded.
 func Rerank(ctx context.Context, gen Generator, query string, res []Retrieved, topK int) []Retrieved {
+	return rerankWith(ctx, gen, query, res, topK, blendWeight)
+}
+
+// rerankWith is Rerank with the blend policy injected, so the weighting can be
+// evaluated against alternatives without duplicating the prompt and parse path.
+func rerankWith(ctx context.Context, gen Generator, query string, res []Retrieved, topK int, weight func(rank, n int) float32) []Retrieved {
 	if gen == nil || len(res) <= 1 {
 		return trim(res, topK)
 	}
@@ -44,7 +50,9 @@ func Rerank(ctx context.Context, gen Generator, query string, res []Retrieved, t
 		return trim(res, topK)
 	}
 
-	// Normalize both signals to [0,1] and blend; the model leads, retrieval anchors.
+	// Normalize both signals to [0,1] and blend them. How much authority the model
+	// gets depends on where the candidate sat in the retrieval ranking: see
+	// blendWeight. res is in retrieval-rank order, so the index is that rank.
 	var maxModel, maxBase float32
 	for i := range res {
 		if scores[i] > maxModel {
@@ -56,7 +64,6 @@ func Rerank(ctx context.Context, gen Generator, query string, res []Retrieved, t
 	}
 	out2 := make([]Retrieved, len(res))
 	copy(out2, res)
-	const wModel = 0.7
 	for i := range out2 {
 		m, b := float32(0), float32(0)
 		if maxModel > 0 {
@@ -65,10 +72,41 @@ func Rerank(ctx context.Context, gen Generator, query string, res []Retrieved, t
 		if maxBase > 0 {
 			b = out2[i].Score / maxBase
 		}
-		out2[i].Score = wModel*m + (1-wModel)*b
+		w := weight(i, len(out2))
+		out2[i].Score = w*m + (1-w)*b
 	}
 	sort.SliceStable(out2, func(a, b int) bool { return out2[a].Score > out2[b].Score })
 	return trim(out2, topK)
+}
+
+// blendWeight returns how much authority the model's judgement has over the
+// retrieval score for the candidate at retrieval rank (0-based) in a pool of n.
+//
+// A single fixed weight is the wrong shape. The head of a hybrid ranking is a
+// high-confidence signal (an exact lexical hit, or a very close dense match), and
+// a pointwise score from a small local model is noisy and uncalibrated. Weighting
+// the model equally everywhere lets one bad judgement throw out the best hit: with
+// the old fixed 0.7, a candidate the retriever ranked 15th could reach the top on
+// the model's word alone. Deeper in the list retrieval scores bunch together and
+// carry little information, so there the model's opinion is worth more.
+//
+// The weight therefore ramps from mostly-retrieval at the head to mostly-model in
+// the tail. It is a function of the candidate's *normalized* position, not its
+// absolute rank: rank 2 of 3 is the tail of its pool, while rank 2 of 30 is the
+// head of its pool, and the weight has to mean the same thing in both. This keeps
+// reranking effective on a short candidate list while making a strong top hit hard
+// (but not impossible) to displace: it now takes a decisive model judgement, not
+// mere noise, to overturn the retriever.
+func blendWeight(rank, n int) float32 {
+	const (
+		wHead = 0.35 // model authority over the top-ranked candidate
+		wTail = 0.65 // model authority over the last candidate
+	)
+	if n <= 1 {
+		return wHead
+	}
+	p := float32(rank) / float32(n-1) // 0 at the head, 1 at the tail
+	return wHead + p*(wTail-wHead)
 }
 
 // parseRerank extracts a score per passage index from the model output, tolerating

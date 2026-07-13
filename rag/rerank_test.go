@@ -3,6 +3,8 @@ package rag
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -59,5 +61,99 @@ func TestShouldAbstain(t *testing.T) {
 	hi := []Retrieved{{Chunk: Chunk{ID: "a"}, Similarity: 0.8}}
 	if ShouldAbstain(hi, 0.5) {
 		t.Error("above threshold should not abstain")
+	}
+}
+
+// scoredRes builds a candidate pool in retrieval-rank order with the given
+// retrieval scores (descending), as the store would hand to Rerank.
+func scoredRes(scores ...float32) []Retrieved {
+	out := make([]Retrieved, len(scores))
+	for i, s := range scores {
+		id := fmt.Sprintf("c%d", i)
+		out[i] = Retrieved{Chunk: Chunk{ID: id, Text: id + " body"}, Score: s, Similarity: 0.9}
+	}
+	return out
+}
+
+// modelScores builds the reranker's JSON reply from a score per candidate.
+func modelScores(scores ...float32) string {
+	parts := make([]string, len(scores))
+	for i, s := range scores {
+		parts[i] = fmt.Sprintf(`{"i":%d,"score":%g}`, i, s)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// TestRerankResistsTailHijack is the defect this blend exists to fix. A pool of 20
+// where the retriever is confident about c0, and the model mildly prefers a weak
+// tail candidate. Under the old fixed 0.7 model weight, c15 would take the top
+// slot on the model's word alone despite weak retrieval support. Noise must not
+// override a strong hit.
+func TestRerankResistsTailHijack(t *testing.T) {
+	base := make([]float32, 20)
+	for i := range base {
+		base[i] = float32(20-i) / 20 // 1.00 down to 0.05
+	}
+	res := scoredRes(base...)
+
+	m := make([]float32, 20)
+	m[0] = 6 // model is lukewarm about the strong top hit
+	m[15] = 10
+	got := Rerank(context.Background(), fakeGen{out: modelScores(m...)}, "q", res, 5)
+
+	if got[0].Chunk.ID != "c0" {
+		t.Fatalf("a lukewarm model judgement hijacked the top hit: got %s first", got[0].Chunk.ID)
+	}
+	// Sanity: with the old fixed 0.7 model weight this exact fixture inverts, which
+	// is why the position-aware blend exists. The model scores normalize to 0.6 for
+	// the top hit and 1.0 for the tail candidate; retrieval to 1.00 and 0.25.
+	oldTop := 0.7*0.6 + 0.3*1.00  // 0.720
+	oldTail := 0.7*1.0 + 0.3*0.25 // 0.775
+	if oldTop >= oldTail {
+		t.Fatal("test no longer reproduces the old pathology; recheck the fixture")
+	}
+}
+
+// TestRerankStillOverturnsOnDecisiveJudgment guards the other side: the blend must
+// protect the head from noise without neutering the reranker. When the model
+// decisively rejects the top hit and backs a well-retrieved candidate, it wins.
+func TestRerankStillOverturnsOnDecisiveJudgment(t *testing.T) {
+	res := scoredRes(1.0, 0.95, 0.9, 0.85, 0.8)
+	m := []float32{0, 1, 1, 2, 10} // top is judged irrelevant; c4 is judged perfect
+	got := Rerank(context.Background(), fakeGen{out: modelScores(m...)}, "q", res, 3)
+	if got[0].Chunk.ID != "c4" {
+		t.Fatalf("a decisive model judgement should overturn a rejected top hit, got %s", got[0].Chunk.ID)
+	}
+}
+
+// TestBlendWeight pins the shape: bounded, monotonically increasing with depth,
+// and normalized to the pool so the same rank means different things in pools of
+// different sizes.
+func TestBlendWeight(t *testing.T) {
+	const head, tail = float32(0.35), float32(0.65)
+	if w := blendWeight(0, 20); w != head {
+		t.Errorf("head weight = %v, want %v", w, head)
+	}
+	if w := blendWeight(19, 20); w != tail {
+		t.Errorf("tail weight = %v, want %v", w, tail)
+	}
+	if w := blendWeight(0, 1); w != head {
+		t.Errorf("degenerate pool should use the head weight, got %v", w)
+	}
+	// Monotonic in depth.
+	prev := float32(-1)
+	for i := range 20 {
+		w := blendWeight(i, 20)
+		if w < prev {
+			t.Fatalf("weight decreased at rank %d: %v < %v", i, w, prev)
+		}
+		if w < head || w > tail {
+			t.Fatalf("weight out of bounds at rank %d: %v", i, w)
+		}
+		prev = w
+	}
+	// Normalized to the pool: rank 2 is the tail of a 3-pool but the head of a 30-pool.
+	if blendWeight(2, 3) <= blendWeight(2, 30) {
+		t.Error("weight must be normalized to pool size, not absolute rank")
 	}
 }

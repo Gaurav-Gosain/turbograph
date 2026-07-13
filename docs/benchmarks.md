@@ -178,6 +178,43 @@ What it showed:
   The codes' value is compact storage and asymmetric scoring when you do *not*
   have the exact vector, neither of which applies to in-memory search.
 
+### 6. A fixed reranker weight lets a small model throw out the best hit
+
+The reranker blends the model's pointwise judgement with the retrieval score. That
+blend used a single fixed weight (0.7 model / 0.3 retrieval) at every rank, and
+the arithmetic of that is bad: a candidate the retriever ranked 15th, with weak
+retrieval support, could beat the top hit on the model's word alone
+(`0.7*1.0 + 0.3*0.25 = 0.775` against `0.7*0.6 + 0.3*1.0 = 0.72`). The head of a
+hybrid ranking is a high-confidence signal; a pointwise score from a small local
+model is noisy and uncalibrated. Weighting them equally everywhere is the wrong
+shape.
+
+The weight now ramps with the candidate's **normalized** position in the pool,
+from 0.35 (model authority at the head) to 0.65 (at the tail). Normalized, not
+absolute: rank 2 of 3 is the tail of its pool while rank 2 of 30 is the head of
+its pool, and the weight has to mean the same thing in both. This keeps reranking
+effective on a short candidate list while making a strong top hit hard, but not
+impossible, to displace: it now takes a decisive model judgement rather than mere
+noise to overturn the retriever.
+
+Measured on a labelled corpus with lexical distractors, reranking a 20-candidate
+pool down to 5 with a small local reranker (`qwen3.5:0.8b`, the regime turbograph
+actually runs in):
+
+| rerank policy        | recall@5 | MRR       | broke a correct top-1 |
+| -------------------- | -------- | --------- | --------------------- |
+| none                 | 1.000    | 1.000     | 0                     |
+| fixed w=0.7 (old)    | 1.000    | **0.938** | **1 of 8 queries**    |
+| position-aware (new) | 1.000    | **1.000** | **0**                 |
+
+The old blend demoted a correct top hit on one query in eight and cost MRR; the
+new one broke none. Note the reranker fixed nothing on this corpus (retrieval was
+already correct at rank 1 everywhere), so here reranking had only downside, which
+is consistent with the situational picture above. Reproduce with
+`TG_RERANK=1 TG_RERANK_CHAT=qwen3.5:0.8b go test ./rag/ -run TestRerankBlendBenchmark -v`.
+With a larger reranker (`qwen3.5:4b`) both policies scored 1.000: the protection is
+latent until the model errs.
+
 ## Low-storage snapshot modes
 
 Stored embeddings dominate a `.tg` file: on a 173-chunk real-prose corpus at

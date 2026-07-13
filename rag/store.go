@@ -596,12 +596,16 @@ type Retrieved struct {
 	Components ScoreComponents // additive breakdown of Score, for explainability
 }
 
-// ScoreComponents breaks a result's blended Score into its additive signals, so a
-// caller can show why a chunk was retrieved: how much came from dense similarity,
-// exact lexical (BM25) match, the similarity-graph PageRank boost, and the entity
-// knowledge graph. The four fields sum to Score (up to float rounding); each is
-// the contribution after its weight is applied, so a zero means that signal was
-// off or did not fire for this chunk.
+// ScoreComponents breaks a result's retrieval score into its additive signals, so
+// a caller can show why a chunk was retrieved: how much came from dense
+// similarity, exact lexical (BM25) match, the similarity-graph PageRank boost, and
+// the entity knowledge graph. The four fields sum to the retrieval score (up to
+// float rounding); each is the contribution after its weight is applied, so a zero
+// means that signal was off or did not fire for this chunk.
+//
+// They describe retrieval only. Rerank replaces Score with a blend of the model's
+// judgement and the retrieval score, so after reranking the components no longer
+// sum to Score; they still explain why the chunk was retrieved in the first place.
 type ScoreComponents struct {
 	Dense   float32 `json:"dense"`
 	Lexical float32 `json:"lexical"`
