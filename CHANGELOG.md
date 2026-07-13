@@ -10,6 +10,13 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- MCP fetch tools for agent harnesses: `get` (fetch a document, a line range, or a
+  chunk widened by a neighbour window) and `multi_get` (fetch several sources under
+  a total byte budget, split evenly, each reporting its size and whether it was
+  truncated). The `search` tool now also returns the additive score breakdown
+  (dense / lexical / graph / entity) so an agent can tell an exact keyword match
+  from a graph-associated one.
+- Fenced code blocks are kept as one atomic chunk, never split by the size packer.
 - Table-aware Markdown chunking: a table is kept as one atomic chunk (never split
   mid-rows), prefixed with its caption and carrying its heading breadcrumb, instead
   of being shredded by the size splitter.

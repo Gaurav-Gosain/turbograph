@@ -47,3 +47,33 @@ func TestMarkdownTableAtomic(t *testing.T) {
 		t.Errorf("prose after the table leaked into the table piece")
 	}
 }
+
+// TestMarkdownCodeFenceAtomic checks that a fenced code block is never split by
+// the size packer: cutting a function in half embeds as noise.
+func TestMarkdownCodeFenceAtomic(t *testing.T) {
+	code := "```go\nfunc Retrieve(q string) []Chunk {\n\tseeds := hnsw.Search(q)\n\tscored := fuse(seeds, bm25(q))\n\tsort.Slice(scored, byScore)\n\treturn top(scored)\n}\n```"
+	text := "# API\n\n## Retrieval\n\nThe retrieve entry point:\n\n" + code + "\n\nTrailing prose after the block."
+	ch := markdownChunker{target: 6, overlap: 0} // tiny target: a naive splitter would shred it
+	pieces := ch.Split(text)
+
+	var codePiece *Piece
+	for i := range pieces {
+		if strings.Contains(pieces[i].Text, "func Retrieve") {
+			codePiece = &pieces[i]
+		}
+	}
+	if codePiece == nil {
+		t.Fatal("no piece contains the code block")
+	}
+	for _, want := range []string{"```go", "seeds := hnsw.Search", "return top(scored)", "```"} {
+		if !strings.Contains(codePiece.Text, want) {
+			t.Fatalf("code block was split; piece missing %q:\n%s", want, codePiece.Text)
+		}
+	}
+	if strings.Contains(codePiece.Text, "Trailing prose") {
+		t.Error("prose after the block leaked into the code piece")
+	}
+	if len(codePiece.Headings) == 0 || codePiece.Headings[len(codePiece.Headings)-1] != "Retrieval" {
+		t.Errorf("code piece missing the Retrieval breadcrumb: %v", codePiece.Headings)
+	}
+}

@@ -229,8 +229,37 @@ func (c markdownChunker) Split(text string) []Piece {
 		caption = ""
 	}
 
+	var fence []string
+	// flushFence emits a fenced code block as one atomic piece. Like a table, code
+	// is destroyed by a size split (a function cut in half embeds as noise), so it
+	// is kept whole with its heading breadcrumb regardless of the word target.
+	flushFence := func() {
+		if len(fence) == 0 {
+			return
+		}
+		out = append(out, Piece{Text: strings.TrimSpace(strings.Join(fence, "\n")), Headings: headPath()})
+		fence = fence[:0]
+	}
+
 	for _, line := range strings.Split(text, "\n") {
-		if !inFence && isTableRow(line) {
+		if inFence {
+			fence = append(fence, line)
+			if strings.HasPrefix(strings.TrimSpace(line), "```") { // closing fence
+				inFence = false
+				flushFence()
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "```") { // opening fence
+			flushTable()
+			caption = lastNonEmpty(body)
+			flush() // prose before the block is its own chunk
+			caption = ""
+			inFence = true
+			fence = append(fence, line)
+			continue
+		}
+		if isTableRow(line) {
 			if len(table) == 0 {
 				caption = lastNonEmpty(body) // capture before flush clears body
 				flush()                      // separate the prose before the table
@@ -239,23 +268,17 @@ func (c markdownChunker) Split(text string) []Piece {
 			continue
 		}
 		flushTable() // any non-table line ends a pending table
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-			body = append(body, line)
-			continue
-		}
-		if !inFence {
-			if lvl, title, ok := atxHeading(line); ok {
-				flush()
-				for len(stack) > 0 && stack[len(stack)-1].level >= lvl {
-					stack = stack[:len(stack)-1]
-				}
-				stack = append(stack, head{lvl, title})
-				continue
+		if lvl, title, ok := atxHeading(line); ok {
+			flush()
+			for len(stack) > 0 && stack[len(stack)-1].level >= lvl {
+				stack = stack[:len(stack)-1]
 			}
+			stack = append(stack, head{lvl, title})
+			continue
 		}
 		body = append(body, line)
 	}
+	flushFence() // an unclosed fence at EOF still emits its content
 	flushTable()
 	flush()
 	return out

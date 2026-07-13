@@ -436,10 +436,25 @@ curl -s localhost:8080/v1/chat/completions -d '{
 ### MCP server
 
 `turbograph mcp --store store.tg` serves the corpus to MCP hosts (editors,
-agents, Claude Desktop) over stdio as line-delimited JSON-RPC. It registers a
-`search` tool (returns the top chunks as JSON) and, with `--gen-model`, an
-`answer` tool (a grounded, cited answer). Add it to a host's MCP config as a
-command entry; no network port is opened.
+agents, Claude Desktop) over stdio as line-delimited JSON-RPC. Add it to a host's
+MCP config as a command entry; no network port is opened. It registers the tools
+an agent actually needs to work a corpus:
+
+- **`search`** returns the top chunks as JSON, each with its score *and* the
+  additive breakdown of that score (dense, lexical, graph, entity), so an agent
+  can tell an exact keyword match from a graph-associated one.
+- **`get`** fetches the source text back out: a whole document, a line range
+  (`"lines": "50:100"`), or a chunk widened by a `window` of neighbouring chunks.
+  Chunks are sized for embedding, not for reading, so an agent usually wants to
+  zoom out to the surrounding text of a hit.
+- **`multi_get`** fetches several documents or chunks at once under a total
+  `max_bytes` budget, split evenly and truncated per item (each result reports its
+  size and whether it was cut), so an agent can pull a set of sources without
+  overflowing its context window.
+- **`answer`** (with `--gen-model`) synthesizes a grounded, cited answer.
+
+Together these give the loop an agent harness wants: search, see *why* something
+ranked, then pull exactly the regions it needs within a context budget.
 
 ### Evaluation
 
