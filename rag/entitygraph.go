@@ -382,7 +382,8 @@ func (s *Store) embedEntities(ctx context.Context) {
 // rebuildEntityLocked materializes the entity list, CSR graph, and communities
 // from s.eg. The caller must hold the write lock.
 func (s *Store) rebuildEntityLocked() {
-	s.entVec = nil // entity list is changing; stale embeddings must not be used
+	s.entVec = nil                                  // entity list is changing; stale embeddings must not be used
+	s.factVec, s.factSrc, s.factTgt = nil, nil, nil // the fact index refers to node indices that are about to move
 	if s.eg == nil {
 		s.entList, s.entIndex, s.entCSR, s.entComm = nil, nil, nil, nil
 		return
@@ -450,11 +451,16 @@ func (s *Store) EntityGraphView() GraphView {
 // Personalized PageRank and projects the resulting entity scores onto chunks,
 // returning a normalized score per chunk ordinal. The caller must hold the read
 // lock. It returns nil when there is no entity graph or nothing matched.
-func (s *Store) entityChunkScores(query string, qv []float32) map[int]float32 {
+func (s *Store) entityChunkScores(query string, qv []float32, link string) map[int]float32 {
 	if s.entCSR == nil || len(s.entList) == 0 {
 		return nil
 	}
-	seeds := s.entitySeeds(query, qv)
+	var seeds map[int]float32
+	if link == "fact" {
+		seeds = s.factSeeds(qv)
+	} else {
+		seeds = s.entitySeeds(query, qv)
+	}
 	if len(seeds) == 0 {
 		return nil
 	}
@@ -639,4 +645,131 @@ func (s *Store) RelationContext(chunkIDs []string, maxRels int) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// ensureFactIndex builds the fact index if it is missing: one embedding per relation,
+// where a relation is rendered as the short fact "<source> <how they relate> <target>".
+// It is the substrate for query->fact linking, and it is built lazily because a store
+// loaded from disk has the relations but not their embeddings, and computing them costs
+// one embedding call over a few hundred short strings.
+func (s *Store) ensureFactIndex(ctx context.Context) {
+	s.mu.RLock()
+	built := s.factVec != nil
+	haveGraph := s.eg != nil && len(s.entList) > 0
+	s.mu.RUnlock()
+	if built || !haveGraph {
+		return
+	}
+
+	s.mu.RLock()
+	rels := s.eg.Relations()
+	texts := make([]string, 0, len(rels))
+	src := make([]int, 0, len(rels))
+	tgt := make([]int, 0, len(rels))
+	display := func(name string) string {
+		if i, ok := s.entIndex[name]; ok {
+			if d := s.entList[i].Display; d != "" {
+				return d
+			}
+		}
+		return name
+	}
+	for _, r := range rels {
+		si, ok1 := s.entIndex[r.Source]
+		ti, ok2 := s.entIndex[r.Target]
+		if !ok1 || !ok2 {
+			continue
+		}
+		fact := display(r.Source) + " " + r.Description + " " + display(r.Target)
+		texts = append(texts, fact)
+		src = append(src, si)
+		tgt = append(tgt, ti)
+	}
+	s.mu.RUnlock()
+	if len(texts) == 0 {
+		return
+	}
+	vecs, err := s.embedder.Embed(ctx, texts)
+	if err != nil || len(vecs) != len(texts) {
+		return
+	}
+	s.mu.Lock()
+	// Guard against a rebuild having changed the graph while we embedded off the lock.
+	if s.factVec == nil && len(vecs) == len(src) {
+		s.factVec, s.factSrc, s.factTgt = vecs, src, tgt
+	}
+	s.mu.Unlock()
+}
+
+// factSeeds links the query to the entity graph through its relationships. It scores
+// every fact by cosine to the query, takes the strongest, and seeds PageRank from those
+// facts' endpoint entities.
+//
+// Two things make it different from seeding on entity names. The linking unit is a
+// fact, so "who runs Acme" matches the relation "Jane Doe is the CEO of Acme" directly
+// rather than hoping the query vector lands near the bare token "Acme". And each
+// endpoint's seed is divided by how many chunks it appears in, an IDF-like penalty that
+// stops a hub entity named in half the corpus from swallowing the walk. The caller holds
+// the read lock and passes the embedded query.
+func (s *Store) factSeeds(qv []float32) map[int]float32 {
+	if len(s.factVec) == 0 || len(qv) == 0 {
+		return nil
+	}
+	const (
+		topFacts = 12   // seed from at most this many facts
+		floor    = 0.30 // minimum cosine for a fact to be a match
+		capNodes = 8    // keep at most this many seed entities
+	)
+	type fc struct {
+		i   int
+		sim float32
+	}
+	cands := make([]fc, 0, len(s.factVec))
+	for i, fv := range s.factVec {
+		if len(fv) == 0 {
+			continue
+		}
+		if c := cosine(qv, fv); c >= floor {
+			cands = append(cands, fc{i, c})
+		}
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].sim > cands[b].sim })
+	if len(cands) > topFacts {
+		cands = cands[:topFacts]
+	}
+
+	seeds := make(map[int]float32, 2*len(cands))
+	add := func(node int, sim float32) {
+		chunks := 1
+		if node >= 0 && node < len(s.entList) {
+			if n := len(s.entList[node].Chunks); n > 1 {
+				chunks = n
+			}
+		}
+		seeds[node] += sim / float32(chunks)
+	}
+	for _, c := range cands {
+		add(s.factSrc[c.i], c.sim)
+		add(s.factTgt[c.i], c.sim)
+	}
+	// Keep only the strongest endpoints, so one query does not seed the whole graph.
+	if len(seeds) > capNodes {
+		type ns struct {
+			n int
+			s float32
+		}
+		all := make([]ns, 0, len(seeds))
+		for n, v := range seeds {
+			all = append(all, ns{n, v})
+		}
+		sort.Slice(all, func(a, b int) bool { return all[a].s > all[b].s })
+		seeds = make(map[int]float32, capNodes)
+		for _, x := range all[:capNodes] {
+			seeds[x.n] = x.s
+		}
+	}
+	return seeds
 }

@@ -188,6 +188,12 @@ type Store struct {
 	entCSR   *graph.Graph
 	entComm  *graph.Communities
 	entVec   [][]float32 // embedding per entity (name + description), index == node id
+	// The fact index links a query to relationships instead of to entity names. factVec
+	// is one embedding per relation (the relation rendered as a short fact), and factSrc
+	// and factTgt are the node indices of its endpoints. Built lazily, because a store
+	// loaded from disk has the relations but not their embeddings.
+	factVec          [][]float32
+	factSrc, factTgt []int
 	// extractCache remembers what the model said about a chunk, keyed by the chunk's
 	// text together with the model and prompt that produced it. Extraction is by far
 	// the most expensive thing turbograph does, and a rebuild would otherwise re-ask
@@ -798,6 +804,14 @@ type RetrieveParams struct {
 	LexicalWeight float32
 	MMRLambda     float32 // MMR relevance/diversity tradeoff; 0 disables diversification
 	EntityMix     float32 // weight of the entity-graph signal in [0,1]; 0 ignores it
+	// EntityLink selects how the query is linked to the entity graph to seed PageRank.
+	// "" or "node": match the query against entity name+description vectors (the
+	// original behavior). "fact": match the query against the RELATIONSHIPS -- each
+	// relation embedded as a short fact -- and seed from the endpoints of the facts
+	// that match, damped by how many chunks each endpoint appears in. HippoRAG 2's
+	// ablation reports linking to facts rather than to entity names as its single
+	// largest retrieval gain; this makes both selectable so it can be measured here.
+	EntityLink string
 	// PRF enables pseudo-relevance feedback: an initial dense search of this many
 	// chunks is run, their vectors are averaged into the query (Rocchio in
 	// embedding space), and the expanded query drives retrieval. It surfaces
@@ -845,6 +859,11 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	// the query actually asks for the graph signal.
 	if p.GraphMix > 0 {
 		s.ensureGraph()
+	}
+	// The fact index is built the first time a fact-linked query asks for it. It takes
+	// the write lock, so it must run before the read lock below, like the other builds.
+	if p.EntityMix > 0 && p.EntityLink == "fact" {
+		s.ensureFactIndex(ctx)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -921,7 +940,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	var escore map[int]float32
 	if p.EntityMix > 0 && s.entCSR != nil {
-		escore = s.entityChunkScores(query, qv[0])
+		escore = s.entityChunkScores(query, qv[0], p.EntityLink)
 	}
 
 	type sc struct {

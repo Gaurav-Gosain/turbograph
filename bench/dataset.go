@@ -148,3 +148,84 @@ func LoadSuiteFile(path string) ([]eval.Case, error) {
 	defer f.Close()
 	return eval.LoadSuite(f)
 }
+
+// LoadMultiHopRAG loads the MultiHop-RAG dataset (yixuantt/MultiHopRAG): a corpus of
+// news articles and queries whose gold evidence spans several of them. It is the
+// benchmark that actually stresses associative retrieval, because answering a query
+// means finding documents that a single dense hit does not connect.
+//
+// corpusPath is corpus.json ([{title, body, url, ...}]); queriesPath is
+// MultiHopRAG.json ([{query, question_type, evidence_list:[{url,...}]}]). A document's
+// id is its url, which the dataset uses as the identity that ties evidence to source.
+// A query is relevant to a document when that document's url appears in its evidence,
+// so relevance is document-level, matching how the harness scores BEIR.
+//
+// null_query cases are dropped: by construction their answer is not in the corpus, so
+// they have no relevant document and belong to an abstention benchmark, not a
+// retrieval one.
+func LoadMultiHopRAG(corpusPath, queriesPath string) (*Dataset, error) {
+	cb, err := os.ReadFile(corpusPath)
+	if err != nil {
+		return nil, err
+	}
+	var corpus []struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		URL   string `json:"url"`
+	}
+	if err := json.Unmarshal(cb, &corpus); err != nil {
+		return nil, fmt.Errorf("bench: multihop corpus parse: %w", err)
+	}
+	docs := make([]rag.Document, 0, len(corpus))
+	known := make(map[string]struct{}, len(corpus))
+	for _, d := range corpus {
+		if d.URL == "" {
+			continue
+		}
+		text := d.Body
+		if d.Title != "" {
+			text = d.Title + "\n" + d.Body
+		}
+		docs = append(docs, rag.Document{ID: d.URL, Text: text})
+		known[d.URL] = struct{}{}
+	}
+
+	qb, err := os.ReadFile(queriesPath)
+	if err != nil {
+		return nil, err
+	}
+	var queries []struct {
+		Query        string `json:"query"`
+		QuestionType string `json:"question_type"`
+		Answer       string `json:"answer"`
+		EvidenceList []struct {
+			URL string `json:"url"`
+		} `json:"evidence_list"`
+	}
+	if err := json.Unmarshal(qb, &queries); err != nil {
+		return nil, fmt.Errorf("bench: multihop queries parse: %w", err)
+	}
+	cases := make([]eval.Case, 0, len(queries))
+	for _, q := range queries {
+		if q.QuestionType == "null_query" {
+			continue
+		}
+		seen := map[string]struct{}{}
+		var rel []string
+		for _, ev := range q.EvidenceList {
+			if _, ok := known[ev.URL]; !ok {
+				continue
+			}
+			if _, dup := seen[ev.URL]; dup {
+				continue
+			}
+			seen[ev.URL] = struct{}{}
+			rel = append(rel, ev.URL)
+		}
+		if len(rel) == 0 {
+			continue
+		}
+		cases = append(cases, eval.Case{Query: q.Query, Relevant: rel, Answer: q.Answer})
+	}
+	return &Dataset{Name: "multihop", Docs: docs, Cases: cases}, nil
+}

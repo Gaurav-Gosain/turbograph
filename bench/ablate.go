@@ -52,54 +52,67 @@ func Ablate(ctx context.Context, embedder rag.Embedder, cfg rag.Config, ds *Data
 
 	out := make([]ArmResult, 0, len(arms))
 	for ai, arm := range arms {
-		topK := arm.Params.TopK
-		if topK < opt.K {
-			topK = opt.K
-		}
-		if topK < 10 {
-			topK = 10
-		}
-		lat := make([]time.Duration, 0, len(ds.Cases))
-		done := 0
-		retrieve := func(query string) []string {
-			p := arm.Params
-			p.TopK = topK
-			t0 := time.Now()
-			res, err := store.Retrieve(ctx, query, p)
-			lat = append(lat, time.Since(t0))
-			done++
-			if opt.OnProgress != nil {
-				opt.OnProgress(done, len(ds.Cases))
-			}
-			if err != nil {
-				return nil
-			}
-			ranked := make([]string, 0, len(res))
-			if opt.DocLevel {
-				seen := map[string]struct{}{}
-				for _, r := range res {
-					id := r.Chunk.DocID
-					if _, dup := seen[id]; dup {
-						continue
-					}
-					seen[id] = struct{}{}
-					ranked = append(ranked, id)
-				}
-			} else {
-				for _, r := range res {
-					ranked = append(ranked, r.Chunk.ID)
-				}
-			}
-			return ranked
-		}
 		if opt.OnArm != nil {
 			opt.OnArm(ai, len(arms), arm.Name)
 		}
-		rep := eval.Run(ds.Cases, opt.K, retrieve)
-		p50, p95 := percentiles(lat)
-		out = append(out, ArmResult{Name: arm.Name, Report: rep, QueryP50: p50, QueryP95: p95})
+		out = append(out, scoreArm(ctx, store, ds, arm, opt))
 	}
 	return out, store, nil
+}
+
+// scoreArm runs one retrieval configuration over the dataset and reports its score and
+// query latency. It is the shared core of Ablate, AblateStore and Evaluate, which used
+// to hold three copies of this closure.
+func scoreArm(ctx context.Context, store *rag.Store, ds *Dataset, arm Arm, opt Options) ArmResult {
+	topK := arm.Params.TopK
+	if topK < opt.K {
+		topK = opt.K
+	}
+	if topK < 10 {
+		topK = 10
+	}
+	lat := make([]time.Duration, 0, len(ds.Cases))
+	done := 0
+	retrieve := func(query string) []string {
+		p := arm.Params
+		p.TopK = topK
+		t0 := time.Now()
+		res, err := store.Retrieve(ctx, query, p)
+		lat = append(lat, time.Since(t0))
+		done++
+		if opt.OnProgress != nil {
+			opt.OnProgress(done, len(ds.Cases))
+		}
+		if err != nil {
+			return nil
+		}
+		return rankIDs(res, opt.DocLevel)
+	}
+	rep := eval.Run(ds.Cases, opt.K, retrieve)
+	p50, p95 := percentiles(lat)
+	return ArmResult{Name: arm.Name, Report: rep, QueryP50: p50, QueryP95: p95}
+}
+
+// rankIDs flattens retrieved chunks to a ranked id list: document ids (deduped,
+// best-rank-first) for document-level scoring, or chunk ids otherwise.
+func rankIDs(res []rag.Retrieved, docLevel bool) []string {
+	ranked := make([]string, 0, len(res))
+	if !docLevel {
+		for _, r := range res {
+			ranked = append(ranked, r.Chunk.ID)
+		}
+		return ranked
+	}
+	seen := map[string]struct{}{}
+	for _, r := range res {
+		id := r.Chunk.DocID
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ranked = append(ranked, id)
+	}
+	return ranked
 }
 
 // percentiles returns the median and 95th percentile latency. A mean would hide the
@@ -112,4 +125,22 @@ func percentiles(d []time.Duration) (p50, p95 time.Duration) {
 	copy(s, d)
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	return s[len(s)*50/100], s[min(len(s)*95/100, len(s)-1)]
+}
+
+// AblateStore scores arms against an already-built store, instead of building one from
+// the corpus. It is how the entity-graph arms are measured: building the graph is an
+// hours-long LLM pass, so it is done once and saved, and every arm scores the same
+// store. The store must have been built from the same dataset the cases came from.
+func AblateStore(ctx context.Context, store *rag.Store, ds *Dataset, arms []Arm, opt Options) []ArmResult {
+	if opt.K <= 0 {
+		opt.K = 10
+	}
+	out := make([]ArmResult, 0, len(arms))
+	for ai, arm := range arms {
+		if opt.OnArm != nil {
+			opt.OnArm(ai, len(arms), arm.Name)
+		}
+		out = append(out, scoreArm(ctx, store, ds, arm, opt))
+	}
+	return out
 }
