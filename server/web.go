@@ -218,19 +218,30 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
-	// Batch several chunks per model call (default 4) to cut round trips; ?batch=1
-	// restores one call per chunk for maximum small-model fidelity.
-	batch := 4
+	// Chunks per model call. Batching cuts round trips, but it degrades a small local
+	// model's extraction badly: measured on a 4-document corpus with qwen3.5:4b, a
+	// batch of 4 yielded 6 entities and 4 relationships, against 17 and 8 at a batch
+	// of 2, so packing passages together makes the model lose most of them. 2 is the
+	// default; ?batch=1 is one call per chunk, the most faithful and the slowest.
+	batch := 2
 	if b := r.URL.Query().Get("batch"); b != "" {
 		if n, err := strconv.Atoi(b); err == nil && n >= 1 {
 			batch = n
 		}
 	}
+	var extracted int // raw entity count before canonicalization merges duplicates
 	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
 	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
 		BatchSize: batch,
 		OnProgress: func(p rag.EntityProgress) {
-			send("progress", map[string]int{"done": p.Done, "total": p.Total, "entities": p.Entities, "relations": p.Relations})
+			extracted = p.Entities // raw count, before canonicalization prunes and merges
+			// "new" carries the entities this chunk surfaced, so the UI can show the
+			// graph populating instead of a bare counter.
+			send("progress", map[string]any{
+				"done": p.Done, "total": p.Total,
+				"entities": p.Entities, "relations": p.Relations,
+				"new": p.New,
+			})
 		},
 	})
 	if err != nil {
@@ -238,7 +249,9 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.persist(bucketOf(r))
-	send("done", map[string]int{"entities": st.EntityCount()})
+	// extracted is the raw count before canonicalization and pruning; entities is what
+	// survived. Reporting both makes the merge visible rather than looking like loss.
+	send("done", map[string]int{"entities": st.EntityCount(), "extracted": extracted, "relations": st.RelationCount()})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

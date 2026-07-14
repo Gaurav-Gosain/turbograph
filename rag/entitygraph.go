@@ -17,6 +17,18 @@ type EntityProgress struct {
 	Total     int
 	Entities  int
 	Relations int
+	// New lists the entities this chunk surfaced that had not been seen before, so a
+	// caller can show the graph populating as it is extracted rather than staring at
+	// a counter. These are the extractor's raw names: the final graph canonicalizes
+	// and prunes, so it is usually smaller than the number streamed here, and that
+	// difference is worth showing rather than hiding.
+	New []EntityBrief
+}
+
+// EntityBrief is a newly discovered entity, enough to display it live.
+type EntityBrief struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // EntityBuildOptions configures BuildEntityGraph.
@@ -24,8 +36,12 @@ type EntityBuildOptions struct {
 	Workers int
 	// BatchSize groups this many chunks into a single model call when the extractor
 	// implements entity.BatchExtractor, cutting the number of LLM round trips by
-	// roughly this factor. 0 or 1 extracts one chunk per call. Large batches are
-	// faster but can dilute a small model's accuracy; 4 to 8 is a good range.
+	// roughly this factor. 0 or 1 extracts one chunk per call.
+	//
+	// Larger is NOT better: a small local model loses track of which passage it is
+	// reading and drops most of what is in them. Measured with qwen3.5:4b, a batch of
+	// 4 found 6 entities and 4 relationships where a batch of 2 found 17 and 8. Keep
+	// it low (1 or 2) unless a large model has been shown to hold up.
 	BatchSize  int
 	OnProgress func(EntityProgress)
 }
@@ -42,6 +58,16 @@ func (s *Store) EntityCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.entList)
+}
+
+// RelationCount reports how many relationships the entity graph holds.
+func (s *Store) RelationCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.eg == nil {
+		return 0
+	}
+	return len(s.eg.Relations())
 }
 
 // BuildEntityGraph extracts an entity-relationship knowledge graph from every
@@ -120,11 +146,36 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 
 	eg := entity.NewGraph()
 	prog := EntityProgress{Total: len(refs)}
+	seen := make(map[string]struct{})
 	for r := range out {
 		eg.Add(r.id, r.ex)
 		prog.Done++
 		prog.Entities = eg.Len()
 		prog.Relations = len(eg.Relations())
+		// Report the entities this chunk surfaced for the first time, so the caller can
+		// show the graph filling in as it is extracted. Relationship endpoints count:
+		// an extractor routinely names an entity only inside a fact about it, and those
+		// become real nodes, so listing only ex.Entities under-reports the graph.
+		prog.New = prog.New[:0]
+		surface := func(name, typ string) {
+			name = strings.TrimSpace(name)
+			key := strings.ToLower(name)
+			if key == "" {
+				return
+			}
+			if _, dup := seen[key]; dup {
+				return
+			}
+			seen[key] = struct{}{}
+			prog.New = append(prog.New, EntityBrief{Name: name, Type: typ})
+		}
+		for _, e := range r.ex.Entities {
+			surface(e.Name, e.Type)
+		}
+		for _, rel := range r.ex.Relations {
+			surface(rel.Source, "")
+			surface(rel.Target, "")
+		}
 		if opt.OnProgress != nil {
 			opt.OnProgress(prog)
 		}

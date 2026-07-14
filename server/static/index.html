@@ -150,6 +150,26 @@
   .typing::after{content:'';display:inline-block;width:7px;height:13px;background:var(--accent);
     vertical-align:-2px;margin-left:2px;animation:blink 1s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
+  /* Live entity extraction. The model is doing slow, expensive work, so show what it
+     is finding as it finds it rather than a counter that ticks in silence. */
+  #entBuild{position:absolute;left:12px;bottom:12px;z-index:18;display:none;width:340px;
+    max-height:56%;background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:11px 12px;box-shadow:0 12px 34px rgba(0,0,0,.5);flex-direction:column;gap:8px}
+  #entBuild.open{display:flex;animation:pop .14s var(--ease-out)}
+  .eb-head{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;color:var(--muted)}
+  .eb-head b{color:var(--text);font-variant-numeric:tabular-nums}
+  .eb-count{color:var(--accent);font-variant-numeric:tabular-nums}
+  .eb-bar{display:block;height:3px;background:var(--panel2);border-radius:2px;overflow:hidden}
+  .eb-list{display:flex;flex-wrap:wrap;gap:4px;overflow-y:auto;align-content:flex-start;min-height:0}
+  .eb-ent{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;background:var(--panel2);
+    border:1px solid var(--border);border-radius:5px;padding:2px 6px;color:var(--text);
+    animation:ebIn .22s var(--ease-out) both}
+  .eb-ent .ty{color:var(--muted);font-size:9.5px}
+  @keyframes ebIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.eb-ent{animation:none}}
+  .eb-done{font-size:10.5px;color:var(--muted);line-height:1.5}
+  .eb-done b{color:var(--text)}
+  .eb-done:empty{display:none}
   /* Thinking: the model has the prompt and is working. Three dots that travel, so
      the state reads as progress rather than a stalled cursor in an empty box. */
   .think{display:inline-flex;gap:5px;align-items:center;padding:4px 0}
@@ -604,6 +624,15 @@
       <button id="fit" title="fit to view">[ ]</button>
     </div>
     <div id="hint" class="hint">upload documents to build the graph</div>
+    <div id="entBuild">
+      <div class="eb-head">
+        <span>extracting entities <b id="ebProg">0/0</b></span>
+        <span id="ebCount" class="eb-count"></span>
+      </div>
+      <div class="bar eb-bar"><i id="ebBarFill"></i></div>
+      <div id="ebList" class="eb-list"></div>
+      <div id="ebDone" class="eb-done"></div>
+    </div>
     <div id="tip"></div>
   </div>
 
@@ -881,6 +910,20 @@
         <div class="cfg-row"><label>strategy</label><select id="cfgChunk"></select></div>
         <div class="cfg-row"><label>target words</label><input id="cfgChunkWords" type="number" placeholder="120"></div>
         <div class="cfg-row"><label>overlap words</label><input id="cfgChunkOverlap" type="number" placeholder="24"></div>
+      </div>
+      <div class="cfg-sec">
+        <h4>entity extraction <span class="cfg-tag">knowledge graph</span></h4>
+        <small>how many chunks go into one model call. batching is faster, but a small local model
+          loses track of which passage it is reading: measured with qwen3.5:4b, a batch of 4 found
+          6 entities and 4 relationships where a batch of 2 found 17 and 8.</small>
+        <div class="cfg-row"><label>chunks per call</label>
+          <select id="cfgEntBatch">
+            <option value="1">1 &middot; most faithful, slowest</option>
+            <option value="2" selected>2 &middot; recommended</option>
+            <option value="4">4 &middot; faster, lossy on small models</option>
+            <option value="8">8 &middot; fastest, very lossy</option>
+          </select>
+        </div>
       </div>
       <div class="cfg-sec">
         <h4>storage &middot; S3-compatible <span class="cfg-tag">restart to apply</span></h4>
@@ -2734,7 +2777,7 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
 });
 async function buildEntities(onProg){
   if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
-  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch=4",{method:"POST"});
+  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2),{method:"POST"});
   if(!resp.ok){let m="entity build failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
   const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
   while(true){
@@ -2749,16 +2792,43 @@ async function buildEntities(onProg){
   }
 }
 async function runBuildEntities(){
-  const hint=$("#hint");hint.style.display="block";
-  toast("extracting entities with the model...");
+  const box=$("#entBuild"),list=$("#ebList"),done=$("#ebDone");
+  list.innerHTML="";done.textContent="";
+  $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
+  $("#ebBarFill").style.setProperty("--p",0);
+  box.classList.add("open");
   try{
-    await buildEntities(p=>{hint.textContent="extracting entities "+p.done+"/"+p.total+" ("+p.entities+" found)"});
+    const res=await buildEntities(p=>{
+      $("#ebProg").textContent=p.done+"/"+p.total;
+      $("#ebCount").textContent=p.entities+" entities · "+p.relations+" links";
+      $("#ebBarFill").style.setProperty("--p",p.total?p.done/p.total:0);
+      // Append what this chunk surfaced. The list is the point: you watch the graph
+      // being discovered instead of waiting on a counter.
+      for(const e of (p.new||[])){
+        const el=document.createElement("span");el.className="eb-ent";
+        el.innerHTML=esc(e.name)+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
+        list.appendChild(el);
+      }
+      list.scrollTop=list.scrollHeight;
+    });
+    // Canonicalization merges surface variants and prunes noise, so fewer entities
+    // survive than were extracted. Say so plainly rather than letting the number
+    // quietly shrink.
+    const kept=res.entities||0,raw=res.extracted||kept,links=res.relations||0;
+    done.innerHTML=raw>kept
+      ? '<b>'+raw+'</b> extracted &rarr; <b>'+kept+'</b> after merging duplicates &middot; <b>'+links+'</b> relationships'
+      : '<b>'+kept+'</b> entities &middot; <b>'+links+'</b> relationships';
+    if(!links&&kept)done.innerHTML+='<br>no relationships were found; the model may not be following the extraction format';
     toast("entity graph built");
     G.graphMode="entities";
     document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
     G.pos=[];await loadStats();await loadGraph();
     if(+$("#pEnt").value===0){$("#pEnt").value=0.5;syncReadouts();saveSettings()}
-  }catch(e){toast(e.message,true);hint.textContent="entity extraction failed"}
+    setTimeout(()=>box.classList.remove("open"),6000);
+  }catch(e){
+    toast(e.message,true);
+    done.innerHTML='<span style="color:var(--danger)">extraction failed: '+esc(e.message)+'</span>';
+  }
 }
 // ---------- global / community summaries ----------
 $("#globalBtn").onclick=()=>{G.global=!G.global;$("#globalBtn").classList.toggle("on",G.global);
@@ -2785,6 +2855,12 @@ async function runBuildCommunities(){
 }
 
 resize();syncComposerHeight();loadSettings();updateEmpty();loadModels();loadScripts();
+// The entity batch size is a local speed/accuracy preference, not server config.
+(function(){
+  const s=$("#cfgEntBatch"); if(!s)return;
+  s.value=localStorage.getItem("tg.entBatch")||"2";
+  s.addEventListener("change",()=>localStorage.setItem("tg.entBatch",s.value));
+})();
 loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);
