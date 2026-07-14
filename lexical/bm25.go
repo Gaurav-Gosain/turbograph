@@ -341,12 +341,15 @@ func (ix *Index) AddBatch(ids, texts []string) {
 		go func(w int) {
 			defer wg.Done()
 			for i := w; i < n; i += workers {
-				toks := tokenize(texts[i])
-				tf := make(map[string]uint32, len(toks))
-				for _, t := range toks {
-					tf[t]++
-				}
-				docs[i] = prepped{toks: len(toks), tf: tf}
+				// Count straight into the map: the intermediate token slice is garbage the
+				// moment it is built, and it was the largest allocation in the whole build.
+				tf := make(map[string]uint32, len(texts[i])/8+1)
+				total := 0
+				tokenizeFunc(texts[i], func(tok string) {
+					tf[tok]++
+					total++
+				})
+				docs[i] = prepped{toks: total, tf: tf}
 			}
 		}(w)
 	}
