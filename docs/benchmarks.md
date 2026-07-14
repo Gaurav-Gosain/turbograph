@@ -118,12 +118,27 @@ mistake for the typical case — a templated benchmark corpus produces exactly i
 one did, and it briefly convinced me that turbograph's search was O(n). It is not. But
 a corpus of near-identical documents will pay for it.
 
-Opening a store (which every CLI command does before anything else):
+Opening a store (which every CLI command does before anything else), 768-d:
 
-| chunks  | store size | open   |
-| ------- | ---------- | ------ |
-| 20,000  | 22 MB      | 0.18 s |
-| 100,000 | 300 MB     | 1.2 s  |
+| chunks  | store size | open   | open + one query |
+| ------- | ---------- | ------ | ---------------- |
+| 20,000  | 22 MB      | 0.18 s |                  |
+| 100,000 | 492 MB     | 1.16 s | 2.45 s           |
+
+Opening used to rebuild the whole vector index, then the whole similarity graph, on
+every command whether or not it searched. Now the index's link structure is persisted
+and restored, the graph is built only when a query actually asks for it, and the vectors
+are written as one raw little-endian block rather than as a gob-encoded slice per chunk.
+That last one is worth stating on its own: gob encodes float32 with a variable-length
+scheme that INFLATES 307 MB of vectors to 450 MB on disk and takes 993 ms to decode,
+against 307 MB and 431 ms for the same numbers written as raw bytes. The block is also
+exactly the layout the index wants, so it is adopted rather than copied.
+
+| 100k chunks, 768-d      | open   | open + query | store  |
+| ----------------------- | ------ | ------------ | ------ |
+| rebuild everything      | 4.65 s | 7.70 s       | 629 MB |
+| persist links, defer graph | 1.93 s | 3.97 s    | 629 MB |
+| raw contiguous vectors  | 1.16 s | 2.45 s       | 492 MB |
 
 **Memory.** A 100,000-chunk store at 768 dimensions is about 750 MB of heap once it is
 searchable, of which 307 MB is the vectors themselves.

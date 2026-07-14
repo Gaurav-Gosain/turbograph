@@ -3,10 +3,12 @@ package rag
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
@@ -52,10 +54,16 @@ type snapshot struct {
 	// chunk, and gob's decoder was the single largest allocator in the load path: 80% of
 	// it, at 100,000 chunks. New snapshots write Flat instead.
 	Embeds [][]float32 `json:"embeds,omitempty"`
-	// Flat holds the vectors row-major, one contiguous block of len(Chunks)*Dim floats.
-	// It decodes as ONE allocation, and it is the exact layout the vector index wants, so
-	// the index adopts the buffer instead of copying it.
-	Flat []float32 `json:"flat,omitempty"`
+	// Flat holds the vectors row-major as one contiguous block. Written as raw
+	// little-endian float32 bytes rather than as a gob []float32, because gob encodes each
+	// float with a variable-length scheme that INFLATES 307 MB of vectors to 450 MB and
+	// takes 993 ms to decode, against 307 MB and 431 ms for the raw bytes. It is also the
+	// exact layout the vector index wants, so the index adopts the block rather than
+	// copying it.
+	FlatBytes []byte `json:"-"`
+	// FlatF32 is the same block as a gob []float32. Written by exactly one release; read
+	// for anyone who has such a file, never written.
+	FlatF32 []float32 `json:"flat,omitempty"`
 	// Codes holds the TurboQuant codes when the store was saved in VectorsCodes
 	// mode (Embeds is then empty). Decoded to approximate vectors on load.
 	Codes []quant.Code `json:"codes,omitempty"`
@@ -130,10 +138,9 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	case VectorsNone:
 		// Store no vectors; they are recomputed from text on load.
 	default:
-		// One contiguous block, not one slice per chunk. Gob decoding the per-chunk layout
-		// was 80% of the allocations in the load path, and the flat block is also exactly
-		// the layout the vector index wants, so it can adopt it rather than copy it.
-		snap.Flat = flattenVectors(s.embeds, s.dim)
+		// One contiguous block of raw bytes, not one gob-encoded slice per chunk. See the
+		// FlatBytes field for why raw.
+		snap.FlatBytes = packVectors(s.embeds, s.dim)
 	}
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
@@ -153,15 +160,10 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 // the store is published, so no lock is needed.
 func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
 	switch {
-	case snap.Dim > 0 && len(snap.Flat) == len(snap.Chunks)*snap.Dim:
-		// Views into the one block. No per-chunk allocation, and the block itself is handed
-		// to the index later, so the vectors are never copied.
-		out := make([][]float32, len(snap.Chunks))
-		for i := range out {
-			out[i] = snap.Flat[i*snap.Dim : (i+1)*snap.Dim : (i+1)*snap.Dim]
-		}
-		s.flat = snap.Flat
-		return out, nil
+	case snap.Dim > 0 && len(snap.FlatBytes) == len(snap.Chunks)*snap.Dim*4:
+		return s.viewFlat(unpackVectors(snap.FlatBytes), snap.Dim, len(snap.Chunks)), nil
+	case snap.Dim > 0 && len(snap.FlatF32) == len(snap.Chunks)*snap.Dim:
+		return s.viewFlat(snap.FlatF32, snap.Dim, len(snap.Chunks)), nil
 	case len(snap.Embeds) == len(snap.Chunks):
 		return snap.Embeds, nil
 	case len(snap.Codes) == len(snap.Chunks):
@@ -201,6 +203,26 @@ func ExportJSON(r io.Reader, w io.Writer, includeVectors bool) error {
 	if err := gob.NewDecoder(r).Decode(&snap); err != nil {
 		return fmt.Errorf("rag: decode: %w", err)
 	}
+	// The vectors are stored as one raw block, which is not a JSON-representable thing.
+	// The interop format is per-chunk arrays, so materialize them: an export that quietly
+	// dropped the vectors because the on-disk layout changed would be a silent data loss
+	// in the one command whose entire job is to hand the corpus to another tool.
+	if includeVectors && len(snap.Embeds) == 0 && snap.Dim > 0 {
+		var flat []float32
+		switch {
+		case len(snap.FlatBytes) == len(snap.Chunks)*snap.Dim*4:
+			flat = unpackVectors(snap.FlatBytes)
+		case len(snap.FlatF32) == len(snap.Chunks)*snap.Dim:
+			flat = snap.FlatF32
+		}
+		if flat != nil {
+			snap.Embeds = make([][]float32, len(snap.Chunks))
+			for i := range snap.Embeds {
+				snap.Embeds[i] = flat[i*snap.Dim : (i+1)*snap.Dim]
+			}
+		}
+	}
+	snap.FlatBytes, snap.FlatF32 = nil, nil
 	if !includeVectors {
 		snap.Embeds = nil
 	}
@@ -293,17 +315,41 @@ func (s *Store) hnswSnapshot() *index.Graph {
 	return &g
 }
 
-// flattenVectors packs per-chunk vectors into one row-major block.
-func flattenVectors(vecs [][]float32, dim int) []float32 {
+// viewFlat hands back per-chunk views into one contiguous block, and keeps the block so
+// the vector index can adopt it. No vector is copied, at load or at index build.
+func (s *Store) viewFlat(flat []float32, dim, n int) [][]float32 {
+	out := make([][]float32, n)
+	for i := range out {
+		out[i] = flat[i*dim : (i+1)*dim : (i+1)*dim]
+	}
+	s.flat = flat
+	return out
+}
+
+// packVectors writes per-chunk vectors as one row-major block of little-endian float32.
+func packVectors(vecs [][]float32, dim int) []byte {
 	if len(vecs) == 0 || dim <= 0 {
 		return nil
 	}
-	out := make([]float32, 0, len(vecs)*dim)
+	out := make([]byte, len(vecs)*dim*4)
+	k := 0
 	for _, v := range vecs {
 		if len(v) != dim {
 			return nil // ragged; fall back to the per-chunk layout
 		}
-		out = append(out, v...)
+		for _, f := range v {
+			binary.LittleEndian.PutUint32(out[k:], math.Float32bits(f))
+			k += 4
+		}
+	}
+	return out
+}
+
+// unpackVectors reads the block back.
+func unpackVectors(b []byte) []float32 {
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
 	return out
 }
