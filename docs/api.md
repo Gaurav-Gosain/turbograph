@@ -34,13 +34,26 @@ UI at `http://localhost:8080/openapi.json`, or generate a client with
 Add or replace text documents.
 ```json
 { "documents": [ { "id": "notes.md", "text": "...", "meta": { "author": "ada" } } ],
-  "replace": false, "contextual": false }
+  "replace": false, "contextual": false, "transform": [] }
 ```
 `replace: true` rebuilds the bucket from scratch; otherwise documents are added
 incrementally (changed content updates in place). `contextual: true` enables
 contextual retrieval for this ingest (a generated, index-only situating prefix per
 chunk); it needs a configured generator and costs one model call per chunk, so it
-is off by default. Returns `{ "chunks": <int> }`.
+is off by default.
+
+`transform` names operator-registered scripts to run over each document, in order,
+before it is chunked (see [scripts.md](scripts.md)). Only names the server
+discovered in its `--scripts` directory are accepted; anything else is a 400. A
+script that fails on a document skips that document rather than failing the ingest,
+and one that drops a document reports it.
+
+Returns `{ "chunks": <int>, "dropped": [ids], "failed": [ { "id", "error" } ] }`.
+
+### `GET /api/scripts`
+List the transform scripts the operator registered, so a client can offer them.
+Returns `{ "scripts": ["strip-nav.py", "drop-empty.sh"] }` (empty when `--scripts`
+is not set). Paths are never exposed, only names.
 
 ### `POST /api/ingest/files`
 Ingest binary or text files; the server extracts text (PDF, OCR, plain text).

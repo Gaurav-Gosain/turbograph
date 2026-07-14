@@ -24,6 +24,7 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/oai"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
+	"github.com/Gaurav-Gosain/turbograph/script"
 	"github.com/Gaurav-Gosain/turbograph/server"
 	"github.com/Gaurav-Gosain/turbograph/storage"
 )
@@ -186,6 +187,8 @@ func cmdServe(args []string) error {
 	maxUpload := fs.Int64("max-upload", server.DefaultMaxUploadBytes, "max file-upload request body in bytes (0 uses the default, negative disables)")
 	configPath := fs.String("config", "", "persisted settings JSON, editable in the UI (default <data>/config.json)")
 	lean := fs.String("lean", "exact", "vector storage when buckets are saved: exact (float32), codes (compact TurboQuant, ~40% size, ~98% recall), or text (no vectors, re-embed on load, smallest and lossless)")
+	scriptsDir := fs.String("scripts", "", "directory of executable transform scripts callers may run over documents at ingest, by name (SECURITY: every program in it becomes runnable by anyone who can reach the API; leave unset to disable)")
+	scriptTimeout := fs.Duration("script-timeout", script.DefaultTimeout, "how long a single transform script may run before it is killed")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -268,6 +271,16 @@ func cmdServe(args []string) error {
 
 	srv := server.NewManager(mgr)
 	srv.SetGenerator(backend, rc.GenModel, rc.EmbedModel)
+	// Transform scripts are registered by the operator here, at startup. Requests
+	// may only name what is in this directory, never supply a command of their own.
+	scripts, serr := script.Load(*scriptsDir, *scriptTimeout)
+	if serr != nil {
+		return serr
+	}
+	srv.SetScripts(scripts)
+	if n := scripts.Len(); n > 0 {
+		fmt.Fprintf(os.Stderr, "transform scripts: %d from %s (%s)\n", n, *scriptsDir, strings.Join(scripts.Names(), ", "))
+	}
 	// Image assets live beside the buckets so the multimodal path (caption then
 	// embed) can store and serve figures; a local data dir is required for it.
 	if *data != "" {

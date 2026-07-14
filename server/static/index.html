@@ -478,6 +478,14 @@
   #ctxToggle input{flex:none;accent-color:var(--accent);cursor:pointer}
   #ctxToggle span{font-size:11px;color:var(--text)}
   #ctxToggle small{flex-basis:100%;color:var(--faint);font-size:10px;margin-left:23px}
+  #tfBox{margin-top:10px;padding-top:9px;border-top:1px solid var(--border)}
+  .tf-head{font-size:11px;color:var(--text);margin-bottom:6px;display:flex;gap:7px;align-items:baseline;flex-wrap:wrap}
+  .tf-hint{color:var(--faint);font-size:10px}
+  .tf-list{display:flex;flex-direction:column;gap:5px}
+  .tf-item{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted);cursor:pointer}
+  .tf-item input{accent-color:var(--accent);cursor:pointer;flex:none}
+  .tf-item code{color:var(--text);background:var(--panel2);border:1px solid var(--border);
+    border-radius:5px;padding:1px 6px;font-size:10.5px}
   .bar{height:4px;background:var(--panel2);border-radius:3px;overflow:hidden;display:none}
   .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
   .doclist{display:flex;flex-direction:column;gap:6px}
@@ -654,6 +662,10 @@
           <input id="ctxOpt" type="checkbox"><span>contextual retrieval</span>
           <small>generates an index-only context prefix per chunk &middot; needs a model &middot; slower</small>
         </label>
+        <div id="tfBox" style="display:none">
+          <div class="tf-head">transform scripts <span class="tf-hint">run over each document before chunking</span></div>
+          <div id="tfList" class="tf-list"></div>
+        </div>
         <div class="bar" id="progBar"><i></i></div>
         <div id="docNote" class="note"></div>
         <div class="row">
@@ -1173,6 +1185,23 @@ async function loadGraph(keepView){
   buildLegend();
   if(G.nodes.length){reheat(1);if(!keepView)setTimeout(()=>fit(null),350)}
   dirty=true;
+}
+// loadScripts lists the transform scripts the operator registered with --scripts.
+// The server only accepts these names, so the UI simply offers what it is told;
+// with none configured the section stays hidden and the feature is invisible.
+async function loadScripts(){
+  let names=[];
+  try{const r=await api(bk("/api/scripts"));names=r.scripts||[]}catch(e){}
+  const box=$("#tfBox"),list=$("#tfList");
+  if(!names.length){box.style.display="none";return}
+  list.innerHTML=names.map(n=>
+    '<label class="tf-item"><input type="checkbox" data-tf="'+esc(n)+'"><code>'+esc(n)+'</code></label>').join("");
+  box.style.display="";
+}
+// selectedTransforms returns the script names ticked in the ingest panel, in the
+// order they are listed, which is the order they run in.
+function selectedTransforms(){
+  return [...document.querySelectorAll('#tfList input[data-tf]')].filter(i=>i.checked).map(i=>i.dataset.tf);
 }
 async function loadStats(){
   const s=await api(bk("/stats"));
@@ -2003,15 +2032,16 @@ async function handleFiles(files){
     let total=0;
     if(binary.length){
       const r=await api(bk("/api/ingest/files"),{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({files:binary,contextual:$("#ctxOpt").checked})});
+        body:JSON.stringify({files:binary,contextual:$("#ctxOpt").checked,transform:selectedTransforms()})});
       if(r.error)throw new Error(r.error);
       total=r.chunks;markFailures(r.failed);
     }
     bar.querySelector("i").style.width="55%";
     if(text.length){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({documents:text,contextual:$("#ctxOpt").checked})});
+        body:JSON.stringify({documents:text,contextual:$("#ctxOpt").checked,transform:selectedTransforms()})});
       if(r.error)throw new Error(r.error);total=r.chunks;
+      reportTransform(r);
     }
     if(images.length){
       if(!G.model){toast("select a model (top right) to caption images",true);}
@@ -2028,6 +2058,14 @@ async function handleFiles(files){
     await loadStats();await loadGraph();loadBuckets();
   }catch(e){note.className="note err";note.textContent=e.message;toast(e.message,true)}
   finally{setTimeout(()=>{bar.style.display="none";bar.querySelector("i").style.width="0"},600)}
+}
+// reportTransform surfaces what the transform scripts did: a script that drops a
+// document is a decision worth telling the user about, and one that fails on a
+// document must not disappear silently.
+function reportTransform(r){
+  if(r.dropped&&r.dropped.length)
+    toast(r.dropped.length+" document(s) dropped by a transform: "+r.dropped.slice(0,3).join(", "));
+  if(r.failed&&r.failed.length)markFailures(r.failed);
 }
 function markFailures(failed){
   if(!failed)return;
@@ -2664,7 +2702,7 @@ async function runBuildCommunities(){
   }catch(e){toast(e.message,true)}
 }
 
-resize();loadSettings();updateEmpty();loadModels();
+resize();loadSettings();updateEmpty();loadModels();loadScripts();
 loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);

@@ -17,6 +17,7 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/extract"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
+	"github.com/Gaurav-Gosain/turbograph/script"
 )
 
 // DefaultBucket is used when a request does not name one.
@@ -46,6 +47,9 @@ type Server struct {
 	embedModel string
 	version    string
 	extract    *extract.Registry
+	// scripts holds the operator-registered transform programs. Callers may name
+	// these and only these; nil means the feature is off.
+	scripts *script.Registry
 
 	// Runtime configuration, editable over /api/config when EnableConfig was called.
 	cfg       RuntimeConfig
@@ -144,6 +148,7 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	mux.HandleFunc("GET /api/graph", s.handleGraph)
 	mux.HandleFunc("GET /api/models", s.handleModels)
+	mux.HandleFunc("GET /api/scripts", s.handleScripts)
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/save", s.handleSave)
 	mux.HandleFunc("POST /api/ingest/files", s.handleIngestFiles)
@@ -259,6 +264,10 @@ type ingestRequest struct {
 	// in its document. It costs one model call per chunk, so it is opt-in. It helps
 	// most on long documents whose later chunks lose the entity name to anaphora.
 	Contextual bool `json:"contextual"`
+	// Transform names the operator-registered scripts to run over each document,
+	// in order, before it is chunked. Only names the server discovered in its
+	// --scripts directory are accepted; a caller can never supply a command.
+	Transform []string `json:"transform,omitempty"`
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -286,17 +295,35 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			st.SetContextualizer(nil)
 		}
 	}
+	// Transform stage: run the named operator-registered scripts over each document
+	// before it is chunked. An unknown name is rejected outright; a script that
+	// fails on one document skips that document rather than failing the ingest.
+	if err := s.validateTransforms(req.Transform); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	docs, dropped, failed := s.transformDocs(r.Context(), req.Transform, req.Documents)
+	if len(docs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"chunks": st.Len(), "dropped": dropped, "failed": failed, "saved": false,
+		})
+		return
+	}
+
 	if req.Replace {
-		err = st.Build(r.Context(), req.Documents)
+		err = st.Build(r.Context(), docs)
 	} else {
-		err = st.AddDocuments(r.Context(), req.Documents)
+		err = st.AddDocuments(r.Context(), docs)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	saved, saveErr := s.persist(bucketOf(r))
-	writeJSON(w, http.StatusOK, map[string]any{"chunks": st.Len(), "saved": saved, "save_error": saveErr})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chunks": st.Len(), "saved": saved, "save_error": saveErr,
+		"dropped": dropped, "failed": failed,
+	})
 }
 
 // persist saves a bucket after a mutation. It is a no-op success for an in-memory

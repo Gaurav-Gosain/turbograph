@@ -333,8 +333,13 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Files      []ingestFile `json:"files"`
 		Contextual bool         `json:"contextual"`
+		Transform  []string     `json:"transform,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.validateTransforms(req.Transform); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -360,6 +365,10 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		docs = append(docs, rag.Document{ID: f.ID, Text: text, Meta: f.Meta})
 	}
+	// Extracted text runs through the same transform stage as pasted text, so a
+	// script cleaning up PDF output is written once and works for both paths.
+	docs, dropped, tfailed := s.transformDocs(r.Context(), req.Transform, docs)
+	failed = append(failed, tfailed...)
 	if len(docs) > 0 {
 		if err := st.AddDocuments(r.Context(), docs); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
@@ -371,6 +380,7 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 		"chunks":     st.Len(),
 		"indexed":    len(docs),
 		"failed":     failed,
+		"dropped":    dropped,
 		"saved":      saved,
 		"save_error": saveErr,
 	})

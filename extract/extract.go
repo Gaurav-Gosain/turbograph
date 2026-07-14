@@ -143,6 +143,12 @@ func (c CommandExtractor) Extract(ctx context.Context, filename string, data []b
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// Killing the command on timeout is not enough on its own: Run also waits for
+	// the output pipes to close, and a child the command spawned still holds them
+	// open, so a hung grandchild (a stuck OCR worker, say) would keep blocking the
+	// ingest long after the deadline. WaitDelay bounds that wait and forces the
+	// pipes shut.
+	cmd.WaitDelay = 2 * time.Second
 
 	runErr := cmd.Run()
 	// Surface context errors plainly so callers can detect timeout/cancellation,

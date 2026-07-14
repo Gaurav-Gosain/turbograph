@@ -190,6 +190,35 @@ idempotent (documents are deduped by id), so resuming after a crash or a pause
 never duplicates or loses data. Interrupt with Ctrl-C to pause; re-run the same
 command to resume.
 
+### Transform scripts (bring your own processing)
+
+turbograph can run your own programs over each document at ingest, before it is
+chunked, so processing it does not ship can still live in the pipeline. A script is
+any executable: a Go binary, a Python file, a shell script. It reads one JSON
+document on stdin and writes one back on stdout, which is a few lines in any
+language, and it can rewrite the text, set metadata, or drop the document.
+
+```
+turbograph serve --data ./data --scripts ./scripts
+```
+
+Scripts are registered by the **operator**, at startup, by pointing turbograph at a
+directory. A request may then name those scripts, and **only** those scripts, never
+a path or a command of its own:
+
+```json
+{ "documents": [...], "transform": ["strip-nav.py", "drop-empty.sh"] }
+```
+
+That boundary is deliberate: turbograph is routinely run as a server, and an
+endpoint that executed a caller-supplied command would be remote code execution for
+anyone who could reach it. Enabling `--scripts` makes every program in that
+directory runnable by anyone who can reach the API, so put only code you trust
+there. With the flag unset the feature is entirely off. Programs run directly (no
+shell, so no injection) under a timeout, and a script that fails on one document
+skips that document instead of failing the ingest. Full contract and examples in
+[docs/scripts.md](docs/scripts.md).
+
 Ingestion can optionally apply **contextual retrieval** (Anthropic): with the
 `contextual` flag set, each chunk is prefixed, for indexing only, with a short
 model-generated sentence situating it in its document, which is then embedded and

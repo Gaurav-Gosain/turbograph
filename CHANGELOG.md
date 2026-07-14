@@ -10,6 +10,13 @@ There are no tagged releases yet, so everything to date sits under Unreleased.
 
 ### Added
 
+- Transform scripts: run your own programs over each document at ingest, before it
+  is chunked, in any language (`--scripts <dir>`). A script reads one JSON document
+  on stdin and writes one back on stdout, and can rewrite the text, set metadata, or
+  drop the document. Scripts are registered by the operator and referenced by name
+  only, so a caller can never supply a command; a script that fails on one document
+  skips that document rather than failing the ingest, and each run is killed on
+  timeout. See [docs/scripts.md](docs/scripts.md).
 - MCP fetch tools for agent harnesses: `get` (fetch a document, a line range, or a
   chunk widened by a neighbour window) and `multi_get` (fetch several sources under
   a total byte budget, split evenly, each reporting its size and whether it was
