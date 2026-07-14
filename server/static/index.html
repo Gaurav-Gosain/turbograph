@@ -9,6 +9,9 @@
     --bg:#0a0b0d; --panel:#0f1116; --panel2:#15181e; --border:#23262d;
     --text:#d7dae0; --muted:#6f747e; --faint:#41454d;
     --accent:#5ad1c8; --accent2:#7aa2f7; --danger:#e06c75; --warn:#e5c07b;
+    /* A stronger ease-out than the CSS default: motion starts fast, so the UI
+       answers the moment you touch it. */
+    --ease-out:cubic-bezier(.23,1,.32,1);
   }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
@@ -20,9 +23,20 @@
     scrollbar-width:thin; scrollbar-color:var(--border) transparent;
   }
   button{font-family:inherit;font-size:12px;color:var(--text);background:var(--panel2);
-    border:1px solid var(--border);border-radius:6px;padding:6px 10px;cursor:pointer;transition:.12s}
-  button:hover{border-color:var(--accent);color:var(--accent)}
-  button:disabled{opacity:.4;cursor:default;border-color:var(--border);color:var(--muted)}
+    border:1px solid var(--border);border-radius:6px;padding:6px 10px;cursor:pointer;
+    transition:color 140ms var(--ease-out),border-color 140ms var(--ease-out),
+      background 140ms var(--ease-out),transform 140ms var(--ease-out)}
+  /* Hover only where there is a real pointer: on touch it fires on tap and sticks. */
+  @media (hover:hover) and (pointer:fine){
+    button:hover{border-color:var(--accent);color:var(--accent)}
+  }
+  /* Press feedback: the interface should visibly hear the click. */
+  button:active:not(:disabled){transform:scale(.97)}
+  button:disabled{opacity:.4;cursor:default;border-color:var(--border);color:var(--muted);transform:none}
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+    button:active:not(:disabled){transform:none}
+  }
   input,select,textarea{font-family:inherit;font-size:12px;color:var(--text);
     background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;outline:none}
   input:focus,select:focus,textarea:focus{border-color:var(--accent)}
@@ -173,7 +187,7 @@
   #panel-chat{position:relative}
   .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
     gap:7px;text-align:center;color:var(--muted);padding:30px}
-  .chat-empty .sub{color:var(--faint);font-size:11px}
+  .chat-empty .sub{color:var(--faint);font-size:11px;max-width:34ch;line-height:1.55}
   .demo-row{flex-direction:column;align-items:center;gap:7px;margin:10px 0}
   #demoBtn{border-color:var(--accent);color:var(--accent);padding:7px 14px;font-weight:500}
   #demoBtn:hover{background:rgba(90,209,200,.08)}
@@ -424,11 +438,24 @@
   .cfg-step .lbl{color:var(--text)} .cfg-step .det{color:var(--faint);font-size:10.5px;margin-left:auto;min-width:96px;text-align:right}
   .cfg-step .ps-tog{width:auto;cursor:pointer;accent-color:var(--accent)}
   .cfg-step .ps-rng{width:96px;flex:0 0 auto}
-  #composer{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
-  #composer textarea{flex:1;resize:none;height:38px;line-height:1.4;max-height:140px}
-  #composer button{align-self:stretch;padding:0 16px}
-  #globalBtn,#hopBtn,#verifyBtn{padding:0 11px;font-size:11px;color:var(--muted)}
+  /* Composer: the textarea owns the full width on its own row, with the mode
+     toggles and send beneath it. Crowding them all into one flex row squeezed the
+     input to nothing as soon as a third toggle was added. */
+  #composer{padding:12px 14px;border-top:1px solid var(--border)}
+  .cw{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:8px 8px 7px 10px;
+    transition:border-color 160ms var(--ease-out),box-shadow 160ms var(--ease-out)}
+  .cw:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(90,209,200,.10)}
+  .cw textarea{display:block;width:100%;background:transparent;border:0;border-radius:0;padding:3px 2px;
+    resize:none;min-height:22px;max-height:168px;line-height:1.55;font-size:12.5px;outline:none}
+  .cw textarea:focus{border:0}
+  .cw textarea::placeholder{color:var(--faint)}
+  .cw-bar{display:flex;align-items:center;gap:6px;margin-top:6px}
+  .cw-modes{display:flex;gap:5px;flex:1;min-width:0;flex-wrap:wrap}
+  #globalBtn,#hopBtn,#verifyBtn{padding:3px 9px;font-size:10.5px;line-height:1.6;color:var(--muted);
+    background:transparent;border-radius:6px}
   #globalBtn.on,#hopBtn.on,#verifyBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+  #send{flex:none;padding:5px 15px;font-weight:500;border-color:var(--accent);color:var(--accent)}
+  #send:hover{background:rgba(90,209,200,.10)}
   .verify-box{margin-top:9px;font-size:11px}
   .verify-head{color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px}
   .verify-head b{color:var(--text);font-weight:600}
@@ -597,12 +624,18 @@
         <div class="sp-text" id="spText"></div>
       </div>
       <div id="composer">
-        <button id="globalBtn" title="answer corpus-wide questions from community summaries">global</button>
-        <button id="hopBtn" title="split a multi-hop question into subqueries before retrieving">multi-hop</button>
-        <button id="verifyBtn" title="after answering, check each claim against the retrieved evidence (one extra model call)">verify</button>
-        <textarea id="input" placeholder="ask the graph" rows="1"></textarea>
-        <button id="send">send</button>
-        <button id="stop">stop</button>
+        <div class="cw">
+          <textarea id="input" placeholder="ask the graph" rows="1"></textarea>
+          <div class="cw-bar">
+            <div class="cw-modes">
+              <button id="globalBtn" title="answer corpus-wide questions from community summaries">global</button>
+              <button id="hopBtn" title="split a multi-hop question into subqueries before retrieving">multi-hop</button>
+              <button id="verifyBtn" title="after answering, check each claim against the retrieved evidence (one extra model call)">verify</button>
+            </div>
+            <button id="send">send</button>
+            <button id="stop">stop</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1886,7 +1919,7 @@ document.addEventListener("keydown",e=>{
     else if(e.key==="?"){e.preventDefault();openCmdk()}
   }
 });
-function autoGrow(){const t=$("#input");t.style.height="38px";t.style.height=Math.min(140,t.scrollHeight)+"px"}
+function autoGrow(){const t=$("#input");t.style.height="auto";t.style.height=Math.min(168,Math.max(22,t.scrollHeight))+"px"}
 $("#input").addEventListener("input",autoGrow);
 
 // ---------- node detail ----------
