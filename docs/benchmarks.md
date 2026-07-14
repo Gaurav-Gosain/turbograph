@@ -27,20 +27,109 @@ benchmarks forced, including changes to defaults that the data did not support.
 
 ## Headline results
 
-EmbeddingGemma, default configuration (asymmetric prompts, lexical weight 0.25,
-graph off), after the findings below.
+EmbeddingGemma, **the shipped defaults** (asymmetric prompts, lexical weight 0.25,
+graph off, chunk target 120 words).
 
 | dataset       | metric  | turbograph | reference baseline                    |
 | ------------- | ------- | ---------- | ------------------------------------- |
-| SciFact       | nDCG@10 | **0.79**   | BM25 0.67; strong dense low-mid 0.70s |
-| NFCorpus      | nDCG@10 | **0.40**   | BM25 0.33; strong dense mid-0.30s     |
+| SciFact       | nDCG@10 | **0.772**  | BM25 0.67; strong dense low-mid 0.70s |
+| NFCorpus      | nDCG@10 | **0.338**  | BM25 0.33; strong dense mid-0.30s     |
 | MultiHop-RAG  | MRR@10  | **0.56**   | best non-reranked embedding 0.43      |
 | MultiHop-RAG  | Hits@10 | **0.54**   | best embedding+reranker 0.75          |
+
+An earlier version of this table reported **0.79** on SciFact and **0.40** on
+NFCorpus and described them as the default configuration. They were not: they
+require a larger chunk target. SciFact and NFCorpus documents are abstracts, and
+the 120-word default splits an abstract in half, which costs real accuracy:
+
+| chunk target | SciFact nDCG@10 |
+| ------------ | --------------- |
+| 120 (default)| 0.7723          |
+| 256          | 0.7732          |
+| 512          | 0.7856          |
+
+The number in the table is now the one you get by running the shipped binary with
+no flags, because that is the number a reader is entitled to assume it is. If your
+documents are short and self-contained, raise `--chunk-words`.
+
+### What is actually doing the work
+
+`turbograph bench --ablate` scores every configuration against one index, so the
+report says which part earns its place rather than crediting the whole to the sum.
+SciFact, 5183 documents, 300 queries:
+
+| arm                     | nDCG@10 | Δ vs default |
+| ----------------------- | ------- | ------------ |
+| dense only (BM25 off)   | 0.7660  | -0.0063      |
+| **hybrid w=0.25 (default)** | **0.7723** | —       |
+| hybrid w=0.50           | 0.7587  | -0.0136      |
+| hybrid w=1.0            | 0.7388  | -0.0335      |
+| lexical-dominant w=8    | 0.6627  | -0.1096      |
+| + graph 0.2             | 0.7648  | -0.0075      |
+| + MMR 0.5               | 0.7494  | -0.0229      |
+
+Three things, and none of them flatter the feature list:
+
+1. **The embedder does nearly all the work.** Dense alone is 0.766; the lexical
+   fusion adds 0.006. It is a real gain and it is free, but the honest description
+   of turbograph's retrieval quality on SciFact is "EmbeddingGemma's quality, plus
+   a little".
+2. **The harness validates itself.** Pushing the lexical weight until BM25
+   dominates gives 0.663, which is the published Anserini BM25 baseline for
+   SciFact (0.665) to within noise. An independent implementation landing on the
+   reference number is the strongest evidence available that the metrics are right.
+3. **The graph and MMR measurably hurt** on single-hop retrieval, which is what
+   [finding 2](#2-graph-reranking-lowers-precision-on-single-hop-and-multi-hop-alike)
+   already says and why both are off by default. Their case is MultiHop-RAG, not
+   this.
+
+NFCorpus tells the same story more starkly: dense alone 0.3379, default 0.3383,
+graph +0.0003. On that corpus the lexical fusion buys essentially nothing.
 
 turbograph's retrieval is at or above the strong-dense baseline on every set, and
 on MultiHop-RAG it beats the paper's best *non-reranked* embedding (bge-large
 0.430, voyage-02 0.393) by a wide margin with no reranker, and lands within reach
 of the best embedding+reranker configuration (0.586 MRR@10).
+
+## Speed and memory
+
+These measure **turbograph**, not Ollama. The end-to-end query latency in a BEIR run is
+about 140 ms and essentially all of it is the HTTP round trip to embed the query;
+quoting that as "query latency" would credit the index with the embedder's cost. The
+numbers below use an in-process embedder, so what they time is the search: the HNSW
+walk, the BM25 lookup, the fusion, and the ranking. 768 dimensions, `TopK` 10.
+
+Reproduce with `go test ./rag/ -run xxx -bench Speed -benchtime 300x`.
+
+| chunks  | search  | with graph 0.2 |
+| ------- | ------- | -------------- |
+| 1,000   | 0.11 ms |                |
+| 10,000  | 0.36 ms | 0.54 ms        |
+| 100,000 | 0.55 ms |                |
+
+Ten times the corpus costs about twice the search, which is the sub-linear scaling
+HNSW is for. The graph signal costs about 50% more per query, on top of measuring
+worse (above), which is the whole reason it is opt-in.
+
+**The worst case is worth stating too.** When every document contains every query term,
+BM25 cannot narrow anything and has to score the entire corpus: 1.0 ms at 10k chunks
+and 9.7 ms at 100k, and it is linear. That shape is rare in practice and easy to
+mistake for the typical case — a templated benchmark corpus produces exactly it, and
+one did, and it briefly convinced me that turbograph's search was O(n). It is not. But
+a corpus of near-identical documents will pay for it.
+
+Opening a store (which every CLI command does before anything else):
+
+| chunks  | store size | open   |
+| ------- | ---------- | ------ |
+| 20,000  | 22 MB      | 0.18 s |
+| 100,000 | 300 MB     | 1.2 s  |
+
+**Memory is the weak number.** A 100,000-chunk store at 768 dimensions is about 1 GB of
+heap once it is searchable, and the largest single reason is that the vectors are
+resident twice: once in the store, which is the source of truth for rebuilds, MMR and
+saving, and again inside the HNSW index, which keeps its own normalized flat copy. That
+is 300 MB of pure duplication at this size and it is the obvious next thing to fix.
 
 ## What the benchmarks forced
 

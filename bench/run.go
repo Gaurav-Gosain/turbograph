@@ -14,6 +14,9 @@ type Options struct {
 	DocLevel   bool               // collapse retrieved chunks to documents (BEIR convention)
 	Params     rag.RetrieveParams // retrieval knobs; TopK defaults to max(K, 10)
 	OnProgress func(done, total int)
+	// OnArm reports which ablation arm is being scored, so a long run says what it is
+	// doing rather than appearing to hang.
+	OnArm func(i, n int, name string)
 }
 
 // Evaluate ingests a dataset into a fresh store built on embedder and cfg, then

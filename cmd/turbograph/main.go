@@ -822,6 +822,7 @@ func cmdBench(args []string) error {
 	qrels := fs.String("qrels", "", "qrels TSV path (BEIR)")
 	k := fs.Int("k", 10, "cutoff for the @k metrics")
 	graphMix := fs.Float64("graph-mix", 0, "Personalized PageRank weight (0 = off, the default)")
+	ablate := fs.Bool("ablate", false, "score every retrieval configuration against one index, so the report says which part is doing the work")
 	entityMix := fs.Float64("entity-mix", 0, "entity-graph weight")
 	mmr := fs.Float64("mmr", 0, "MMR diversification lambda (0 = off)")
 	jsonOut := fs.String("json", "", "also write the report as JSON to this path")
@@ -851,7 +852,55 @@ func cmdBench(args []string) error {
 		Chunk: rag.ChunkConfig{Strategy: rag.StrategyRecursive, TargetWords: *chunkWords, OverlapWords: *chunkWords / 5}}
 	opt := bench.Options{K: *k, DocLevel: true,
 		Params:     rag.RetrieveParams{GraphMix: float32(*graphMix), EntityMix: float32(*entityMix), MMRLambda: float32(*mmr)},
-		OnProgress: func(done, total int) { fmt.Fprintf(os.Stderr, "\rscoring %d/%d", done, total) }}
+		OnProgress: func(done, total int) { fmt.Fprintf(os.Stderr, "\rscoring %d/%d", done, total) },
+		OnArm: func(i, n int, name string) {
+			fmt.Fprintf(os.Stderr, "\r\033[Karm %d/%d: %s\n", i+1, n, name)
+		}}
+
+	if *ablate {
+		// The arms answer the only question worth asking: which part is doing the work.
+		// Relevance is dense + w*bm25, so sweeping w from "off" through the default to
+		// lexical-dominant shows exactly what the embedder contributes and what BM25 adds
+		// on top of it. The graph, entity and MMR arms then have to justify themselves
+		// against that baseline rather than being assumed to help.
+		arms := []bench.Arm{
+			{Name: "dense only (bm25 off)", Params: rag.RetrieveParams{LexicalWeight: -1}},
+			{Name: "hybrid w=0.25 (default)", Params: rag.RetrieveParams{}},
+			{Name: "hybrid w=0.50", Params: rag.RetrieveParams{LexicalWeight: 0.5}},
+			{Name: "hybrid w=1.0", Params: rag.RetrieveParams{LexicalWeight: 1.0}},
+			{Name: "lexical-dominant w=8", Params: rag.RetrieveParams{LexicalWeight: 8}},
+			{Name: "+ graph 0.2", Params: rag.RetrieveParams{GraphMix: 0.2}},
+			{Name: "+ entity 0.3", Params: rag.RetrieveParams{EntityMix: 0.3}},
+			{Name: "+ MMR 0.5", Params: rag.RetrieveParams{MMRLambda: 0.5}},
+		}
+		res, store, err := bench.Ablate(context.Background(), embedder, cfg, ds, arms, opt)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr)
+		fmt.Printf("%-24s %8s %8s %8s %10s %10s\n", "arm", "ndcg@"+itoa(*k), "recall", "mrr", "p50", "p95")
+		base := res[1].Report.Mean.NDCGAtK // the hybrid default, for the delta column
+		for _, r := range res {
+			m := r.Report.Mean
+			d := ""
+			if m.NDCGAtK != base {
+				d = fmt.Sprintf("  %+.4f", m.NDCGAtK-base)
+			}
+			fmt.Printf("%-24s %8.4f %8.4f %8.4f %10s %10s%s\n", r.Name,
+				m.NDCGAtK, m.RecallAtK, m.MRR,
+				r.QueryP50.Round(time.Microsecond), r.QueryP95.Round(time.Microsecond), d)
+		}
+		fmt.Fprintf(os.Stderr, "\n%d documents, %d chunks, %d queries\n", len(ds.Docs), store.Len(), len(ds.Cases))
+		if *jsonOut != "" {
+			b, _ := json.MarshalIndent(res, "", "  ")
+			if err := os.WriteFile(*jsonOut, b, 0o644); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "wrote %s\n", *jsonOut)
+		}
+		return nil
+	}
+
 	rep, err := bench.Evaluate(context.Background(), embedder, cfg, ds, opt)
 	if err != nil {
 		return err
@@ -873,6 +922,8 @@ func cmdBench(args []string) error {
 	}
 	return nil
 }
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
 const ragSystemPrompt = "You are a precise assistant. Answer the question using only the provided context. " +
 	"If the context does not contain the answer, say so. Cite the chunk ids you used."
