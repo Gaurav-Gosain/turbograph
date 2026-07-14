@@ -254,3 +254,43 @@ func Restore(entities []Entity, relations []Relation) *Graph {
 	}
 	return g
 }
+
+// DropChunks removes the given chunk ids from every entity's chunk list, then drops
+// any entity left with no chunk at all, and every relation touching one. It exists so
+// that deleting a document keeps the knowledge graph consistent with the corpus
+// without re-running the extractor: an entity whose every mention has been deleted is
+// no longer evidenced by anything, and leaving it behind means entity-seeded
+// retrieval hands back chunk ids that are not in the store any more.
+//
+// It returns the number of entities dropped.
+func (g *Graph) DropChunks(gone map[string]bool) int {
+	if len(gone) == 0 {
+		return 0
+	}
+	dead := make(map[string]bool)
+	for name, e := range g.entities {
+		kept := e.Chunks[:0]
+		for _, c := range e.Chunks {
+			if !gone[c] {
+				kept = append(kept, c)
+			}
+		}
+		e.Chunks = kept
+		if len(kept) == 0 {
+			dead[name] = true
+		}
+	}
+	if len(dead) == 0 {
+		return 0
+	}
+	for name := range dead {
+		delete(g.entities, name)
+		delete(g.descSeen, name)
+	}
+	for key := range g.relations {
+		if dead[key[0]] || dead[key[1]] {
+			delete(g.relations, key)
+		}
+	}
+	return len(dead)
+}

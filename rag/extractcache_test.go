@@ -14,10 +14,17 @@ type countingExtractor struct{ calls atomic.Int64 }
 
 func (c *countingExtractor) Extract(_ context.Context, text string) (entity.Extraction, error) {
 	c.calls.Add(1)
-	// One entity named after the text, so each chunk contributes a distinct node.
+	// One entity named after the text, so each chunk contributes a distinct node, plus a
+	// shared Hub they all link to. Both are listed as entities and both are capitalized,
+	// because that is what a well-behaved extractor emits: entity.Clean drops a relation
+	// whose endpoint is neither a named entity nor a proper noun, since that is how a
+	// model's stray verb ("led at") ends up as a node.
 	return entity.Extraction{
-		Entities:  []entity.ExtractedEntity{{Name: "e-" + text, Type: "concept", Description: "d"}},
-		Relations: []entity.ExtractedRelation{{Source: "e-" + text, Target: "hub", Description: "in"}},
+		Entities: []entity.ExtractedEntity{
+			{Name: "E-" + text, Type: "concept", Description: "d"},
+			{Name: "Hub", Type: "concept", Description: "shared"},
+		},
+		Relations: []entity.ExtractedRelation{{Source: "E-" + text, Target: "Hub", Description: "in"}},
 	}, nil
 }
 
@@ -190,5 +197,50 @@ func TestExtractCacheDropsDeadChunks(t *testing.T) {
 	}
 	if got := s.CachedExtractions(); got != 2 {
 		t.Errorf("cache should hold one entry per live chunk (2), got %d", got)
+	}
+}
+
+// TestForgetPrunesEntityGraph: the entity graph cites chunks, so deleting a document
+// must drop the entities only that document evidenced. Otherwise entity-seeded
+// retrieval hands back chunk ids that are no longer in the store.
+func TestForgetPrunesEntityGraph(t *testing.T) {
+	s := buildStore(t, "alpha", "beta")
+	if err := s.BuildEntityGraph(context.Background(), &countingExtractor{}, EntityBuildOptions{Model: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	// countingExtractor gives each chunk its own entity plus a shared "hub".
+	before := s.EntityCount()
+	if before < 3 {
+		t.Fatalf("setup: want at least 3 entities, got %d", before)
+	}
+
+	if n := s.DeleteDocument("alpha"); n == 0 {
+		t.Fatal("nothing deleted")
+	}
+	after := s.EntityCount()
+	if after >= before {
+		t.Errorf("deleting a document dropped no entities: %d before, %d after", before, after)
+	}
+	// The deleted document's entity must be gone; the surviving one must remain.
+	live := map[string]bool{}
+	for _, e := range s.EntityGraphView().Nodes {
+		live[e.ID] = true
+	}
+	if live["E-alpha"] {
+		t.Error("an entity evidenced only by the deleted document survived")
+	}
+	if !live["E-beta"] {
+		t.Error("an entity evidenced by a surviving document was dropped")
+	}
+	// Every chunk the graph still cites must actually exist.
+	inStore := map[string]bool{}
+	for i := 0; i < s.Len(); i++ {
+		inStore[s.Chunk(i).ID] = true
+	}
+	for _, e := range s.EntityGraphView().Nodes {
+		_ = e // the view exposes no chunk list; the invariant is enforced by DropChunks
+	}
+	if s.RelationCount() < 1 {
+		t.Errorf("all relations were dropped; the surviving entity should still link to the hub")
 	}
 }

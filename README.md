@@ -431,6 +431,55 @@ turbograph serve --gen-model qwen3.5:2b \
 
 ## Integrations
 
+### Agents: a knowledge base an agent builds over time
+
+Every agentic harness has a shell. So the whole engine is drivable from one, with no
+server, no MCP config, and no integration to write: an agent that can run a command
+can build, query, correct, and share a knowledge base.
+
+A knowledge base is a single `.tg` file.
+
+```bash
+export TURBOGRAPH_STORE=./kb.tg      # every command defaults to this
+export TURBOGRAPH_MODEL=qwen3.5:4b   # only `ask` and `entities` need a model
+
+turbograph add --id "auth/token-refresh" <<'EOF'
+Refresh tokens rotate on every use. The old token is revoked immediately, so a
+retry with a stale token fails with 401 rather than reissuing.
+EOF
+
+turbograph search --q "can the offline queue replay a refresh?"   # JSON passages
+turbograph ask    --q "why is the retry queue capped at 3?" --json # answer + sources
+turbograph docs                                                    # what is in there
+turbograph forget --id "auth/token-refresh"                        # remove what turned out wrong
+```
+
+`add` creates the store on first write, so there is no init step. The `--id` is the
+unit of update: adding the same id again **replaces** that document, which is how an
+agent corrects itself. `add` reports which of `added`, `updated`, `unchanged`, or
+`duplicate` actually happened, rather than leaving the caller to infer it.
+
+**Sharing is the point of the file format.** Two people (or two agents) index
+separately, exchange `.tg` files, and merge:
+
+```bash
+turbograph merge --into team.tg alice.tg bob.tg
+turbograph entities --store team.tg   # nearly free: the merge carries the extraction cache
+```
+
+Merging is idempotent and content-addressed: merging the same store twice adds
+nothing, and a document both stores hold is not duplicated. Stores built with
+different embedding models refuse to merge rather than producing a corrupt index.
+
+`turbograph skill` prints an agent skill that teaches all of this, including the part
+that actually matters, which is judgment about *what is worth remembering*. Install it
+where your harness looks for skills:
+
+```bash
+turbograph skill --install                    # ~/.claude/skills/turbograph/SKILL.md
+turbograph skill > AGENTS-turbograph.md       # or hand it to any harness as instructions
+```
+
 ### HTTP API and client libraries
 
 Everything the web UI does is a documented HTTP+JSON API: ingestion (text, files,

@@ -113,11 +113,26 @@ func (s *Store) removeDocLocked(id string) int {
 func (s *Store) DeleteDocument(id string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Note which chunks are about to disappear, so the entity graph can be kept honest.
+	gone := make(map[string]bool)
+	for _, c := range s.chunks {
+		if c.DocID == id {
+			gone[c.ID] = true
+		}
+	}
 	removed := s.removeDocLocked(id)
 	delete(s.docMeta, id)
 	delete(s.versions, id)
 	if removed > 0 {
 		s.commSummary = nil // graph changed; community summaries are now stale
+		// The entity graph cites chunks. Forgetting a document must forget the entities
+		// that only that document evidenced, or entity-seeded retrieval keeps handing back
+		// chunk ids that are no longer in the store. This needs no model: an entity whose
+		// every mention has been deleted is simply no longer supported by anything.
+		if s.eg != nil {
+			s.eg.DropChunks(gone)
+			s.rebuildEntityLocked()
+		}
 		s.reindexLocked()
 	}
 	return removed

@@ -118,6 +118,22 @@ func main() {
 	case "version", "--version", "-v":
 		fmt.Printf("turbograph %s (%s %s/%s)\n", resolvedVersion(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
 		return
+	case "add":
+		err = cmdAdd(os.Args[2:])
+	case "search":
+		err = cmdSearch(os.Args[2:])
+	case "ask":
+		err = cmdAsk(os.Args[2:])
+	case "docs":
+		err = cmdDocs(os.Args[2:])
+	case "forget":
+		err = cmdForget(os.Args[2:])
+	case "merge":
+		err = cmdMerge(os.Args[2:])
+	case "entities":
+		err = cmdEntities(os.Args[2:])
+	case "skill":
+		err = cmdSkill(os.Args[2:])
 	case "ingest":
 		err = cmdIngest(os.Args[2:])
 	case "query":
@@ -152,7 +168,21 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `turbograph - fast graph RAG over TurboQuant
 
-usage:
+a knowledge base is a single .tg file. build one up over time, then share it.
+
+knowledge base (these are what an agent drives from a shell):
+  turbograph add      --store kb.tg [--id ID] [--text T | --file F | < stdin]
+  turbograph search   --store kb.tg --q "<query>" [--topk N]        # JSON passages
+  turbograph ask      --store kb.tg --q "<question>" --gen-model M  # grounded answer + sources
+  turbograph docs     --store kb.tg                                 # what is in it
+  turbograph forget   --store kb.tg --id ID                         # remove a document
+  turbograph merge    --into combined.tg a.tg b.tg                  # combine shared stores
+  turbograph entities --store kb.tg --gen-model M                   # build the entity graph
+  turbograph skill                                                  # print the agent skill
+
+  $TURBOGRAPH_STORE and $TURBOGRAPH_MODEL supply the defaults for --store and --gen-model.
+
+bulk and serving:
   turbograph ingest --src <dir|file> --out <store> [flags]
   turbograph query  --store <store> --q "<question>" [flags]
   turbograph serve  --data <dir> --addr :8080 [flags]
@@ -619,13 +649,31 @@ func (d dirEntry) IsDir() bool                { return d.fi.IsDir() }
 func (d dirEntry) Type() os.FileMode          { return d.fi.Mode().Type() }
 func (d dirEntry) Info() (os.FileInfo, error) { return d.fi, nil }
 
+// saveStore writes the store through a temporary file and renames it into place.
+// os.Create truncates the target first, so a crash or a full disk part-way through a
+// write left a corrupt .tg where the corpus used to be, which is precisely the case
+// ingest checkpointing exists to survive. A rename is atomic, so the old store stands
+// until the new one is complete.
 func saveStore(store *rag.Store, path string, mode rag.VectorMode) error {
-	f, err := os.Create(path)
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".tg-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return store.SaveLean(f, mode)
+	defer os.Remove(tmp.Name()) // no-op once the rename succeeds
+	if err := store.SaveLean(tmp, mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // parseVectorMode maps the --lean flag to a VectorMode. "exact" (or "" / "full")
