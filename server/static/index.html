@@ -7,8 +7,20 @@
 <style>
   :root{
     --bg:#0a0b0d; --panel:#0f1116; --panel2:#15181e; --border:#23262d;
-    --text:#d7dae0; --muted:#6f747e; --faint:#41454d;
+    /* Text ramp, measured against the lightest surface (--panel2), which is the
+       worst case. --muted carries most secondary text (labels, scores, chips), so
+       it has to clear the 4.5:1 body bar, not merely look quiet. --faint is the
+       tertiary tier for genuinely de-emphasized hints; it clears 3:1. The previous
+       values (#6f747e / #41454d) measured 3.79:1 and 1.85:1 here, so half the
+       interface was below the readable floor and --faint was effectively invisible. */
+    --text:#d7dae0;    /* 12.69:1 on --panel2 */
+    --muted:#7f848d;   /*  4.73:1 on --panel2 */
+    --faint:#676a72;   /*  3.29:1 on --panel2 */
     --accent:#5ad1c8; --accent2:#7aa2f7; --danger:#e06c75; --warn:#e5c07b;
+    /* Tinted surfaces for status callouts: a full border plus a wash of the status
+       hue, never a coloured stripe down one side. */
+    --danger-wash:rgba(224,108,117,.08); --danger-edge:rgba(224,108,117,.32);
+    --warn-wash:rgba(229,192,123,.08);   --warn-edge:rgba(229,192,123,.30);
     /* A stronger ease-out than the CSS default: motion starts fast, so the UI
        answers the moment you touch it. */
     --ease-out:cubic-bezier(.23,1,.32,1);
@@ -32,6 +44,10 @@
   }
   /* Press feedback: the interface should visibly hear the click. */
   button:active:not(:disabled){transform:scale(.97)}
+  /* Keyboard focus. The product claims full keyboard control, so the focused element
+     has to be obvious; :focus-visible keeps the ring off mouse clicks. */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  button:focus-visible{outline-offset:1px}
   button:disabled{opacity:.4;cursor:default;border-color:var(--border);color:var(--muted);transform:none}
   @media (prefers-reduced-motion:reduce){
     *{animation-duration:.01ms !important;transition-duration:.01ms !important}
@@ -103,10 +119,15 @@
     display:flex;align-items:center;gap:8px}
   .msg .who .act{color:var(--faint);cursor:pointer;font-size:10px}
   .msg .who .act:hover{color:var(--accent)}
+  /* The question is a contained aside; the answer is the page. Hierarchy comes from
+     containment and the who-label, not from a coloured rule down one edge. */
   .msg.user .body{background:var(--panel2);border:1px solid var(--border);
-    border-left:2px solid var(--accent2);border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
-  .msg.bot .body{border-left:2px solid var(--accent);padding:1px 0 1px 11px}
-  .msg.bot.err .body{border-left-color:var(--danger);color:var(--danger);white-space:pre-wrap}
+    border-radius:8px;padding:8px 11px;white-space:pre-wrap;word-break:break-word}
+  .msg.bot .body{padding:1px 0}
+  /* Status is a state, so it reads as a full callout: a wash of the status hue and
+     a complete border, the same shape the low-similarity notice already uses. */
+  .msg.bot.err .body{background:var(--danger-wash);border:1px solid var(--danger-edge);
+    border-radius:8px;padding:8px 11px;color:var(--danger);white-space:pre-wrap}
   /* markdown */
   .md>*:first-child{margin-top:0}
   .md>*:last-child{margin-bottom:0}
@@ -129,6 +150,16 @@
   .typing::after{content:'';display:inline-block;width:7px;height:13px;background:var(--accent);
     vertical-align:-2px;margin-left:2px;animation:blink 1s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
+  /* Thinking: the model has the prompt and is working. Three dots that travel, so
+     the state reads as progress rather than a stalled cursor in an empty box. */
+  .think{display:inline-flex;gap:5px;align-items:center;padding:4px 0}
+  .think i{width:5px;height:5px;border-radius:50%;background:var(--muted);
+    animation:think 1.2s var(--ease-out) infinite}
+  .think i:nth-child(2){animation-delay:.16s}
+  .think i:nth-child(3){animation-delay:.32s}
+  @keyframes think{0%,65%,100%{opacity:.3;transform:translateY(0)}
+    30%{opacity:1;transform:translateY(-3px)}}
+  @media (prefers-reduced-motion:reduce){.think i{animation:none;opacity:.6}}
 
   .src-time{font-size:10px;color:var(--muted);margin-top:9px}
   .src-time b{color:var(--accent);font-weight:600}
@@ -136,15 +167,16 @@
   .chip{font-size:10px;color:var(--muted);background:var(--panel2);
     border:1px solid var(--border);border-radius:5px;padding:3px 7px;cursor:pointer;transition:.12s}
   .chip:hover{border-color:var(--accent);color:var(--accent)}
-  .chip b{color:var(--faint);font-weight:400;margin-left:5px}
+  .chip b{color:var(--muted);font-weight:400;margin-left:5px;font-variant-numeric:tabular-nums}
   .chip .cn{color:var(--bg);background:var(--accent);font-weight:600;margin:0 6px 0 0;
     border-radius:3px;padding:0 4px;display:inline-block;min-width:14px;text-align:center}
   .cite{color:var(--accent);background:var(--panel2);border:1px solid var(--border);
     border-radius:4px;font-size:.78em;font-weight:600;padding:0 4px;margin:0 1px;cursor:pointer;
     vertical-align:1px;line-height:1.5}
   .cite:hover{background:var(--accent);color:var(--bg);border-color:var(--accent)}
-  .msg.bot.abstain .body{border-left-color:var(--warn);color:var(--muted)}
-  #srcPreview{position:absolute;left:12px;right:12px;bottom:64px;z-index:16;display:none;
+  .msg.bot.abstain .body{background:var(--warn-wash);border:1px solid var(--warn-edge);
+    border-radius:8px;padding:8px 11px;color:var(--warn)}
+  #srcPreview{position:absolute;left:12px;right:12px;bottom:calc(var(--composer-h,96px) + 10px);z-index:16;display:none;
     background:var(--panel2);border:1px solid var(--accent);border-radius:9px;padding:13px 14px;
     box-shadow:0 10px 30px rgba(0,0,0,.45);max-height:46%;overflow-y:auto}
   #srcPreview.open{display:block;animation:pop .12s ease-out}
@@ -169,7 +201,7 @@
   .sp-score .sp-total{font-size:11px;color:var(--muted);margin-bottom:5px}
   .sp-score .sp-total b{color:var(--text);font-weight:600}
   .sbar{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--panel);width:100%}
-  .sbar i{height:100%;transition:width .2s ease}
+  .sbar i{height:100%}
   .sb-d{background:var(--accent)} .sb-l{background:var(--accent2)} .sb-g{background:var(--warn)} .sb-e{background:var(--danger)}
   .sb-leg{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:10px;color:var(--muted);margin-top:6px}
   .sb-leg span{display:inline-flex;align-items:center;gap:4px}
@@ -187,7 +219,7 @@
   #panel-chat{position:relative}
   .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
     gap:7px;text-align:center;color:var(--muted);padding:30px}
-  .chat-empty .sub{color:var(--faint);font-size:11px;max-width:34ch;line-height:1.55}
+  .chat-empty .sub{color:var(--muted);font-size:11px;max-width:34ch;line-height:1.55}
   .demo-row{flex-direction:column;align-items:center;gap:7px;margin:10px 0}
   #demoBtn{border-color:var(--accent);color:var(--accent);padding:7px 14px;font-weight:500}
   #demoBtn:hover{background:rgba(90,209,200,.08)}
@@ -206,7 +238,7 @@
   .po-row{margin-bottom:15px}
   .po-row .lab{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:7px}
   .po-row .lab b{color:var(--accent);font-weight:500}
-  .po-row small{display:block;color:var(--faint);font-size:10px;margin-top:6px;line-height:1.4}
+  .po-row small{display:block;color:var(--muted);font-size:10px;margin-top:6px;line-height:1.4}
   .po-row .tg-check{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);cursor:pointer}
   .po-row .tg-check input{width:auto;cursor:pointer}
   .popover>button{width:100%;margin-top:2px}
@@ -331,8 +363,11 @@
   .tg-file.ghost .tg-name{color:var(--faint)}
   .tg-layer{display:flex;gap:10px;align-items:baseline;padding:8px 11px;border-bottom:1px solid var(--border)}
   .tg-layer:last-child{border-bottom:0}
-  .tg-layer.s{border-left:3px solid var(--accent)}
-  .tg-layer.r{border-left:3px solid var(--faint)}
+  /* Stored-vs-rebuilt is already encoded by the swatches in the legend below, so the
+     rows carry the same swatch rather than inventing a second vocabulary for it. */
+  .tg-layer::before{content:"";width:9px;height:9px;border-radius:2px;flex:none;
+    align-self:center;background:var(--faint)}
+  .tg-layer.s::before{background:var(--accent)}
   .tg-l{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);flex:none;min-width:135px}
   .tg-d{font-size:11px;color:var(--muted);line-height:1.45}
   .tg-legend{display:flex;gap:14px;margin:6px 0 2px;font-size:10.5px}
@@ -448,7 +483,9 @@
   .cw textarea{display:block;width:100%;background:transparent;border:0;border-radius:0;padding:3px 2px;
     resize:none;min-height:22px;max-height:168px;line-height:1.55;font-size:12.5px;outline:none}
   .cw textarea:focus{border:0}
-  .cw textarea::placeholder{color:var(--faint)}
+  /* Placeholder is text a user has to read, so it sits on --muted (4.7:1), not the
+     tertiary tier. */
+  .cw textarea::placeholder{color:var(--muted)}
   .cw-bar{display:flex;align-items:center;gap:6px;margin-top:6px}
   .cw-modes{display:flex;gap:5px;flex:1;min-width:0;flex-wrap:wrap}
   #globalBtn,#hopBtn,#verifyBtn{padding:3px 9px;font-size:10.5px;line-height:1.6;color:var(--muted);
@@ -456,6 +493,10 @@
   #globalBtn.on,#hopBtn.on,#verifyBtn.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
   #send{flex:none;padding:5px 15px;font-weight:500;border-color:var(--accent);color:var(--accent)}
   #send:hover{background:rgba(90,209,200,.10)}
+  /* While generating, send becomes stop. Class-driven so it cannot be defeated by
+     the base `#stop{display:none}` rule, which is what used to hide both. */
+  .cw.gen #send{display:none}
+  .cw.gen #stop{display:inline-block}
   .verify-box{margin-top:9px;font-size:11px}
   .verify-head{color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px}
   .verify-head b{color:var(--text);font-weight:600}
@@ -487,7 +528,11 @@
   .tf-item code{color:var(--text);background:var(--panel2);border:1px solid var(--border);
     border-radius:5px;padding:1px 6px;font-size:10.5px}
   .bar{height:4px;background:var(--panel2);border-radius:3px;overflow:hidden;display:none}
-  .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  /* Progress is driven by transform, not width: scaleX composites on the GPU, so a
+     bar that updates through an ingest never thrashes layout. --p is 0..1. */
+  .bar i{display:block;height:100%;width:100%;background:var(--accent);
+    transform:scaleX(var(--p,0));transform-origin:left center;
+    transition:transform .2s var(--ease-out)}
   .doclist{display:flex;flex-direction:column;gap:6px}
   .doc{display:flex;justify-content:space-between;gap:8px;font-size:11px;
     background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:7px 9px}
@@ -1059,7 +1104,15 @@ function render(){
   ctx.globalAlpha=1;
   if(foc&&G.view.scale>0.4){
     ctx.fillStyle="#cfd3da";ctx.font="10px 'JetBrains Mono',monospace";
-    for(const i of G.highlight){const nd=G.nodes[i],p=G.pos[i];ctx.fillText(nd.doc_id,sx(p.x)+7,sy(p.y)+3)}
+    ctx.textBaseline="middle";
+    for(const i of G.highlight){
+      const nd=G.nodes[i],p=G.pos[i];
+      // Clear the node and its highlight ring (r+3+pulse*2) instead of a flat 7px,
+      // which let the label sit on top of larger nodes.
+      const r=Math.max(1.6,nodeR(nd)*Math.sqrt(G.view.scale));
+      ctx.fillText(nd.doc_id,sx(p.x)+r+8,sy(p.y));
+    }
+    ctx.textBaseline="alphabetic";
   }
 }
 function frame(){
@@ -1381,12 +1434,20 @@ function addUser(text){
 }
 function addBot(){
   const d=document.createElement("div");d.className="msg bot";
+  // The body starts with a thinking indicator rather than the streaming caret: an
+  // empty box with a blinking cursor reads as broken while the model is still
+  // working. The first token replaces it (flush rewrites innerHTML).
   d.innerHTML='<div class="who"><span class="lbl">'+esc(G.model||"assistant")+'</span>'+
-    '<span class="act copy" style="display:none">copy</span></div><div class="body md typing"></div>';
+    '<span class="act copy" style="display:none">copy</span></div>'+
+    '<div class="body md"><span class="think" role="status" aria-label="generating"><i></i><i></i><i></i></span></div>';
   messages.appendChild(d);messages.scrollTop=messages.scrollHeight;return d;
 }
+// Swap send for stop while a generation is in flight. This is driven by a class on
+// the composer, not inline display: #stop is display:none in CSS, so the old
+// `style.display=""` merely removed the override and left it hidden, which meant
+// neither button was visible mid-generation and a run could not be cancelled.
 function setGenerating(on){
-  $("#send").style.display=on?"none":"";$("#stop").style.display=on?"":"none";
+  document.querySelector(".cw").classList.toggle("gen",on);
 }
 // chatHistory snapshots the recent turns so the server can rewrite an elliptical
 // follow-up into a standalone query. Capture it before the new turn is appended.
@@ -1480,13 +1541,22 @@ function renderSources(msgEl,sources,retrieveMS){
 // (how many claims the evidence supports) that expands to the per-claim verdicts.
 function renderVerify(msgEl,claims){
   if(!claims||!claims.length||msgEl.querySelector(".verify-box"))return;
-  const n=claims.length,sup=claims.filter(c=>c.verdict==="supported").length,
-        weak=claims.filter(c=>c.verdict==="unsupported").length;
+  const n=claims.length,
+        sup=claims.filter(c=>c.verdict==="supported").length,
+        weak=claims.filter(c=>c.verdict==="unsupported").length,
+        unclear=n-sup-weak;
   const box=document.createElement("div");box.className="verify-box";
   const dot=weak>0?"vd-unsupported":(sup<n?"vd-partial":"vd-supported");
+  // "Unsupported" (the evidence contradicts the claim) and "unclear" (the judge
+  // returned nothing usable) are different facts, and collapsing both into
+  // "not supported" would overstate what we actually know.
+  let summary;
+  if(sup===n)      summary='all <b>'+n+'</b> claim'+(n===1?"":"s")+' supported by the evidence';
+  else if(weak>0)  summary='<b>'+sup+'/'+n+'</b> claims supported &middot; <b>'+weak+'</b> unsupported';
+  else             summary='<b>'+sup+'/'+n+'</b> claims supported &middot; <b>'+unclear+'</b> unclear';
   box.innerHTML='<div class="verify-head"><span class="verify-dot '+dot+'"></span>'+
-    '<span>faithfulness: <b>'+sup+'/'+n+'</b> claims supported by the evidence</span>'+
-    '<span style="color:var(--faint)">details</span></div>'+
+    '<span>faithfulness: '+summary+'</span>'+
+    '<span style="color:var(--muted)">details</span></div>'+
     '<div class="verify-list">'+claims.map(c=>{
       const v=(c.verdict||"partial");
       return '<div class="verify-claim"><span class="vd-tag vt-'+v+'">'+v+'</span><span>'+esc(c.claim)+'</span></div>';
@@ -1948,7 +2018,19 @@ document.addEventListener("keydown",e=>{
     else if(e.key==="?"){e.preventDefault();openCmdk()}
   }
 });
-function autoGrow(){const t=$("#input");t.style.height="auto";t.style.height=Math.min(168,Math.max(22,t.scrollHeight))+"px"}
+// The source-preview panel floats above the composer, so it has to know how tall the
+// composer currently is; the textarea grows as you type, and a fixed offset let the
+// panel sit on top of the input.
+function syncComposerHeight(){
+  const c=$("#composer");
+  if(c)document.documentElement.style.setProperty("--composer-h",c.offsetHeight+"px");
+}
+function autoGrow(){
+  const t=$("#input");t.style.height="auto";
+  t.style.height=Math.min(168,Math.max(22,t.scrollHeight))+"px";
+  syncComposerHeight();
+}
+window.addEventListener("resize",syncComposerHeight);
 $("#input").addEventListener("input",autoGrow);
 
 // ---------- node detail ----------
@@ -2026,7 +2108,7 @@ async function handleFiles(files){
   }
   if(!text.length&&!binary.length&&!images.length){note.className="note err";note.textContent="no supported files (.txt .md"+(G.pdfSupported?" .pdf":"")+" images)";return}
   renderDocList();
-  const bar=$("#progBar");bar.style.display="block";bar.querySelector("i").style.width="8%";
+  const bar=$("#progBar");bar.style.display="block";bar.querySelector("i").style.setProperty("--p",.08);
   note.textContent="indexing "+(text.length+binary.length)+" document(s)...";
   try{
     let total=0;
@@ -2036,7 +2118,7 @@ async function handleFiles(files){
       if(r.error)throw new Error(r.error);
       total=r.chunks;markFailures(r.failed);
     }
-    bar.querySelector("i").style.width="55%";
+    bar.querySelector("i").style.setProperty("--p",.55);
     if(text.length){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({documents:text,contextual:$("#ctxOpt").checked,transform:selectedTransforms()})});
@@ -2053,11 +2135,11 @@ async function handleFiles(files){
         else total++;
       }
     }
-    bar.querySelector("i").style.width="100%";
+    bar.querySelector("i").style.setProperty("--p",1);
     note.textContent="indexed. "+total+" chunks total.";
     await loadStats();await loadGraph();loadBuckets();
   }catch(e){note.className="note err";note.textContent=e.message;toast(e.message,true)}
-  finally{setTimeout(()=>{bar.style.display="none";bar.querySelector("i").style.width="0"},600)}
+  finally{setTimeout(()=>{bar.style.display="none";bar.querySelector("i").style.setProperty("--p",0)},600)}
 }
 // reportTransform surfaces what the transform scripts did: a script that drops a
 // document is a decision worth telling the user about, and one that fails on a
@@ -2702,7 +2784,7 @@ async function runBuildCommunities(){
   }catch(e){toast(e.message,true)}
 }
 
-resize();loadSettings();updateEmpty();loadModels();loadScripts();
+resize();syncComposerHeight();loadSettings();updateEmpty();loadModels();loadScripts();
 loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);
