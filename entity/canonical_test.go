@@ -90,3 +90,56 @@ func TestEditRatio(t *testing.T) {
 		t.Error("unrelated words should be dissimilar")
 	}
 }
+
+// TestPruneKeepsRelationEndpoints pins the bug that emptied the entity graph. An
+// extractor routinely names an entity inside a relationship without repeating it in
+// the entities list, so that endpoint arrives with no type, no description and no
+// mention count. Treating it as a ghost deleted the entity AND, with it, every
+// relationship touching it, so the graph rendered as disconnected dots. An entity
+// that anchors a fact is load-bearing and must survive.
+func TestPruneKeepsRelationEndpoints(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{
+		Entities: []ExtractedEntity{
+			{Name: "Project Helios", Type: "project", Description: "a fusion effort"},
+		},
+		Relations: []ExtractedRelation{
+			// "Caldera reactor" is never listed in Entities; only the relation names it.
+			{Source: "Project Helios", Target: "Caldera reactor", Description: "relies on the reactor"},
+		},
+	})
+	g.Canonicalize()
+	g.Prune()
+
+	if got := len(g.Relations()); got != 1 {
+		t.Fatalf("the relationship was destroyed by pruning: %d relations survive", got)
+	}
+	names := map[string]bool{}
+	for _, e := range g.Entities() {
+		names[e.Name] = true
+	}
+	for _, want := range []string{"project helios", "caldera reactor"} {
+		if !names[want] {
+			t.Errorf("endpoint %q was pruned away, which dangles its relationship (have %v)", want, names)
+		}
+	}
+}
+
+// TestPruneStillDropsIsolatedGhosts: the protection is for endpoints of real facts,
+// not a licence to keep every stray noun the extractor emitted.
+func TestPruneStillDropsIsolatedGhosts(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{
+		Entities: []ExtractedEntity{
+			{Name: "Verdant Labs", Type: "organization", Description: "a research institute"},
+			{Name: "stray"}, // no type, no description, no relationship: a genuine ghost
+		},
+	})
+	g.Canonicalize()
+	g.Prune()
+	for _, e := range g.Entities() {
+		if e.Name == "stray" {
+			t.Error("an isolated, typeless, undescribed entity should still be pruned")
+		}
+	}
+}

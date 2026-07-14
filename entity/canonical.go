@@ -77,7 +77,11 @@ func (g *Graph) Canonicalize() {
 			merged[c] = m
 			descSeen[c] = map[string]struct{}{}
 		}
-		if m != e { // fold a variant in
+		// Fold a variant into its head. The test is on the NAME, not the pointer: m
+		// points at a copy of the head, so m != e is true even when n is the head
+		// itself, which made every entity add its own mention count to itself and
+		// silently doubled it.
+		if n != c {
 			m.Mentions += e.Mentions
 			if m.Type == "" {
 				m.Type = e.Type
@@ -140,14 +144,39 @@ func (g *Graph) Canonicalize() {
 // and so are usually malformed model output. Their relations are dropped with
 // them. It runs after Canonicalize.
 func (g *Graph) Prune() {
+	// Two passes, because what counts as a ghost depends on what survives.
+	//
+	// An entity that anchors a relationship is load-bearing: the extractor asserted a
+	// fact about it. Extractors routinely name an endpoint inside a relationship
+	// without repeating it in the entities list, so such an endpoint arrives with no
+	// type and no description. Treating that as a ghost deleted the entity and, with
+	// it, every relationship touching it, which is what emptied the entity graph of
+	// edges. But an entity anchored only to a GENERIC name ("it", "the system") is not
+	// load-bearing either, because that fact is itself noise and goes first. So the
+	// noise is removed before asking what still anchors something real.
 	drop := make(map[string]bool)
-	for name, e := range g.entities {
+	for name := range g.entities {
 		if name == "" || genericNames[name] {
 			drop[name] = true
+		}
+	}
+	for key := range g.relations {
+		if drop[key[0]] || drop[key[1]] {
+			delete(g.relations, key)
+		}
+	}
+
+	// With the noise gone, only an ISOLATED typeless, undescribed, barely-mentioned
+	// node is a ghost.
+	linked := make(map[string]bool, 2*len(g.relations))
+	for key := range g.relations {
+		linked[key[0]], linked[key[1]] = true, true
+	}
+	for name, e := range g.entities {
+		if drop[name] || linked[name] {
 			continue
 		}
-		ghost := e.Type == "" && e.Description == "" && e.Mentions <= 1
-		if ghost {
+		if e.Type == "" && e.Description == "" && e.Mentions <= 1 {
 			drop[name] = true
 		}
 	}

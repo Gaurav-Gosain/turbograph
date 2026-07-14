@@ -129,10 +129,14 @@ func (g *Graph) Add(chunkID string, ex Extraction) {
 		if s == nil || t == nil || s.Name == t.Name {
 			continue
 		}
-		// Relationship endpoints are entities too; record the mention chunk.
+		// Relationship endpoints are entities too: record the mention chunk, and count
+		// the mention. Naming an entity inside a fact is a mention of it; leaving the
+		// count at zero misreported how often an entity actually appeared and skewed
+		// which surface form Canonicalize picked as the canonical one.
 		for _, e := range []*Entity{s, t} {
 			if _, seen := mentioned[e.Name]; !seen {
 				mentioned[e.Name] = struct{}{}
+				e.Mentions++
 				if chunkID != "" {
 					e.Chunks = append(e.Chunks, chunkID)
 				}
