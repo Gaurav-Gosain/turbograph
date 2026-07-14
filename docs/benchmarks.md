@@ -125,11 +125,16 @@ Opening a store (which every CLI command does before anything else):
 | 20,000  | 22 MB      | 0.18 s |
 | 100,000 | 300 MB     | 1.2 s  |
 
-**Memory is the weak number.** A 100,000-chunk store at 768 dimensions is about 1 GB of
-heap once it is searchable, and the largest single reason is that the vectors are
-resident twice: once in the store, which is the source of truth for rebuilds, MMR and
-saving, and again inside the HNSW index, which keeps its own normalized flat copy. That
-is 300 MB of pure duplication at this size and it is the obvious next thing to fix.
+**Memory.** A 100,000-chunk store at 768 dimensions is about 750 MB of heap once it is
+searchable, of which 307 MB is the vectors themselves.
+
+It used to be 1055 MB, because the vectors were resident twice: once in the store, and
+again inside the HNSW index, which keeps its own flat contiguous copy. That copy earns
+its place, since contiguity is what makes the distance kernel fast; the store's second
+copy did not. The store's embeddings are now views into the index's buffer, so the
+vectors are resident once. `TestVectorsAreNotHeldTwice` pins it, because the failure mode
+is silent: any path that appends to the index without re-pointing the views leaves the
+old buffer alive and memory quietly doubles again.
 
 ## What the benchmarks forced
 
@@ -303,6 +308,33 @@ is consistent with the situational picture above. Reproduce with
 `TG_RERANK=1 TG_RERANK_CHAT=qwen3.5:0.8b go test ./rag/ -run TestRerankBlendBenchmark -v`.
 With a larger reranker (`qwen3.5:4b`) both policies scored 1.000: the protection is
 latent until the model errs.
+
+### 7. Keeping the contextual prefix OUT of BM25 makes retrieval worse
+
+The July 2026 research sweep proposed splitting `Chunk.IndexText()` into an embed text
+(context + body) and a lexical text (body only), on the argument that a contextual prefix
+is prose a language model wrote, and putting it into the lexical postings dilutes the
+corpus IDF and lets a query match the model's paraphrase instead of the words the passage
+actually uses. It called this "probably the cheapest real win" in the set. It is not a win.
+It is a loss, and the harness says so immediately:
+
+| BM25 indexes                | chunkRecall@1 | @3    | MRR   |
+| --------------------------- | ------------- | ----- | ----- |
+| body + contextual prefix    | **0.700**     | 1.000 | 0.850 |
+| body only (the proposal)    | 0.500         | 0.900 | 0.694 |
+
+(`TG_AB=1 go test ./server/ -run TestABContextualHardMode`: 8 fragmented documents whose
+later chunks lose their subject to a pronoun, plus 16 distractors.)
+
+The reasoning was plausible and the conclusion was backwards. The prefix does not merely
+paraphrase the body, it supplies the terms the body is MISSING: a chunk that says "the
+cells offer high cycle life" and never says "Borealis" cannot be found by a lexical
+search for Borealis unless the prefix puts the word there. That is the whole point of
+contextual retrieval, and it is why Anthropic's original work pairs contextual embeddings
+with contextual BM25 and reports the pair as the larger win. Removing the prefix from the
+lexical channel removes exactly the recall the feature exists to add.
+
+Recorded because the argument is a good one and will be made again.
 
 ## Low-storage snapshot modes
 

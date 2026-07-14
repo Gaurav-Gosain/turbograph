@@ -176,9 +176,54 @@ func TestSpeedFootprint(t *testing.T) {
 	runtime.GC()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
+	// Without this the store is unreachable after its last use, the GC collects it before
+	// the measurement, and the test cheerfully reports 90 MB for a gigabyte of vectors.
+	runtime.KeepAlive(s)
+
 	vecMB := n * 768 * 4 / 1_000_000
-	t.Logf("%d chunks, 768-d: heap %d MB, sys %d MB", n, m.HeapAlloc/1_000_000, m.Sys/1_000_000)
-	t.Logf("  the vectors are %d MB, and they are resident TWICE:", vecMB)
-	t.Logf("    Store.embeds  %d MB  (source of truth: rebuilds, MMR, save)", vecMB)
-	t.Logf("    HNSW.data     %d MB  (its own normalized flat copy)", vecMB)
+	t.Logf("%d chunks at 768-d: heap %d MB (the vectors alone are %d MB)",
+		n, m.HeapAlloc/1_000_000, vecMB)
+	t.Logf("  the store's embeddings are views into the index's buffer, so the vectors")
+	t.Logf("  are resident once rather than twice; see TestVectorsAreNotHeldTwice")
+}
+
+// TestVectorsAreNotHeldTwice pins the sharing. It is easy for this to regress silently:
+// any path that appends to the index without re-pointing the store's views leaves the
+// old buffer alive, and the only symptom is that memory quietly doubles.
+func TestVectorsAreNotHeldTwice(t *testing.T) {
+	s := New(newKeywordEmbedder(64), Config{Seed: 1})
+	if err := s.Build(context.Background(), speedCorpus(200)); err != nil {
+		t.Fatal(err)
+	}
+	// Force the index up, then assert the store's vectors ARE the index's vectors.
+	if _, err := s.Retrieve(context.Background(), speedQuery, RetrieveParams{TopK: 5}); err != nil {
+		t.Fatal(err)
+	}
+	shared := func(when string) {
+		t.Helper()
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if s.hnsw == nil || s.hnsw.Len() != len(s.embeds) {
+			t.Fatalf("%s: index and store disagree on size", when)
+		}
+		for i := range s.embeds {
+			v := s.hnsw.Vector(i)
+			if len(v) != len(s.embeds[i]) {
+				t.Fatalf("%s: chunk %d length mismatch", when, i)
+			}
+			if len(v) > 0 && &v[0] != &s.embeds[i][0] {
+				t.Errorf("%s: chunk %d is a copy, not a view: the vectors are resident twice", when, i)
+				return
+			}
+		}
+	}
+	shared("after build")
+
+	// An append reallocates the index's buffer. If the views are not re-pointed, they
+	// keep the old array alive and the duplication is back.
+	if err := s.AddDocuments(context.Background(),
+		[]Document{{ID: "extra", Text: "term00042 term01337 an additional document"}}); err != nil {
+		t.Fatal(err)
+	}
+	shared("after an append")
 }

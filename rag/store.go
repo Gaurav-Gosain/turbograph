@@ -304,6 +304,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 		s.recordVersionLocked(d.ID, h, d.Text, perDoc[d.ID])
 		s.recordMetaLocked(d.ID, d.Meta)
 	}
+	s.shareVectorsLocked()
 	s.reindexLocked()
 	return nil
 }
@@ -350,6 +351,9 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 		}
 	}
 	if changed {
+		// The index may have reallocated its vector buffer while appending, which leaves the
+		// store's views pointing at the old array and keeping it alive. Re-point them.
+		s.shareVectorsLocked()
 		s.commSummary = nil // graph changed; community summaries are now stale
 		// An update replaced a document's text. Its old chunks are gone, so the model's
 		// answers about them are answers about text that is no longer in the corpus: drop
@@ -495,7 +499,11 @@ func (s *Store) AddEmbedded(chunks []Chunk, vecs [][]float32) error {
 	if len(vecs[0]) != s.dim {
 		return fmt.Errorf("rag: embedding dim %d does not match store dim %d", len(vecs[0]), s.dim)
 	}
-	return s.appendChunksLocked(chunks, vecs)
+	if err := s.appendChunksLocked(chunks, vecs); err != nil {
+		return err
+	}
+	s.shareVectorsLocked()
+	return nil
 }
 
 // Reindex discovers similarity edges for any chunks added since the last reindex
@@ -558,10 +566,36 @@ func (s *Store) ensureSearchLocked() {
 		// (tokenization, no distance computations), so it is not persisted.
 		s.rebuildLexicalLocked()
 		s.needsRebuild = false
+		s.shareVectorsLocked()
 		return
 	}
 	s.rebuildIndexesLocked()
 	s.needsRebuild = false
+	s.shareVectorsLocked()
+}
+
+// shareVectorsLocked points the store's embeddings at the index's vectors instead of
+// keeping a second copy of them.
+//
+// The index holds its vectors in one flat, contiguous, normalized buffer, which is what
+// makes the distance kernel fast, so that copy earns its place. The store's own
+// [][]float32 does not: it is the same numbers again, one allocation per chunk, and at
+// 100,000 chunks of 768 dimensions it was 300 MB of pure duplication, about a third of
+// the resident heap.
+//
+// The store's copies become views into the index's buffer. Nothing writes through them
+// (only whole slice headers are ever reassigned, never elements), and cosine is
+// invariant to the normalization, so the values are the same values. The one thing to
+// respect is that appending to the index may reallocate its buffer, which leaves the
+// views pointing at the old array: correct, but keeping it alive. So this is called
+// again after any append, which is a reslice per chunk and copies nothing.
+func (s *Store) shareVectorsLocked() {
+	if s.hnsw == nil || s.hnsw.Len() != len(s.embeds) {
+		return
+	}
+	for i := range s.embeds {
+		s.embeds[i] = s.hnsw.Vector(i)
+	}
 }
 
 // restoreHNSWLocked rebuilds the vector index from the persisted link structure.
@@ -632,6 +666,9 @@ func (s *Store) reindexLocked() {
 	}
 	if s.needsRebuild {
 		s.rebuildIndexesLocked()
+		// A rebuild creates a new index with a new buffer; the store's views point into the
+		// old one, which would then stay alive.
+		s.shareVectorsLocked()
 		s.needsRebuild = false
 		s.edges = s.edges[:0]
 		s.indexedUpTo = 0
