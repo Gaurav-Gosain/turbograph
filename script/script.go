@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -98,9 +99,23 @@ func Load(dir string, timeout time.Duration) (*Registry, error) {
 	return r, nil
 }
 
-// isExecutable reports whether a regular file carries an executable bit.
+// isExecutable reports whether a regular file can be run as a program.
+//
+// Unix marks this with a permission bit. Windows has no such bit (Go reports none
+// on any file), so testing for one there would silently register nothing and the
+// feature would look broken; Windows decides by extension instead.
 func isExecutable(fi fs.FileInfo) bool {
-	return fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
+	if !fi.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		switch strings.ToLower(filepath.Ext(fi.Name())) {
+		case ".exe", ".bat", ".cmd", ".com", ".ps1":
+			return true
+		}
+		return false
+	}
+	return fi.Mode().Perm()&0o111 != 0
 }
 
 // Names returns the registered script names, sorted, for listing in a UI.

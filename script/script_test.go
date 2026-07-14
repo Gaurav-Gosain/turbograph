@@ -188,3 +188,25 @@ func TestLoadOffByDefault(t *testing.T) {
 		t.Error("a registry with no scripts must not execute anything")
 	}
 }
+
+// TestIsExecutableIsPlatformCorrect: Unix decides by permission bit, Windows by
+// extension. Testing for a permission bit on Windows would register nothing and
+// the feature would look silently broken.
+func TestIsExecutableIsPlatformCorrect(t *testing.T) {
+	dir := t.TempDir()
+	name := "prog.bat"
+	if runtime.GOOS != "windows" {
+		name = "prog.sh"
+	}
+	body := "#!/bin/sh\ncat >/dev/null\nprintf '{\"text\":\"ok\"}'\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := Load(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.Has(name) {
+		t.Fatalf("an executable program must register on %s, got %v", runtime.GOOS, reg.Names())
+	}
+}
