@@ -34,9 +34,6 @@ type HNSW struct {
 	idOrd map[string]int32
 	nodes []hnswNode
 
-	q     *quant.Quantizer
-	codes []quant.Code
-
 	entry int32 // entry point node, -1 if empty
 	top   int   // current top level
 }
@@ -54,9 +51,15 @@ type HNSWConfig struct {
 	Seed           uint64 // determinism
 }
 
-// NewHNSW creates an empty graph. q is used only to quantize inserted vectors
-// into retained codes; distances always use the exact normalized vectors.
-func NewHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig) *HNSW {
+// NewHNSW creates an empty graph. Distances use the exact normalized vectors.
+//
+// It used to also TurboQuant-encode every inserted vector and retain the codes. The
+// codes were never read by anything: they are the residue of a quantized-traversal
+// experiment that was measured at a 13x slowdown and abandoned. Producing them cost
+// most of the time spent opening a store and most of the memory spent building one, so
+// they are gone. Quantization is still what the flat index and the lean storage modes
+// are built on; it just has no business here.
+func NewHNSW(dim int, cfg HNSWConfig) *HNSW {
 	if cfg.M <= 0 {
 		cfg.M = 16
 	}
@@ -70,7 +73,6 @@ func NewHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig) *HNSW {
 		efCons: cfg.EfConstruction,
 		mL:     1.0 / math.Log(float64(cfg.M)),
 		rng:    quant.NewPCG(cfg.Seed),
-		q:      q,
 		idOrd:  make(map[string]int32),
 		entry:  -1,
 	}
@@ -91,7 +93,6 @@ func (h *HNSW) Vector(ord int) []float32 {
 }
 
 // Code returns the TurboQuant code for an ordinal.
-func (h *HNSW) Code(ord int) quant.Code { return h.codes[ord] }
 
 func normalize(dst, src []float32) {
 	var n float64
@@ -141,7 +142,6 @@ func (h *HNSW) Add(id string, vec []float32) int {
 	h.data = append(h.data, norm...)
 	h.ids = append(h.ids, id)
 	h.idOrd[id] = cur
-	h.codes = append(h.codes, h.q.Encode(vec))
 
 	level := h.randomLevel()
 	node := hnswNode{level: level, friends: make([][]int32, level+1)}
@@ -397,11 +397,11 @@ func (h *HNSW) Snapshot() Graph {
 //
 // It reports false if the graph does not describe these vectors, in which case the
 // caller must rebuild. A stale graph is not an error, it is a cache miss.
-func RestoreHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig, ids []string, vecs [][]float32, g Graph) (*HNSW, bool) {
+func RestoreHNSW(dim int, cfg HNSWConfig, ids []string, vecs [][]float32, g Graph) (*HNSW, bool) {
 	if len(ids) != len(vecs) || len(g.Levels) != len(ids) || len(g.Friends) != len(ids) {
 		return nil, false
 	}
-	h := NewHNSW(dim, q, cfg)
+	h := NewHNSW(dim, cfg)
 	norm := make([]float32, dim)
 	for i, v := range vecs {
 		if len(v) != dim {
@@ -412,7 +412,6 @@ func RestoreHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig, ids []string, vecs
 		h.data = append(h.data, norm...)
 		h.ids = append(h.ids, ids[i])
 		h.idOrd[ids[i]] = cur
-		h.codes = append(h.codes, h.q.Encode(v))
 	}
 	h.nodes = make([]hnswNode, len(ids))
 	for i := range ids {

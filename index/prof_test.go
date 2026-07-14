@@ -14,8 +14,7 @@ func BenchmarkHNSWSearchProf(b *testing.B) {
 	for i := range rows {
 		rows[i] = randVec(rng, d)
 	}
-	q := quant.New(quant.Config{Dim: d, Bits: 4, Rounds: 3, ResidualDims: 32, Seed: 1})
-	h := NewHNSW(d, q, HNSWConfig{M: 16, EfConstruction: 200, Seed: 1})
+	h := NewHNSW(d, HNSWConfig{M: 16, EfConstruction: 200, Seed: 1})
 	for i, r := range rows {
 		h.Add(fmt.Sprintf("%d", i), r)
 	}

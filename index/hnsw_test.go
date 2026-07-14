@@ -8,8 +8,7 @@ import (
 )
 
 func buildHNSW(t testing.TB, rows [][]float32, d int, cfg HNSWConfig) *HNSW {
-	q := quant.New(quant.Config{Dim: d, Bits: 4, Rounds: 3, ResidualDims: 32, Seed: 1})
-	h := NewHNSW(d, q, cfg)
+	h := NewHNSW(d, cfg)
 	for i, r := range rows {
 		h.Add(fmt.Sprintf("%d", i), r)
 	}
@@ -63,8 +62,7 @@ func TestHNSWEfImprovesRecall(t *testing.T) {
 }
 
 func TestHNSWEmptyAndSingle(t *testing.T) {
-	q := quant.New(quant.Config{Dim: 16, Bits: 4, Seed: 1})
-	h := NewHNSW(16, q, HNSWConfig{})
+	h := NewHNSW(16, HNSWConfig{})
 	if got := h.Search(make([]float32, 16), 5, 32); got != nil {
 		t.Errorf("empty search should be nil, got %v", got)
 	}

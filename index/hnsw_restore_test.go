@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-
-	"github.com/Gaurav-Gosain/turbograph/quant"
 )
 
 // TestRestoreIsIdenticalToRebuild is the property that makes persisting the graph
@@ -26,10 +24,9 @@ func TestRestoreIsIdenticalToRebuild(t *testing.T) {
 		}
 		vecs[i], ids[i] = v, fmt.Sprintf("c%04d", i)
 	}
-	q := quant.New(quant.Config{Dim: dim, Bits: 4, ResidualDims: 32, Seed: 1})
 	cfg := HNSWConfig{M: 16, EfConstruction: 200, Seed: 1}
 
-	built := NewHNSW(dim, q, cfg)
+	built := NewHNSW(dim, cfg)
 	for i := range vecs {
 		built.Add(ids[i], vecs[i])
 	}
@@ -47,8 +44,7 @@ func TestRestoreIsIdenticalToRebuild(t *testing.T) {
 	t.Logf("graph on disk: %d KB for %d vectors (%d KB of raw float32)",
 		onDisk/1024, n, n*dim*4/1024)
 
-	q2 := quant.New(quant.Config{Dim: dim, Bits: 4, ResidualDims: 32, Seed: 1})
-	restored, ok := RestoreHNSW(dim, q2, cfg, ids, vecs, g)
+	restored, ok := RestoreHNSW(dim, cfg, ids, vecs, g)
 	if !ok {
 		t.Fatal("restore rejected a graph it produced itself")
 	}
@@ -78,9 +74,8 @@ func TestRestoreIsIdenticalToRebuild(t *testing.T) {
 // graph missing its newest chunks.
 func TestRestoreRejectsAStaleGraph(t *testing.T) {
 	const dim = 8
-	q := quant.New(quant.Config{Dim: dim, Bits: 4, Seed: 1})
 	cfg := HNSWConfig{M: 8, EfConstruction: 32, Seed: 1}
-	h := NewHNSW(dim, q, cfg)
+	h := NewHNSW(dim, cfg)
 	for i := 0; i < 5; i++ {
 		h.Add(fmt.Sprintf("c%d", i), make([]float32, dim))
 	}
@@ -92,7 +87,7 @@ func TestRestoreRejectsAStaleGraph(t *testing.T) {
 	for i := range vecs {
 		vecs[i] = make([]float32, dim)
 	}
-	if _, ok := RestoreHNSW(dim, q, cfg, ids, vecs, g); ok {
+	if _, ok := RestoreHNSW(dim, cfg, ids, vecs, g); ok {
 		t.Error("a graph describing 5 nodes was accepted for 6 vectors")
 	}
 }

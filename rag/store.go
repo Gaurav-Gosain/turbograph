@@ -515,7 +515,7 @@ func (s *Store) initIndexes() {
 		ResidualDims: s.cfg.ResidualDims,
 		Seed:         s.cfg.Seed,
 	})
-	s.hnsw = index.NewHNSW(s.dim, s.q, s.cfg.HNSW)
+	s.hnsw = index.NewHNSW(s.dim, s.cfg.HNSW)
 	s.bm25 = lexical.New(lexical.DefaultConfig())
 }
 
@@ -576,7 +576,7 @@ func (s *Store) restoreHNSWLocked() bool {
 	for i := range s.chunks {
 		ids[i] = s.chunks[i].ID
 	}
-	h, ok := index.RestoreHNSW(s.dim, s.q, s.cfg.HNSW, ids, s.embeds, *g)
+	h, ok := index.RestoreHNSW(s.dim, s.cfg.HNSW, ids, s.embeds, *g)
 	if !ok {
 		return false
 	}
