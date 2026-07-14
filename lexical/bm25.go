@@ -2,6 +2,7 @@ package lexical
 
 import (
 	"math"
+	"runtime"
 	"sort"
 	"sync"
 )
@@ -215,7 +216,7 @@ func (ix *Index) topK(scores map[uint32]float64, k int) []Result {
 		sc := float32(s)
 		if len(h) < k {
 			h.push(scored{ord, sc})
-		} else if sc > h[0].score {
+		} else if worse(h[0], scored{ord, sc}) {
 			h.replaceMin(scored{ord, sc})
 		}
 	}
@@ -232,9 +233,25 @@ type scored struct {
 	score float32
 }
 
-// minHeap is a binary min-heap of scored docs keyed on score: the smallest of the
-// current best-k sits at the root, so a better candidate can displace it in O(log
-// k). It is a tiny, allocation-free alternative to sorting the whole match set.
+// worse reports whether a ranks below b under the TOTAL order the index ranks by:
+// higher score first, and among equal scores, lower ordinal first.
+//
+// The tie-break is not cosmetic. topK scans a Go map, whose iteration order is
+// randomized on every run, so with only a score comparison the document that survived a
+// tie at the k-th place was chosen by the map. The same index, given the same query,
+// returned different results from one call to the next. A total order makes the top-k
+// set and its order a function of the data alone, which is what "the same query gives
+// the same answer" requires, and what a reproducible benchmark requires.
+func worse(a, b scored) bool {
+	if a.score != b.score {
+		return a.score < b.score
+	}
+	return a.ord > b.ord
+}
+
+// minHeap is a binary min-heap of scored docs under `worse`: the weakest of the current
+// best-k sits at the root, so a better candidate can displace it in O(log k). It is a
+// tiny, allocation-free alternative to sorting the whole match set.
 type minHeap []scored
 
 func (h *minHeap) push(s scored) {
@@ -242,7 +259,7 @@ func (h *minHeap) push(s scored) {
 	hp := *h
 	for i := len(hp) - 1; i > 0; {
 		parent := (i - 1) / 2
-		if hp[parent].score <= hp[i].score {
+		if !worse(hp[i], hp[parent]) {
 			break
 		}
 		hp[parent], hp[i] = hp[i], hp[parent]
@@ -256,10 +273,10 @@ func (h minHeap) replaceMin(s scored) {
 	n, i := len(h), 0
 	for {
 		l, r, small := 2*i+1, 2*i+2, i
-		if l < n && h[l].score < h[small].score {
+		if l < n && worse(h[l], h[small]) {
 			small = l
 		}
-		if r < n && h[r].score < h[small].score {
+		if r < n && worse(h[r], h[small]) {
 			small = r
 		}
 		if small == i {
@@ -293,4 +310,56 @@ func sortResults(rs []Result) {
 		}
 		return rs[i].ID < rs[j].ID
 	})
+}
+
+// AddBatch inserts many documents at once, tokenizing them in parallel.
+//
+// Rebuilding the lexical index is the largest remaining cost of opening a store, and
+// most of it is tokenizing every document and counting its terms. Both are per-document
+// and independent, so they run across all cores; only the merge into the shared postings
+// map has to be sequential, and that is appends.
+//
+// The result is identical to calling Add in order: ordinals are assigned by position,
+// and each term's posting list is built in ordinal order, which Search relies on.
+func (ix *Index) AddBatch(ids, texts []string) {
+	n := min(len(ids), len(texts))
+	if n == 0 {
+		return
+	}
+	ix.finalized = false
+
+	type prepped struct {
+		toks int
+		tf   map[string]uint32
+	}
+	docs := make([]prepped, n)
+
+	workers := min(runtime.GOMAXPROCS(0), n)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(w int) {
+			defer wg.Done()
+			for i := w; i < n; i += workers {
+				toks := tokenize(texts[i])
+				tf := make(map[string]uint32, len(toks))
+				for _, t := range toks {
+					tf[t]++
+				}
+				docs[i] = prepped{toks: len(toks), tf: tf}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	base := uint32(len(ix.ids))
+	for i := 0; i < n; i++ {
+		ord := base + uint32(i)
+		ix.ids = append(ix.ids, ids[i])
+		ix.docLen = append(ix.docLen, uint32(docs[i].toks))
+		ix.totalLen += uint64(docs[i].toks)
+		for term, c := range docs[i].tf {
+			ix.postings[term] = append(ix.postings[term], posting{ord: ord, tf: c})
+		}
+	}
 }

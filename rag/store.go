@@ -142,7 +142,6 @@ type Store struct {
 	// WHICH 768 dimensions, so a dimension check alone lets two stores built with
 	// different models merge into one incoherent space, silently and permanently.
 	encoder string
-	q       *quant.Quantizer
 	hnsw    *index.HNSW
 	bm25    *lexical.Index
 	chunks  []Chunk
@@ -518,13 +517,21 @@ func (s *Store) Reindex() {
 	s.reindexLocked()
 }
 
-func (s *Store) initIndexes() {
-	s.q = quant.New(quant.Config{
+// quantizer builds the TurboQuant codec on demand. It is fully determined by the config,
+// so it is derived rather than held: it used to be constructed eagerly in initIndexes,
+// which meant every store paid for a codebook on every open, and the only thing that
+// ever uses it is the optional VectorsCodes storage mode. The vector index used to
+// consume it too, until it turned out nothing read the codes.
+func (s *Store) quantizer() *quant.Quantizer {
+	return quant.New(quant.Config{
 		Dim:          s.dim,
 		Bits:         s.cfg.Bits,
 		ResidualDims: s.cfg.ResidualDims,
 		Seed:         s.cfg.Seed,
 	})
+}
+
+func (s *Store) initIndexes() {
 	s.hnsw = index.NewHNSW(s.dim, s.cfg.HNSW)
 	s.bm25 = lexical.New(lexical.DefaultConfig())
 }

@@ -134,11 +134,22 @@ scheme that INFLATES 307 MB of vectors to 450 MB on disk and takes 993 ms to dec
 against 307 MB and 431 ms for the same numbers written as raw bytes. The block is also
 exactly the layout the index wants, so it is adopted rather than copied.
 
-| 100k chunks, 768-d      | open   | open + query | store  |
-| ----------------------- | ------ | ------------ | ------ |
-| rebuild everything      | 4.65 s | 7.70 s       | 629 MB |
-| persist links, defer graph | 1.93 s | 3.97 s    | 629 MB |
-| raw contiguous vectors  | 1.16 s | 2.45 s       | 492 MB |
+| 100k chunks, 768-d               | open   | open + query | store  |
+| -------------------------------- | ------ | ------------ | ------ |
+| rebuild everything               | 4.65 s | 7.70 s       | 629 MB |
+| persist links, defer graph       | 1.93 s | 3.97 s       | 629 MB |
+| raw contiguous vectors           | 1.16 s | 2.45 s       | 492 MB |
+| vector block outside the gob     | 0.64 s | 2.20 s       | 492 MB |
+| parallel BM25, no eager codebook | 0.55 s | 1.34 s       | 492 MB |
+
+The last two are worth naming. Gob reads a large slice through `saferio`, which grows it
+incrementally rather than allocating it once; for a block whose size is known exactly
+that was 70% of all the allocation in opening a store, so the block is written outside
+the gob stream with a length prefix and read with one `io.ReadFull`. And rebuilding the
+lexical index -- tokenizing every document and counting its terms -- was then the largest
+thing left, so it runs across all cores; `TestAddBatchIsIdenticalToAdd` pins that the
+parallel build produces the identical index, because one that is subtly different does
+not fail, it just ranks everything slightly differently, forever.
 
 **Memory.** A 100,000-chunk store at 768 dimensions is about 750 MB of heap once it is
 searchable, of which 307 MB is the vectors themselves.

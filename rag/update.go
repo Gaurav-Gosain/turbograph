@@ -165,9 +165,8 @@ func (s *Store) rebuildIndexesLocked() {
 	s.initIndexes()
 	for i := range s.chunks {
 		s.hnsw.Add(s.chunks[i].ID, s.embeds[i])
-		s.bm25.Add(s.chunks[i].ID, s.chunks[i].IndexText())
 	}
-	s.bm25.Finalize()
+	s.rebuildLexicalLocked()
 }
 
 // rebuildLexicalLocked rebuilds only the BM25 index. It is separate because the vector
@@ -176,9 +175,15 @@ func (s *Store) rebuildIndexesLocked() {
 // it would bloat every .tg for no gain.
 func (s *Store) rebuildLexicalLocked() {
 	s.bm25 = lexical.New(lexical.DefaultConfig())
+	ids := make([]string, len(s.chunks))
+	texts := make([]string, len(s.chunks))
 	for i := range s.chunks {
-		s.bm25.Add(s.chunks[i].ID, s.chunks[i].IndexText())
+		ids[i] = s.chunks[i].ID
+		texts[i] = s.chunks[i].IndexText()
 	}
+	// Tokenizing the corpus is the largest remaining cost of opening a store, and it is
+	// per-document and independent, so it runs across all cores.
+	s.bm25.AddBatch(ids, texts)
 	s.bm25.Finalize()
 }
 

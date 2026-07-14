@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -131,9 +132,10 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	switch mode {
 	case VectorsCodes:
 		// Compact codes in place of the float32 vectors; decoded on load.
+		q := s.quantizer()
 		snap.Codes = make([]quant.Code, len(s.embeds))
 		for i, v := range s.embeds {
-			snap.Codes[i] = s.q.Encode(v)
+			snap.Codes[i] = q.Encode(v)
 		}
 	case VectorsNone:
 		// Store no vectors; they are recomputed from text on load.
@@ -149,7 +151,73 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 			snap.EntVec = s.entVec
 		}
 	}
-	return gob.NewEncoder(w).Encode(&snap)
+	return writeSnapshot(w, &snap)
+}
+
+// vecMagic marks a store whose vector block is written outside the gob stream.
+//
+// The first byte of a gob stream is always a message length, which gob encodes as a
+// single byte below 0x80 or as a 0xF8..0xFF marker followed by the bytes. So 0x80 can
+// never begin a gob stream, and a file starting with it is unambiguously this format
+// and not a store written before it.
+var vecMagic = []byte{0x80, 'T', 'G', 'V'}
+
+// writeSnapshot writes the vector block raw, ahead of the gob, with a length prefix.
+//
+// The block used to go through gob as a []byte, and gob reads a large slice with
+// saferio, which grows it incrementally rather than allocating it once: that was 70% of
+// all the allocation in opening a store, for data whose size is known exactly. Written
+// on its own it is one allocation and one io.ReadFull.
+func writeSnapshot(w io.Writer, snap *snapshot) error {
+	raw := snap.FlatBytes
+	snap.FlatBytes = nil // never inside the gob
+	if len(raw) == 0 {
+		return gob.NewEncoder(w).Encode(snap)
+	}
+	if _, err := w.Write(vecMagic); err != nil {
+		return err
+	}
+	var n [8]byte
+	binary.LittleEndian.PutUint64(n[:], uint64(len(raw)))
+	if _, err := w.Write(n[:]); err != nil {
+		return err
+	}
+	if _, err := w.Write(raw); err != nil {
+		return err
+	}
+	return gob.NewEncoder(w).Encode(snap)
+}
+
+// readSnapshot reads a store written by writeSnapshot, or one written before it.
+func readSnapshot(r io.Reader) (snapshot, error) {
+	var snap snapshot
+	br := bufio.NewReaderSize(r, 1<<16)
+	head, err := br.Peek(len(vecMagic))
+	if err == nil && bytes.Equal(head, vecMagic) {
+		if _, err := br.Discard(len(vecMagic)); err != nil {
+			return snap, err
+		}
+		var n [8]byte
+		if _, err := io.ReadFull(br, n[:]); err != nil {
+			return snap, fmt.Errorf("rag: truncated vector block header: %w", err)
+		}
+		size := binary.LittleEndian.Uint64(n[:])
+		if size > 1<<40 {
+			return snap, fmt.Errorf("rag: implausible vector block of %d bytes", size)
+		}
+		raw := make([]byte, size)
+		if _, err := io.ReadFull(br, raw); err != nil {
+			return snap, fmt.Errorf("rag: truncated vector block: %w", err)
+		}
+		if err := gob.NewDecoder(br).Decode(&snap); err != nil {
+			return snap, err
+		}
+		snap.FlatBytes = raw
+		return snap, nil
+	}
+	// A store written before the vector block was hoisted out of the gob.
+	err = gob.NewDecoder(br).Decode(&snap)
+	return snap, err
 }
 
 // loadVectors materializes the chunk embeddings from whichever representation the
@@ -167,9 +235,10 @@ func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
 	case len(snap.Embeds) == len(snap.Chunks):
 		return snap.Embeds, nil
 	case len(snap.Codes) == len(snap.Chunks):
+		q := s.quantizer()
 		out := make([][]float32, len(snap.Codes))
 		for i := range snap.Codes {
-			out[i] = s.q.Decode(snap.Codes[i])
+			out[i] = q.Decode(snap.Codes[i])
 		}
 		return out, nil
 	default:
@@ -199,8 +268,8 @@ func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
 // entity graph). Set includeVectors to false to omit the embeddings, which
 // dominate the size, when only the text and structure are needed.
 func ExportJSON(r io.Reader, w io.Writer, includeVectors bool) error {
-	var snap snapshot
-	if err := gob.NewDecoder(r).Decode(&snap); err != nil {
+	snap, err := readSnapshot(r)
+	if err != nil {
 		return fmt.Errorf("rag: decode: %w", err)
 	}
 	// The vectors are stored as one raw block, which is not a JSON-representable thing.
@@ -238,8 +307,8 @@ func ExportJSON(r io.Reader, w io.Writer, includeVectors bool) error {
 // Indexes are rebuilt from the stored embeddings, so loading is as fast as
 // indexing minus the embedding step (the expensive part is already done).
 func Load(embedder Embedder, r io.Reader) (*Store, error) {
-	var snap snapshot
-	if err := gob.NewDecoder(r).Decode(&snap); err != nil {
+	snap, err := readSnapshot(r)
+	if err != nil {
 		return nil, fmt.Errorf("rag: decode: %w", err)
 	}
 	snap.Cfg.withDefaults()
