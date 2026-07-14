@@ -364,3 +364,60 @@ func (h *HNSW) SearchFiltered(query []float32, k, ef int, accept func(id string)
 	}
 	return out
 }
+
+// Graph is the HNSW link structure, without the vectors. It is everything that is
+// expensive to compute and cheap to store: building it means a graph search per
+// inserted vector, which dominates the cost of opening a store, while the links
+// themselves are a few bytes per node.
+type Graph struct {
+	Entry   int32       `json:"entry"`
+	Top     int         `json:"top"`
+	Levels  []int32     `json:"levels"`  // per node
+	Friends [][][]int32 `json:"friends"` // per node, per level, neighbor ordinals
+}
+
+// Snapshot exports the link structure for persistence.
+func (h *HNSW) Snapshot() Graph {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	g := Graph{Entry: h.entry, Top: h.top,
+		Levels:  make([]int32, len(h.nodes)),
+		Friends: make([][][]int32, len(h.nodes)),
+	}
+	for i, n := range h.nodes {
+		g.Levels[i] = int32(n.level)
+		g.Friends[i] = n.friends
+	}
+	return g
+}
+
+// RestoreHNSW builds an index from vectors and a previously exported link structure,
+// skipping link construction entirely. The ids and vectors must be in the order they
+// were originally added, because the graph refers to nodes by ordinal.
+//
+// It reports false if the graph does not describe these vectors, in which case the
+// caller must rebuild. A stale graph is not an error, it is a cache miss.
+func RestoreHNSW(dim int, q *quant.Quantizer, cfg HNSWConfig, ids []string, vecs [][]float32, g Graph) (*HNSW, bool) {
+	if len(ids) != len(vecs) || len(g.Levels) != len(ids) || len(g.Friends) != len(ids) {
+		return nil, false
+	}
+	h := NewHNSW(dim, q, cfg)
+	norm := make([]float32, dim)
+	for i, v := range vecs {
+		if len(v) != dim {
+			return nil, false
+		}
+		cur := int32(len(h.ids))
+		normalize(norm, v)
+		h.data = append(h.data, norm...)
+		h.ids = append(h.ids, ids[i])
+		h.idOrd[ids[i]] = cur
+		h.codes = append(h.codes, h.q.Encode(v))
+	}
+	h.nodes = make([]hnswNode, len(ids))
+	for i := range ids {
+		h.nodes[i] = hnswNode{level: int(g.Levels[i]), friends: g.Friends[i]}
+	}
+	h.entry, h.top = g.Entry, g.Top
+	return h, true
+}

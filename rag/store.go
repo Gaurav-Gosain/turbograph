@@ -155,11 +155,29 @@ type Store struct {
 	docMeta     map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
 	commSummary map[int]string             // community label -> generated summary (global queries)
 
-	edges        []edgeRec
-	indexedUpTo  int  // chunks for which similarity edges have been discovered
-	needsRebuild bool // vector and lexical indexes are stale (a document was removed)
-	g            *graph.Graph
-	comm         *graph.Communities
+	edges       []edgeRec
+	indexedUpTo int // chunks for which similarity edges have been discovered
+	// needsRebuild: the vector and lexical indexes are stale (a document was removed).
+	needsRebuild bool
+	// The derived structures are built on first use, in two tiers, because they are not
+	// all needed by the same things. Loading a store used to build all of them up front,
+	// which was most of the cost of opening one and was paid by EVERY command: `add`,
+	// `docs`, `forget` and `entities` all sat through a vector-index reconstruction and a
+	// similarity-graph discovery they had no use for. The arrays are the source of truth.
+	//
+	//   deferIndex: the HNSW and BM25 indexes are not built. Any search needs them.
+	//   deferGraph: the similarity edges and communities are not built. Only a graph-boosted
+	//               query (GraphMix > 0), the graph view, or community summaries need them,
+	//               and building them means a k-NN search for every chunk in the corpus, so
+	//               a plain dense+lexical search must not pay for it.
+	deferIndex bool
+	deferGraph bool
+	// savedHNSW is the link structure read from disk, held until the index is actually
+	// needed. Restoring from it skips link construction entirely, which is what makes
+	// opening and searching a large store fast rather than merely deferred.
+	savedHNSW *index.Graph
+	g         *graph.Graph
+	comm      *graph.Communities
 
 	// Optional entity-relationship knowledge graph (GraphRAG style). Built on
 	// demand from an LLM extractor; nil until BuildEntityGraph runs.
@@ -228,6 +246,7 @@ func (s *Store) Chunk(i int) Chunk {
 
 // Communities returns the detected community structure (may be nil before build).
 func (s *Store) Communities() *graph.Communities {
+	s.ensureGraph()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.comm
@@ -317,6 +336,12 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Bring the vector index up before appending, so the new chunks are linked into the
+	// existing graph rather than found missing from it. This restores from the persisted
+	// links, so it costs a wiring pass and not a reconstruction, and it keeps the graph
+	// current so it can be saved again: otherwise every add would invalidate it and the
+	// next search would rebuild from scratch.
+	s.ensureSearchLocked()
 	s.lastRedactions = redacted
 	changed := false
 	for _, p := range preps {
@@ -475,10 +500,11 @@ func (s *Store) AddEmbedded(chunks []Chunk, vecs [][]float32) error {
 
 // Reindex discovers similarity edges for any chunks added since the last reindex
 // and rebuilds the graph and communities. It is cheap to call once after a bulk
-// ingestion and idempotent if nothing changed.
+// ingestion and idempotent if nothing changed. It forces a deferred index to be built.
 func (s *Store) Reindex() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.ensureGraphLocked()
 	s.reindexLocked()
 }
 
@@ -520,7 +546,90 @@ func (s *Store) appendChunksLocked(chunks []Chunk, vecs [][]float32) error {
 // the vector and lexical indexes are rebuilt from the source-of-truth arrays
 // first, then all edges are rediscovered. Otherwise only the edges for newly
 // added chunks are discovered. The caller must hold the write lock.
+// ensureSearchLocked builds the vector and lexical indexes if they were deferred,
+// restoring the vector graph from disk when one was saved rather than recomputing it.
+func (s *Store) ensureSearchLocked() {
+	if !s.deferIndex {
+		return
+	}
+	s.deferIndex = false
+	if s.restoreHNSWLocked() {
+		// The vector index came back from disk. The lexical index is cheap to rebuild
+		// (tokenization, no distance computations), so it is not persisted.
+		s.rebuildLexicalLocked()
+		s.needsRebuild = false
+		return
+	}
+	s.rebuildIndexesLocked()
+	s.needsRebuild = false
+}
+
+// restoreHNSWLocked rebuilds the vector index from the persisted link structure.
+// It reports false when there is no usable graph, in which case the caller rebuilds.
+func (s *Store) restoreHNSWLocked() bool {
+	g := s.savedHNSW
+	s.savedHNSW = nil // one shot: after any mutation it is stale
+	if g == nil || len(s.chunks) == 0 || len(g.Levels) != len(s.chunks) {
+		return false
+	}
+	ids := make([]string, len(s.chunks))
+	for i := range s.chunks {
+		ids[i] = s.chunks[i].ID
+	}
+	h, ok := index.RestoreHNSW(s.dim, s.q, s.cfg.HNSW, ids, s.embeds, *g)
+	if !ok {
+		return false
+	}
+	s.hnsw = h
+	return true
+}
+
+// ensureGraphLocked builds the similarity graph and communities if they were deferred.
+// It needs the search index, which it builds first.
+func (s *Store) ensureGraphLocked() {
+	s.ensureSearchLocked()
+	if !s.deferGraph {
+		return
+	}
+	s.deferGraph = false
+	s.edges = s.edges[:0]
+	s.indexedUpTo = 0
+	s.reindexLocked()
+}
+
+// ensureSearch and ensureGraph are the entry points for callers outside the write path.
+// They take the read lock first so the common case, where the structure is already
+// built, does not serialize every query behind a write lock.
+func (s *Store) ensureSearch() {
+	s.mu.RLock()
+	deferred := s.deferIndex
+	s.mu.RUnlock()
+	if !deferred {
+		return
+	}
+	s.mu.Lock()
+	s.ensureSearchLocked()
+	s.mu.Unlock()
+}
+
+func (s *Store) ensureGraph() {
+	s.mu.RLock()
+	deferred := s.deferIndex || s.deferGraph
+	s.mu.RUnlock()
+	if !deferred {
+		return
+	}
+	s.mu.Lock()
+	s.ensureGraphLocked()
+	s.mu.Unlock()
+}
+
 func (s *Store) reindexLocked() {
+	// Nothing is built while a build is deferred: ingest calls reindex on every batch, and
+	// doing the work here would defeat the deferral entirely.
+	if s.deferIndex || s.deferGraph {
+		return
+	}
 	if s.needsRebuild {
 		s.rebuildIndexesLocked()
 		s.needsRebuild = false
@@ -672,6 +781,12 @@ type ScoreComponents struct {
 
 // Retrieve runs hybrid graph retrieval for the query.
 func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([]Retrieved, error) {
+	s.ensureSearch()
+	// The similarity graph costs a k-NN search per chunk to build. Only pay for it when
+	// the query actually asks for the graph signal.
+	if p.GraphMix > 0 {
+		s.ensureGraph()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.hnsw == nil || len(s.chunks) == 0 {

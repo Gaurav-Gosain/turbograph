@@ -61,6 +61,7 @@ func (s *Store) HasCommunitySummaries() bool {
 // only default (one model call per community, far fewer than per chunk), and
 // entirely opt-in.
 func (s *Store) BuildCommunitySummaries(ctx context.Context, summarize Summarizer, opt CommunityOptions) error {
+	s.ensureGraph()
 	if opt.Workers <= 0 {
 		opt.Workers = runtime.GOMAXPROCS(0)
 	}
@@ -159,6 +160,7 @@ func (s *Store) BuildCommunitySummaries(ctx context.Context, summarize Summarize
 // CommunitySummaries returns the generated summaries, largest community first,
 // each enriched with its current member chunk and document ids.
 func (s *Store) CommunitySummaries() []CommunitySummary {
+	s.ensureGraph()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.communitySummariesLocked()
@@ -195,6 +197,7 @@ func (s *Store) communitySummariesLocked() []CommunitySummary {
 // to the query and returns the top k, the seed set for a global, map-reduce style
 // answer. It embeds the query and the summaries with the store's embedder.
 func (s *Store) RelevantCommunities(ctx context.Context, query string, k int) ([]CommunitySummary, error) {
+	s.ensureGraph()
 	all := s.CommunitySummaries()
 	if len(all) == 0 {
 		return nil, nil

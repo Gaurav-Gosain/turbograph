@@ -29,6 +29,7 @@ type GraphView struct {
 // GraphView exports the current similarity graph. Each undirected edge is emitted
 // once (source < target). It is safe for concurrent use.
 func (s *Store) GraphView() GraphView {
+	s.ensureGraph()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
+	"github.com/Gaurav-Gosain/turbograph/index"
 	"github.com/Gaurav-Gosain/turbograph/quant"
 )
 
@@ -78,6 +79,11 @@ type snapshot struct {
 	// A slice, not a map: the key is a hash, and a JSON object cannot have one as a
 	// key, which would have broken `export --json` on any store that had a cache.
 	ExtractCache []cacheEntry `json:"extract_cache,omitempty"`
+	// HNSW persists the vector index's link structure. Rebuilding it means a graph
+	// search per vector and was by far the largest cost of opening a store; the links
+	// themselves are a few percent of the vectors' size. Absent in older snapshots and
+	// when the index was never built, in which case it is reconstructed as before.
+	HNSW *index.Graph `json:"hnsw,omitempty"`
 }
 
 // cacheEntry is one persisted extraction, carrying the key it is stored under. The
@@ -104,7 +110,8 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
 	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Encoder: s.encoder, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions,
-		DocMeta: s.docMeta, CommSummary: s.commSummary, ExtractCache: flattenCache(s.extractCache)}
+		DocMeta: s.docMeta, CommSummary: s.commSummary, ExtractCache: flattenCache(s.extractCache),
+		HNSW: s.hnswSnapshot()}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	switch mode {
 	case VectorsCodes:
@@ -195,7 +202,10 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 		return nil, fmt.Errorf("rag: decode: %w", err)
 	}
 	snap.Cfg.withDefaults()
-	s := &Store{cfg: snap.Cfg, embedder: embedder, dim: snap.Dim}
+	// redact: true, matching New. Load builds the struct directly, so a default that
+	// lives only in New would silently be off for every store opened from disk, which is
+	// every store an agent ever touches.
+	s := &Store{cfg: snap.Cfg, embedder: embedder, dim: snap.Dim, redact: true}
 	if len(snap.Chunks) == 0 {
 		return s, nil
 	}
@@ -207,9 +217,15 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.appendChunksLocked(snap.Chunks, embeds); err != nil {
-		return nil, err
-	}
+	// Fill the source-of-truth arrays, but do not build the vector index, the lexical
+	// index, the similarity graph or the communities. They are derived, and rebuilding
+	// them here was two thirds of the cost of opening a store, paid by every command
+	// whether or not it ever searched. ensureIndex builds them on first use.
+	s.appendToArraysLocked(snap.Chunks, embeds)
+	s.deferIndex = true
+	s.deferGraph = true
+	s.needsRebuild = true
+	s.savedHNSW = snap.HNSW
 	for id, h := range snap.Hashes {
 		s.recordHashLocked(id, h)
 	}
@@ -230,7 +246,6 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 			s.entVec = snap.EntVec
 		}
 	}
-	s.reindexLocked()
 	return s, nil
 }
 
@@ -246,4 +261,15 @@ func flattenCache(m map[[32]byte]cachedExtraction) []cacheEntry {
 	}
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].Key[:], out[j].Key[:]) < 0 })
 	return out
+}
+
+// hnswSnapshot exports the vector index's links, if it is built and current. A stale
+// or absent graph is simply not written: it is a cache, and a cache miss costs a
+// rebuild, while a wrong graph would silently return the wrong neighbours forever.
+func (s *Store) hnswSnapshot() *index.Graph {
+	if s.deferIndex || s.needsRebuild || s.hnsw == nil || s.hnsw.Len() != len(s.chunks) {
+		return nil
+	}
+	g := s.hnsw.Snapshot()
+	return &g
 }

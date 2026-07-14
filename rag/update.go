@@ -3,6 +3,8 @@ package rag
 import (
 	"context"
 	"fmt"
+
+	"github.com/Gaurav-Gosain/turbograph/lexical"
 )
 
 // prepared is a document that has been chunked and embedded off the write lock,
@@ -163,6 +165,18 @@ func (s *Store) rebuildIndexesLocked() {
 	s.initIndexes()
 	for i := range s.chunks {
 		s.hnsw.Add(s.chunks[i].ID, s.embeds[i])
+		s.bm25.Add(s.chunks[i].ID, s.chunks[i].IndexText())
+	}
+	s.bm25.Finalize()
+}
+
+// rebuildLexicalLocked rebuilds only the BM25 index. It is separate because the vector
+// index can be restored from disk while the lexical one cannot usefully be: it is
+// tokenization, with no distance computations, so recomputing it is cheap and storing
+// it would bloat every .tg for no gain.
+func (s *Store) rebuildLexicalLocked() {
+	s.bm25 = lexical.New(lexical.DefaultConfig())
+	for i := range s.chunks {
 		s.bm25.Add(s.chunks[i].ID, s.chunks[i].IndexText())
 	}
 	s.bm25.Finalize()
