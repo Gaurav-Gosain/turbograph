@@ -309,6 +309,23 @@ including a grounding floor (abstain below a cosine threshold) and a rerank
 toggle (re-score candidates with the model), and a built-in "how it works" guide
 explains the pipeline.
 
+A **pipeline** panel (header button or command palette) shows the engine as a node
+graph you can pan, zoom and rearrange, in three modes:
+
+- **Ingest pipeline.** Every stage a document passes through on its way into the
+  graph: extract, transform scripts, chunk, contextual, embed, index, entity graph,
+  communities. The toggles are the real ingest settings rather than a picture of
+  them, so you choose a source, turn preprocessing on or off, and run it from here.
+- **Retrieval pipeline.** The same idea for a question: each stage toggles and tunes
+  the retrieval settings the chat actually uses, and a test run lights each stage as
+  it executes.
+- **Free-form.** Drag blocks onto a canvas and wire them. The query blocks (rerank,
+  grounding floor, multi-hop, global, context window, verify) are fields of the chat
+  API, and a flow that runs `Documents -> Index` is an ingest flow: the scripts you
+  wire into it become its preprocessing, in chain order. **Every script the operator
+  registers with `--scripts` appears in the palette as a block**, so the block list
+  grows with the server rather than with the code.
+
 A **config** panel (header button or command palette) makes the whole engine
 configurable without the command line, and persists to a JSON file:
 

@@ -275,6 +275,11 @@
   .cmdk-overlay{position:fixed;inset:0;z-index:30;display:none;background:rgba(5,6,8,.55);
     backdrop-filter:blur(2px);align-items:flex-start;justify-content:center;padding-top:14vh}
   .cmdk-overlay.open{display:flex}
+  /* A panel overlay centers its shell and is bounded by the viewport on both sides.
+     Under the top-anchored default a 14vh offset plus an 88vh shell came to 102vh, so
+     the bottom of the panel hung below the fold and was sliced off. Only the command
+     palette wants to be pinned near the top; everything tall centers. */
+  #flow,#config,#help,#abcompare,#versions,#tgInfo{align-items:center;padding:3vh 0}
   /* A/B retrieval comparison */
   .cfg.ab{width:min(920px,94vw);max-height:88vh}
   .cfg-head small{color:var(--faint);font-weight:400;font-size:11px}
@@ -404,7 +409,8 @@
   .flow-head .flow-title{letter-spacing:.5px}
   .flow-head .spacer{flex:1}
   .flow-head .x{cursor:pointer;color:var(--faint)} .flow-head .x:hover{color:var(--accent)}
-  .seg.flow-mode button{font-size:11px}
+  .seg.flow-mode{flex:none}
+  .seg.flow-mode button{font-size:11px;white-space:nowrap}
   .flow-tools{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
   .flow-tools button,.flow-tools select{font-size:11px;background:var(--panel2);color:var(--text);
     border:1px solid var(--border);border-radius:6px;padding:4px 9px;cursor:pointer;font-family:inherit}
@@ -412,18 +418,40 @@
   .flow-tools button.prime{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
   .flow-tools .pal{color:var(--faint);margin-right:2px}
   .flow-tools .chip{cursor:grab}
+  .flow-tools .chip.scr{border-color:var(--accent);color:var(--accent)}
   .flow-body{flex:1;display:flex;min-height:0}
+  /* The palette is a rail, not a header row. Inline in the header it wrapped onto a
+     second line and shoved the mode switcher into a column, and it can only grow: every
+     script the operator registers adds a block to it. */
+  .flow-pal{width:150px;flex:none;border-right:1px solid var(--border);background:var(--panel);
+    overflow-y:auto;padding:10px 9px;display:none}
+  .flow-pal.on{display:block}
+  .flow-pal .pgrp{color:var(--faint);font-size:9.5px;letter-spacing:.6px;text-transform:uppercase;
+    margin:10px 0 5px}
+  .flow-pal .pgrp:first-child{margin-top:0}
+  .flow-pal .chip{display:block;background:var(--panel2);border:1px solid var(--border);border-radius:5px;
+    color:var(--muted);font-size:11px;padding:5px 8px;margin-bottom:4px;cursor:grab;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .flow-pal .chip:hover{color:var(--accent);border-color:var(--accent)}
+  .flow-pal .chip.scr{border-color:var(--accent);color:var(--accent)}
+  .flow-pal .none{color:var(--faint);font-size:10.5px;line-height:1.5}
   .flow-canvas{position:relative;flex:1;overflow:hidden;background:
-    radial-gradient(circle at 1px 1px,var(--border) 1px,transparent 0) 0 0/22px 22px,var(--bg)}
-  .flow-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+    radial-gradient(circle at 1px 1px,var(--border) 1px,transparent 0) 0 0/22px 22px,var(--bg);cursor:grab}
+  .flow-canvas.panning{cursor:grabbing}
+  /* The world holds the whole graph at its natural size and is panned and scaled as a
+     unit. Without it the canvas clipped whatever did not fit, which is how the last
+     stage of the pipeline ended up sliced off along the bottom edge. */
+  .flow-world{position:absolute;left:0;top:0;transform-origin:0 0}
+  .flow-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
   .flow-edges path{fill:none;stroke:var(--faint);stroke-width:2}
   .flow-edges path.live{stroke:var(--accent);stroke-dasharray:5 4}
   .flow-edges path.hot{stroke:var(--accent)}
   .flow-edges path.flowing{stroke:var(--accent);stroke-width:3;stroke-dasharray:6 5;animation:march .5s linear infinite}
   @keyframes march{to{stroke-dashoffset:-22}}
   .flow-nodes{position:absolute;inset:0}
-  .fnode{position:absolute;width:182px;background:var(--panel);border:1px solid var(--border);border-radius:9px;
-    box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none}
+  .fnode{position:absolute;left:0;top:0;width:182px;background:var(--panel);border:1px solid var(--border);
+    border-radius:9px;box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none;will-change:transform}
   .fnode.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),0 8px 22px rgba(0,0,0,.5)}
   .fnode.sel .ft{background:rgba(90,209,200,.10)}
   .fnode.run{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),0 0 24px rgba(90,209,200,.5)}
@@ -455,10 +483,25 @@
     border:2px solid var(--faint);top:50%;transform:translateY(-50%);cursor:crosshair;z-index:2}
   .port:hover,.port.armed{border-color:var(--accent);background:var(--accent)}
   .port.in{left:-8px} .port.out{right:-8px}
-  .flow-hintbar{position:absolute;left:12px;bottom:10px;font-size:10.5px;color:var(--faint);
-    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:4px 9px;pointer-events:none;max-width:60%}
+  /* The hint is a row of the shell, not something floating over the canvas: as an
+     overlay it sat on top of the last node. */
+  .flow-foot{flex:none;padding:7px 14px;border-top:1px solid var(--border);background:var(--panel);
+    color:var(--faint);font-size:10.5px;border-radius:0 0 12px 12px}
+  .flow-zoom{position:absolute;right:12px;bottom:12px;display:flex;gap:4px;z-index:3}
+  .flow-zoom button{background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--muted);
+    cursor:pointer;font:11px var(--mono);min-width:26px;height:26px;padding:0 6px;
+    transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .flow-zoom button:hover{color:var(--accent);border-color:var(--accent)}
+  .flow-zoom button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .flow-side{width:288px;flex:none;border-left:1px solid var(--border);overflow-y:auto;padding:12px 13px;background:var(--panel)}
   .flow-side h4{margin:0 0 8px;color:var(--accent);font-size:11px;font-weight:600;letter-spacing:.4px}
+  .ing-drop{border:1px dashed var(--border);border-radius:7px;padding:14px 10px;text-align:center;cursor:pointer;
+    color:var(--muted);font-size:11px;transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .ing-drop small{display:block;color:var(--faint);font-size:10px;margin-top:4px}
+  .ing-drop:hover,.ing-drop.over{border-color:var(--accent);color:var(--accent)}
+  .ing-files{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:8px}
+  .ing-files span{background:var(--panel2);border:1px solid var(--border);border-radius:4px;
+    color:var(--muted);font-size:10.5px;padding:3px 6px}
   .flow-side .muted{color:var(--faint);font-size:11px;line-height:1.5}
   .fp-row{margin:9px 0}
   .fp-row label{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px}
@@ -888,6 +931,7 @@
   <div class="flow-shell">
     <div class="flow-head">
       <div class="seg flow-mode" id="flowMode">
+        <button data-fm="ingest" title="how documents get into the graph">ingest pipeline</button>
         <button data-fm="pipeline" class="on">retrieval pipeline</button>
         <button data-fm="free" title="build your own flow">free-form</button>
       </div>
@@ -896,13 +940,21 @@
       <span class="x" id="flowClose">close</span>
     </div>
     <div class="flow-body">
+      <div class="flow-pal" id="flowPal"></div>
       <div class="flow-canvas" id="flowCanvas">
-        <svg class="flow-edges" id="flowEdges"></svg>
-        <div class="flow-nodes" id="flowNodes"></div>
-        <div class="flow-hintbar" id="flowHint"></div>
+        <div class="flow-world" id="flowWorld">
+          <svg class="flow-edges" id="flowEdges"></svg>
+          <div class="flow-nodes" id="flowNodes"></div>
+        </div>
+        <div class="flow-zoom">
+          <button id="flowZoomOut" title="zoom out">&minus;</button>
+          <button id="flowZoomFit" title="fit to view">fit</button>
+          <button id="flowZoomIn" title="zoom in">+</button>
+        </div>
       </div>
       <div class="flow-side" id="flowSide"></div>
     </div>
+    <div class="flow-foot"><span id="flowHint"></span></div>
   </div>
 </div>
 
@@ -1342,6 +1394,7 @@ async function loadGraph(keepView){
 async function loadScripts(){
   let names=[];
   try{const r=await api(bk("/api/scripts"));names=r.scripts||[]}catch(e){}
+  registerScriptBlocks(names);
   const box=$("#tfBox"),list=$("#tfList");
   if(!names.length){box.style.display="none";return}
   list.innerHTML=names.map(n=>
@@ -2533,27 +2586,66 @@ $("#tgClose").onclick=()=>tgInfoEl.classList.remove("open");
 tgInfoEl.addEventListener("click",e=>{if(e.target===tgInfoEl)tgInfoEl.classList.remove("open")});
 
 // ---------- pipeline / flow editor ----------
-const flowEl=$("#flow"),flowNodes=$("#flowNodes"),flowEdges=$("#flowEdges"),
-  flowSide=$("#flowSide"),flowTools=$("#flowTools"),flowHint=$("#flowHint"),flowCanvas=$("#flowCanvas");
+const flowEl=$("#flow"),flowNodes=$("#flowNodes"),flowEdges=$("#flowEdges"),flowWorld=$("#flowWorld"),
+  flowSide=$("#flowSide"),flowTools=$("#flowTools"),flowHint=$("#flowHint"),flowCanvas=$("#flowCanvas"),
+  flowPal=$("#flowPal");
 const NW=182; // node width, must match .fnode css
 // Free-form block registry. ins/outs are port counts; params edit node.params.
+// FB is the free-form block registry. Every block maps to a capability the server
+// actually has: the query blocks are fields of /api/chat, the ingest blocks are the
+// real ingest path. A block that looked like a feature but called nothing would be a
+// lie told in a diagram, so there are none.
 const FB={
-  query:{nm:"Query",dot:"#7aa2f7",ins:0,outs:1,det:"the incoming question",params:[]},
-  retrieve:{nm:"Retrieve",dot:"#5ad1c8",ins:1,outs:1,det:"hybrid search + graph",params:[
+  // --- query flow ---
+  query:{nm:"Query",dot:"#7aa2f7",ins:0,outs:1,det:"the incoming question",grp:"query",params:[]},
+  retrieve:{nm:"Retrieve",dot:"#5ad1c8",ins:1,outs:1,det:"hybrid search + graph",grp:"query",params:[
     {k:"top_k",lbl:"results",t:"num",min:1,max:20,step:1,def:6},
     {k:"graph_mix",lbl:"graph boost",t:"rng",min:0,max:1,step:.05,def:0},
     {k:"entity_mix",lbl:"entity graph",t:"rng",min:0,max:1,step:.05,def:0},
     {k:"mmr_lambda",lbl:"diversify",t:"rng",min:0,max:1,step:.05,def:0}]},
-  answer:{nm:"Answer",dot:"#9ece6a",ins:1,outs:0,det:"model grounds on the chunks",params:[]},
-  source:{nm:"Documents",dot:"#e0af68",ins:0,outs:1,det:"docs already in this bucket",params:[]},
-  chunk:{nm:"Chunk",dot:"#bb9af7",ins:1,outs:1,det:"split into passages (size in config)",params:[]},
-  embed:{nm:"Embed",dot:"#7dcfff",ins:1,outs:1,det:"vectorize passages",params:[]},
-  store:{nm:"Index",dot:"#9ece6a",ins:1,outs:0,det:"store for retrieval",params:[]}};
-const FPAL=["query","retrieve","answer","source","chunk","embed","store"];
-const F={mode:"pipeline",nodes:[],edges:[],sel:null,uid:1,free:null};
+  rerank:{nm:"Rerank",dot:"#f7768e",ins:1,outs:1,det:"the model rescores each candidate",grp:"query",params:[]},
+  ground:{nm:"Grounding floor",dot:"#e5c07b",ins:1,outs:1,det:"abstain when nothing is close enough",grp:"query",params:[
+    {k:"min_sim",lbl:"abstain below",t:"rng",min:0,max:1,step:.05,def:.3}]},
+  multihop:{nm:"Multi-hop",dot:"#bb9af7",ins:1,outs:1,det:"split the question into subqueries first",grp:"query",params:[]},
+  global:{nm:"Global",dot:"#bb9af7",ins:1,outs:1,det:"answer from community summaries",grp:"query",params:[]},
+  window:{nm:"Context window",dot:"#7dcfff",ins:1,outs:1,det:"expand each hit with its neighbours",grp:"query",params:[
+    {k:"window",lbl:"neighbours",t:"num",min:0,max:4,step:1,def:1}]},
+  verify:{nm:"Verify",dot:"#9ece6a",ins:1,outs:1,det:"audit each claim against the evidence",grp:"query",params:[]},
+  answer:{nm:"Answer",dot:"#9ece6a",ins:1,outs:0,det:"model grounds on the chunks",grp:"query",params:[]},
+  // --- ingest flow ---
+  source:{nm:"Documents",dot:"#e0af68",ins:0,outs:1,det:"files you choose, or pasted text",grp:"ingest",params:[]},
+  chunk:{nm:"Chunk",dot:"#bb9af7",ins:1,outs:1,det:"split into passages (size in config)",grp:"ingest",params:[]},
+  contextual:{nm:"Contextual",dot:"#e5c07b",ins:1,outs:1,det:"situate each chunk in its document",grp:"ingest",params:[]},
+  embed:{nm:"Embed",dot:"#7dcfff",ins:1,outs:1,det:"vectorize passages",grp:"ingest",params:[]},
+  store:{nm:"Index",dot:"#9ece6a",ins:1,outs:0,det:"store for retrieval",grp:"ingest",params:[]},
+  // --- annotation ---
+  note:{nm:"Note",dot:"#676a72",ins:0,outs:0,det:"a label for you, not a stage",grp:"note",params:[
+    {k:"text",lbl:"text",t:"text",def:"note"}]},
+};
+// FPAL is rebuilt whenever the script list arrives, so a script the operator drops in
+// --scripts shows up as a block without a rebuild. This is the extension point: the
+// block is named after a program the OPERATOR registered, and the flow refers to it by
+// that name only. A caller can never supply a command, which is the whole reason the
+// script registry is closed.
+let FPAL=[];
+function rebuildPalette(){
+  FPAL=Object.keys(FB);
+}
+// scriptBlock registers one operator-supplied script as a draggable ingest block.
+function registerScriptBlocks(names){
+  Object.keys(FB).forEach(k=>{if(k.startsWith("script:"))delete FB[k]});
+  (names||[]).forEach(n=>{
+    FB["script:"+n]={nm:n,dot:"#f7768e",ins:1,outs:1,grp:"scripts",script:n,
+      det:"your script, run over each document before chunking",params:[]};
+  });
+  rebuildPalette();
+  if(flowEl.classList.contains("open")&&F.mode==="free")renderTools();
+}
+rebuildPalette();
+const F={mode:"pipeline",nodes:[],edges:[],sel:null,uid:1,free:null,view:{tx:0,ty:0,k:1}};
 const WORK="tg.flow.work",SLOTS="tg.flows";
 
-function openFlow(){flowEl.classList.add("open");setMode("pipeline")}
+function openFlow(){flowEl.classList.add("open");setMode(F.mode||"pipeline")}
 function closeFlow(){if(F._runAbort)F._runAbort.abort();flowEl.classList.remove("open")}
 $("#flowBtn").onclick=openFlow;
 $("#flowClose").onclick=closeFlow;
@@ -2564,10 +2656,92 @@ function setMode(m){
   F.mode=m;F.sel=null;
   document.querySelectorAll("#flowMode button").forEach(b=>b.classList.toggle("on",b.dataset.fm===m));
   if(m==="pipeline")buildPipeline();
+  else if(m==="ingest")buildIngest();
   else{if(!F.free)F.free=loadWork();F.nodes=F.free.nodes;F.edges=F.free.edges;
     F.uid=F.nodes.reduce((a,n)=>Math.max(a,(+(""+n.id).replace(/\D/g,""))||0),0)+1;}
   renderFlow();
+  // Frame it only after the nodes have been laid out and measured, so the fit is
+  // computed from real heights rather than the guesses in worldBox.
+  requestAnimationFrame(fitFlow);
 }
+// ---- ingest mode: the real path a document takes into the graph ----
+// Every stage is bound to the setting that actually governs it, so this view both
+// explains ingestion and composes it. Nothing here is a mock-up of the pipeline;
+// running it runs the same code path as dropping a file on the documents panel.
+const ING=[
+  {key:"source",   nm:"Documents",    det:"files or pasted text"},
+  {key:"extract",  nm:"Extract text", det:"pdf and images, server-side"},
+  {key:"transform",nm:"Transform",    det:"your scripts, before chunking"},
+  {key:"chunk",    nm:"Chunk",        det:"split into passages"},
+  {key:"context",  nm:"Contextual",   det:"situate each chunk in its document"},
+  {key:"embed",    nm:"Embed",        det:"vectorize passages"},
+  {key:"index",    nm:"Index",        det:"HNSW + TurboQuant + BM25"},
+  {key:"entities", nm:"Entity graph", det:"extract entities and relationships"},
+  {key:"comm",     nm:"Communities",  det:"label propagation over the graph"},
+];
+const INGK="tg.ingest";
+// The ingest options that have no home elsewhere. Contextual and the transform list
+// live in the documents panel and are read from there, so there is one source of
+// truth rather than a second copy that can drift.
+F.ing=Object.assign({entities:true,communities:true,files:[],text:""},
+  (()=>{try{return JSON.parse(localStorage.getItem(INGK))||{}}catch(e){return{}}})());
+F.ing.files=[];F.ing.text="";
+function saveIng(){try{localStorage.setItem(INGK,JSON.stringify({entities:F.ing.entities,communities:F.ing.communities}))}catch(e){}}
+function tfNames(){return [...document.querySelectorAll('#tfList input[data-tf]')].map(i=>i.dataset.tf)}
+function hasSource(){return F.ing.files.length>0||F.ing.text.trim()!==""}
+
+function ingOn(k){
+  switch(k){
+    case "source":   return hasSource();
+    case "extract":  return !!G.pdfSupported;
+    case "transform":return selectedTransforms().length>0;
+    case "context":  return !!$("#ctxOpt").checked;
+    case "entities": return !!F.ing.entities;
+    case "comm":     return !!F.ing.communities;
+    default:         return true; // chunk, embed and index are not optional
+  }
+}
+function ingBody(k){
+  const c=F.cfg||{};
+  switch(k){
+    case "source":{const n=F.ing.files.length,t=F.ing.text.trim()?1:0;
+      return n+t?kv(n?n+" file"+(n===1?"":"s"):"pasted text",t&&n?"+ text":""):kv("nothing chosen yet","")}
+    case "extract":  return kv(G.pdfSupported?"pdf, images":"plain text only","");
+    case "transform":{const all=tfNames().length;
+      return all?kv(selectedTransforms().length+" of "+all+" on",""):kv("no scripts registered","")}
+    case "chunk":    return kv(c.chunk_strategy||"recursive",(c.chunk_words||120)+"w");
+    case "context":  return kv($("#ctxOpt").checked?"on · one model call per chunk":"off","");
+    case "embed":    return kv(c.embed_model||"embedding model","");
+    case "index":    return kv("vectors + lexical","");
+    case "entities": return kv(F.ing.entities?"on":"off",F.ing.entities?(+($("#cfgEntBatch")?.value||2))+"/call":"");
+    case "comm":     return kv(F.ing.communities?"on":"off","");
+  }
+  return kv("","");
+}
+// setIng writes an ingest setting back to whatever actually owns it: contextual and
+// the transform list are the documents panel's controls, the rest is F.ing. Turning
+// "transform" off means unchecking every script, which is what off means.
+function setIng(k,on){
+  if(k==="context")$("#ctxOpt").checked=on;
+  else if(k==="transform"){
+    const boxes=[...document.querySelectorAll('#tfList input[data-tf]')];
+    if(on&&!boxes.length){toast("no transform scripts registered; start the server with --scripts <dir>",true);return}
+    boxes.forEach(b=>b.checked=on);
+  }
+  else if(k==="entities"){F.ing.entities=on;saveIng()}
+  else if(k==="comm"){F.ing.communities=on;saveIng()}
+  renderNodes();renderEdges();renderSide();
+}
+function buildIngest(){
+  F.nodes=[];const PHt=60,GAP=18,top=22;
+  const cx=Math.max(20,Math.round((flowCanvas.clientWidth||840)/2-NW/2));
+  ING.forEach((s,i)=>{F.nodes.push({id:"i"+i,ing:i,x:cx,y:top+i*(PHt+GAP)})});
+  rebuildPipeEdges();
+  // The chunk and embed stages report values that live in the server config, so the
+  // labels are blank until it arrives. Refresh once it does.
+  if(!F.cfg)api(bk("/api/config")).then(c=>{F.cfg=c;if(F.mode==="ingest"){renderNodes();renderEdges()}}).catch(()=>{});
+}
+
 // Compact, one-line stage names for the node canvas (PIPE keeps its longer
 // labels for the settings list).
 const PIPE_SHORT={"Embed the question":"Embed query","Dense vector search":"Vector search",
@@ -2588,15 +2762,20 @@ function rebuildPipeEdges(){
 function nodeMeta(n){
   if(n.pipe!=null){const s=PIPE[n.pipe];return{nm:PIPE_SHORT[s.lbl]||s.lbl,dot:pipeOn(s)?"#5ad1c8":"#5a5f68",
     ins:n.pipe>0?1:0,outs:n.pipe<PIPE.length-1?1:0,on:pipeOn(s)}}
+  if(n.ing!=null){const s=ING[n.ing],on=ingOn(s.key);
+    return{nm:s.nm,dot:on?"#5ad1c8":"#5a5f68",ins:n.ing>0?1:0,outs:n.ing<ING.length-1?1:0,on}}
   const b=FB[n.type];return{nm:b.nm,dot:b.dot,ins:b.ins,outs:b.outs,on:true};
 }
 function nodeBody(n){
+  if(n.ing!=null)return ingBody(ING[n.ing].key);
   if(n.pipe!=null){const s=PIPE[n.pipe];
     if(s.kind==="num"){const v=+$("#"+s.set).value||6;return kv(s.det||"top results",s.fmt(v))}
     if(s.kind==="range"){const v=+$("#"+s.set).value;return kv(v>0?"active":"off",v>0?s.fmt(v):"")}
     if(s.kind==="check")return kv("rescore",$("#"+s.set).checked?"on":"off");
     return kv(s.det||"step","");}
   const b=FB[n.type];
+  if(n.type==="note")return kv(n.params.text||"note","");
+  if(n.type==="source")return ingBody("source");
   if(!b.params.length)return kv(b.det,"");
   return b.params.map(p=>kv(p.lbl,fmtParam(n,p))).join("");
 }
@@ -2609,7 +2788,7 @@ function nodeById(id){return F.nodes.find(n=>n.id===id)}
 // left-to-right (right port -> left port).
 const PH=60;
 function portXY(n,side){
-  if(F.mode==="pipeline")return side==="out"?{x:n.x+NW/2,y:n.y+PH}:{x:n.x+NW/2,y:n.y};
+  if(F.mode!=="free")return side==="out"?{x:n.x+NW/2,y:n.y+PH}:{x:n.x+NW/2,y:n.y};
   const cy=n.y+(n._h||64)/2; // match the css-centered port circle
   return{x:side==="out"?n.x+NW:n.x,y:cy};
 }
@@ -2619,26 +2798,39 @@ function bez(a,b,vert){
   const dx=Math.max(36,Math.abs(b.x-a.x)/2);
   return "M"+a.x+" "+a.y+" C"+(a.x+dx)+" "+a.y+" "+(b.x-dx)+" "+b.y+" "+b.x+" "+b.y;
 }
+function edgePath(e,vert){const a=nodeById(e.from),b=nodeById(e.to);
+  return a&&b?bez(portXY(a,"out"),portXY(b,"in"),vert):null}
 function renderEdges(live){
-  const vert=F.mode==="pipeline";let d="";
-  for(const e of F.edges){const a=nodeById(e.from),b=nodeById(e.to);if(!a||!b)continue;
+  const vert=F.mode!=="free";let d="";
+  for(const e of F.edges){const p=edgePath(e,vert);if(!p)continue;
     const cls=F._flowKey===e.from+">"+e.to?"flowing":(vert?"hot":"");
-    d+='<path'+(cls?' class="'+cls+'"':"")+' d="'+bez(portXY(a,"out"),portXY(b,"in"),vert)+'"/>'}
+    d+='<path'+(cls?' class="'+cls+'"':"")+' d="'+p+'"/>'}
   if(live)d+='<path class="live" d="'+bez(live.a,live.b,false)+'"/>';
   flowEdges.innerHTML=d;
+}
+// updateEdges moves the existing paths instead of reparsing the whole svg. Rebuilding
+// innerHTML on every pointer move meant re-creating every path element, which is what
+// made dragging a node in a busy flow stutter.
+function updateEdges(){
+  const vert=F.mode!=="free",paths=flowEdges.children;
+  let i=0;
+  for(const e of F.edges){const p=edgePath(e,vert);if(!p)continue;
+    const el=paths[i++];if(el)el.setAttribute("d",p)}
 }
 function renderNodes(){
   flowNodes.innerHTML="";
   for(const n of F.nodes){
     const m=nodeMeta(n),el=document.createElement("div");
-    el.className="fnode"+(n.pipe!=null?" pipe":"")+(F.sel===n.id?" sel":"")+(m.on?"":" off");
-    el.style.left=n.x+"px";el.style.top=n.y+"px";el.dataset.id=n.id;
-    const tog=(F.mode==="pipeline"&&n.pipe!=null&&(PIPE[n.pipe].kind==="range"||PIPE[n.pipe].kind==="check"))
+    el.className="fnode"+(n.pipe!=null||n.ing!=null?" pipe":"")+(F.sel===n.id?" sel":"")+(m.on?"":" off");
+    el.style.transform="translate("+n.x+"px,"+n.y+"px)";el.dataset.id=n.id;
+    const ingTog=n.ing!=null&&["transform","context","entities","comm"].includes(ING[n.ing].key);
+    const tog=((F.mode==="pipeline"&&n.pipe!=null&&(PIPE[n.pipe].kind==="range"||PIPE[n.pipe].kind==="check"))||ingTog)
       ? '<input class="ptog" type="checkbox" '+(m.on?"checked":"")+'>' : "";
     const ports=F.mode==="free"
       ? (m.ins?'<span class="port in"></span>':"")+(m.outs?'<span class="port out"></span>':"") : "";
-    const head=n.pipe!=null
-      ? '<span class="num'+(m.on?"":" off")+'">'+(n.pipe+1)+'</span>'
+    const step=n.pipe!=null?n.pipe:(n.ing!=null?n.ing:null);
+    const head=step!=null
+      ? '<span class="num'+(m.on?"":" off")+'">'+(step+1)+'</span>'
       : '<span class="dot" style="background:'+m.dot+'"></span>';
     el.innerHTML='<div class="ft">'+head+'<span class="nm">'+esc(m.nm)+'</span>'+tog+
       '</div><div class="fb">'+nodeBody(n)+'</div>'+ports;
@@ -2647,27 +2839,117 @@ function renderNodes(){
     bindNode(el,n);
   }
 }
-function renderFlow(){renderTools();renderNodes();renderEdges();renderSide();
-  flowHint.textContent=F.mode==="pipeline"
-    ? "numbers show the fixed execution order; drag to arrange, toggle and tune to change real settings"
-    : "drag blocks from the palette, connect output to input ports, click a block to configure, then run";
+function renderFlow(){
+  flowPal.classList.toggle("on",F.mode==="free");
+  renderTools();renderNodes();renderEdges();renderSide();sizeWorld();
+  flowHint.textContent=F.mode==="free"
+    ? "drag blocks from the palette, connect output to input ports, click a block to configure, then run"
+    : "numbers show the fixed execution order; drag to arrange, toggle and tune to change real settings · drag the background to pan, scroll to zoom, fit to frame it";
 }
 
+// ---- viewport: the canvas is a window onto a world, not the world itself ----
+// F.view is that window. Nodes live in world coordinates and never move to make
+// themselves visible; the view moves instead. This is what makes a pipeline taller
+// than the canvas reachable rather than clipped.
+function applyView(){
+  const v=F.view;
+  flowWorld.style.transform="translate("+v.tx+"px,"+v.ty+"px) scale("+v.k+")";
+}
+// worldBox is the bounding box of every node, in world coordinates.
+function worldBox(){
+  if(!F.nodes.length)return{x:0,y:0,w:1,h:1};
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(const n of F.nodes){
+    const h=n._h||(n.pipe!=null?PH:64);
+    x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x+NW);y1=Math.max(y1,n.y+h);
+  }
+  return{x:x0,y:y0,w:Math.max(1,x1-x0),h:Math.max(1,y1-y0)};
+}
+// sizeWorld grows the world element to hold every node, so the edge SVG (which is
+// 100% of the world) can draw the full chain instead of only the part that happened
+// to fall inside the canvas.
+function sizeWorld(){
+  const b=worldBox(),pad=40;
+  flowWorld.style.width=Math.ceil(b.x+b.w+pad)+"px";
+  flowWorld.style.height=Math.ceil(b.y+b.h+pad)+"px";
+}
+const ZMIN=0.3,ZMAX=2;
+function zoomTo(k,cx,cy){
+  const v=F.view,nk=Math.min(ZMAX,Math.max(ZMIN,k));
+  // Keep the point under the cursor fixed while the scale changes.
+  const r=flowCanvas.getBoundingClientRect();
+  if(cx==null){cx=r.width/2;cy=r.height/2}
+  v.tx=cx-(cx-v.tx)*(nk/v.k);v.ty=cy-(cy-v.ty)*(nk/v.k);v.k=nk;
+  applyView();
+}
+// fitFlow frames the whole graph with a margin. It never scales up past 1: a
+// three-node flow blown up to fill the canvas looks broken, not helpful.
+function fitFlow(){
+  const b=worldBox(),r=flowCanvas.getBoundingClientRect(),pad=34;
+  if(!r.width||!r.height)return;
+  const k=Math.min(1,(r.width-2*pad)/b.w,(r.height-2*pad)/b.h);
+  F.view.k=Math.max(ZMIN,k);
+  F.view.tx=(r.width-b.w*F.view.k)/2-b.x*F.view.k;
+  F.view.ty=(r.height-b.h*F.view.k)/2-b.y*F.view.k;
+  applyView();
+}
+$("#flowZoomIn").onclick=()=>zoomTo(F.view.k*1.2);
+$("#flowZoomOut").onclick=()=>zoomTo(F.view.k/1.2);
+$("#flowZoomFit").onclick=fitFlow;
+flowCanvas.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const r=flowCanvas.getBoundingClientRect();
+  zoomTo(F.view.k*(e.deltaY<0?1.1:1/1.1),e.clientX-r.left,e.clientY-r.top);
+},{passive:false});
+// Drag the background to pan.
+flowCanvas.addEventListener("mousedown",e=>{
+  if(e.button!==0||e.target.closest(".fnode")||e.target.closest(".flow-zoom"))return;
+  const sx=e.clientX,sy=e.clientY,tx=F.view.tx,ty=F.view.ty;
+  flowCanvas.classList.add("panning");
+  const mv=ev=>{F.view.tx=tx+ev.clientX-sx;F.view.ty=ty+ev.clientY-sy;applyView()};
+  const up=()=>{window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);
+    flowCanvas.classList.remove("panning")};
+  window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);
+});
+
 // ---- interactions: drag nodes, wire ports, select ----
-function canvasXY(e){const r=flowCanvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+// Pointer position in world coordinates: undo the pan and the zoom, or a node
+// dragged at 50% zoom would travel twice as far as the cursor.
+function canvasXY(e){
+  const r=flowCanvas.getBoundingClientRect();
+  return{x:(e.clientX-r.left-F.view.tx)/F.view.k,y:(e.clientY-r.top-F.view.ty)/F.view.k};
+}
 function bindNode(el,n){
   const ft=el.querySelector(".ft");
   ft.addEventListener("mousedown",e=>{
     if(e.target.classList.contains("ptog"))return;
-    e.preventDefault();const start=canvasXY(e),ox=n.x,oy=n.y;let moved=false;
-    const mv=ev=>{const p=canvasXY(ev);n.x=Math.max(0,ox+p.x-start.x);n.y=Math.max(0,oy+p.y-start.y);
-      moved=true;el.style.left=n.x+"px";el.style.top=n.y+"px";renderEdges()};
-    const up=()=>{window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);
-      if(!moved){F.sel=n.id;renderNodes();renderSide()}else saveWork()};
+    e.preventDefault();
+    const start=canvasXY(e),ox=n.x,oy=n.y;
+    let moved=false,frame=0,px=0,py=0;
+    // Pointer events fire faster than the display refreshes. Coalesce them into one
+    // write per frame; doing the work per event is most of what made this feel laggy.
+    const paint=()=>{
+      frame=0;
+      n.x=Math.max(0,px);n.y=Math.max(0,py);
+      el.style.transform="translate("+n.x+"px,"+n.y+"px)";
+      updateEdges();
+    };
+    const mv=ev=>{
+      const p=canvasXY(ev);
+      px=ox+p.x-start.x;py=oy+p.y-start.y;moved=true;
+      if(!frame)frame=requestAnimationFrame(paint);
+    };
+    const up=()=>{
+      window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);
+      if(frame){cancelAnimationFrame(frame);paint()}
+      if(!moved){F.sel=n.id;renderNodes();renderSide()}else{sizeWorld();saveWork()}
+    };
     window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);
   });
   const tog=el.querySelector(".ptog");
-  if(tog)tog.onchange=()=>{const s=PIPE[n.pipe];
+  if(tog)tog.onchange=()=>{
+    if(n.ing!=null){setIng(ING[n.ing].key,tog.checked);return}
+    const s=PIPE[n.pipe];
     if(s.kind==="check")$("#"+s.set).checked=tog.checked;else $("#"+s.set).value=tog.checked?(s.def||.3):0;
     syncReadouts();saveSettings();renderPipeline();rebuildPipeEdges();renderFlow()};
   const op=el.querySelector(".port.out");
@@ -2676,6 +2958,13 @@ function bindNode(el,n){
     F.sel=n.id;renderNodes();renderSide();nodeMenu(n,e.clientX,e.clientY)});
 }
 function nodeMenu(n,x,y){
+  if(n.ing!=null){
+    const k=ING[n.ing].key,on=ingOn(k),items=[];
+    if(["transform","context","entities","comm"].includes(k))
+      items.push({label:on?"turn this stage off":"turn this stage on",run:()=>setIng(k,!on)});
+    items.push({label:"select and configure",run:()=>{F.sel=n.id;renderNodes();renderSide()}});
+    showCtx(x,y,items);return;
+  }
   if(n.pipe!=null){
     const s=PIPE[n.pipe],items=[];
     if(s.kind==="range"||s.kind==="check"){const on=pipeOn(s);
@@ -2733,22 +3022,46 @@ flowCanvas.addEventListener("contextmenu",e=>{
 
 // ---- palette + tools ----
 function renderTools(){
+  if(F.mode==="ingest"){
+    flowTools.innerHTML='<button id="flowIngRun" class="prime">run ingest</button>';
+    $("#flowIngRun").onclick=()=>{if(!hasSource()){F.sel="i0";renderNodes();renderSide();
+      toast("choose a file or paste text in the Documents stage",true);return}runIngest()};
+    return;
+  }
   if(F.mode==="pipeline"){
     flowTools.innerHTML='<button id="flowReset">reset to defaults</button>';
     $("#flowReset").onclick=()=>{$("#resetSettings").click();buildPipeline();renderFlow()};
     return;
   }
-  const chips=FPAL.map(t=>'<span class="chip" draggable="true" data-add="'+t+'" title="drag onto the canvas">'+esc(FB[t].nm)+'</span>').join("");
-  flowTools.innerHTML='<span class="pal">drag a block:</span>'+chips+
-    '<span class="pal" style="margin-left:6px">flow:</span><button id="flowNew">new</button>'+
+  renderPalette();
+  flowTools.innerHTML='<span class="pal">flow:</span><button id="flowNew">new</button>'+
     '<select id="flowLoad"></select><button id="flowSaveAs">save as...</button>';
-  flowTools.querySelectorAll(".chip").forEach(c=>{
-    c.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",c.dataset.add))});
   $("#flowNew").onclick=()=>{F.free=defaultFlow();F.nodes=F.free.nodes;F.edges=F.free.edges;F.sel=null;saveWork();renderFlow()};
   $("#flowSaveAs").onclick=saveNamed;
   const sel=$("#flowLoad");const names=Object.keys(loadSlots());
   sel.innerHTML='<option value="">load saved...</option>'+names.map(n=>'<option>'+esc(n)+'</option>').join("");
   sel.onchange=()=>{if(sel.value)loadNamed(sel.value)};
+}
+// renderPalette fills the rail. The "your scripts" group is whatever the operator put
+// in the scripts directory, so the palette grows with the server rather than the code.
+function renderPalette(){
+  const GRP=[["query","query"],["ingest","ingest"],["scripts","your scripts"],["note","annotate"]];
+  let h="";
+  for(const [g,lbl] of GRP){
+    const ts=FPAL.filter(t=>FB[t].grp===g);
+    h+='<div class="pgrp">'+lbl+'</div>';
+    if(!ts.length){
+      h+='<div class="none">'+(g==="scripts"
+        ? 'none registered. start the server with <b>--scripts &lt;dir&gt;</b> and every program in it becomes a block.'
+        : '&mdash;')+'</div>';
+      continue;
+    }
+    h+=ts.map(t=>'<span class="chip'+(g==="scripts"?" scr":"")+'" draggable="true" data-add="'+esc(t)+
+      '" title="'+esc(FB[t].det)+'">'+esc(FB[t].nm)+'</span>').join("");
+  }
+  flowPal.innerHTML=h;
+  flowPal.querySelectorAll(".chip").forEach(c=>{
+    c.addEventListener("dragstart",e=>e.dataTransfer.setData("text/plain",c.dataset.add))});
 }
 flowCanvas.addEventListener("dragover",e=>{if(F.mode==="free")e.preventDefault()});
 flowCanvas.addEventListener("drop",e=>{
@@ -2769,13 +3082,16 @@ function renderSide(){
   if(n){
     const m=nodeMeta(n);
     h+='<h4>'+esc(m.nm)+'</h4>';
-    if(n.pipe!=null)h+=pipeInspector(n);
+    if(n.ing!=null)h+=ingInspector(n);
+    else if(n.pipe!=null)h+=pipeInspector(n);
     else h+=freeInspector(n);
   }else{
-    h+='<h4>'+(F.mode==="pipeline"?"retrieval pipeline":"free-form flow")+'</h4>';
-    h+='<p class="muted">'+(F.mode==="pipeline"
-      ? "each block is a stage of the retrieval pipeline, in execution order. toggle a stage on or off and tune it; changes apply to your real retrieval settings immediately. select a block to adjust it here."
-      : "drag blocks from the palette onto the canvas and wire them output to input. select a block to configure it. save named flows and run a query flow against this bucket.")+'</p>';
+    const title={ingest:"ingest pipeline",pipeline:"retrieval pipeline",free:"free-form flow"}[F.mode];
+    const blurb={
+      ingest:"every stage a document passes through on its way into the graph, in execution order. the toggles are the real ingest settings, not a picture of them: choose a source, turn preprocessing on or off, and run it.",
+      pipeline:"each block is a stage of the retrieval pipeline, in execution order. toggle a stage on or off and tune it; changes apply to your real retrieval settings immediately. select a block to adjust it here.",
+      free:"drag blocks from the palette onto the canvas and wire them output to input. select a block to configure it. save named flows and run a query flow against this bucket."}[F.mode];
+    h+='<h4>'+esc(title)+'</h4><p class="muted">'+blurb+'</p>';
   }
   h+=runPanel();
   flowSide.innerHTML=h;
@@ -2793,30 +3109,112 @@ function pipeInspector(n){
     '<input type="range" id="si_rng" min="'+s.min+'" max="'+s.max+'" step="'+s.step+'" value="'+val+'"'+(on?"":" disabled")+'></div>';
   return h2;
 }
+// ingInspector edits the setting the stage is bound to, in place. Nothing here is a
+// copy of a setting; each control writes to the thing that governs the real ingest.
+function ingInspector(n){
+  const k=ING[n.ing].key,c=F.cfg||{};
+  let h='<p class="muted">step '+(n.ing+1)+' of '+ING.length+'. '+esc(ING[n.ing].det)+'</p>';
+  switch(k){
+    case "source":
+      h+='<div class="ing-drop" id="ingDrop">drop files here, or click to choose<small>'+
+        (G.pdfSupported?".txt .md .pdf, images":".txt .md")+'</small></div>'+
+        '<input id="ingFile" type="file" multiple hidden>'+
+        '<div class="fp-row"><label>or paste text</label>'+
+        '<textarea id="ingText" class="fp-q" rows="4" placeholder="paste a document to index">'+esc(F.ing.text)+'</textarea></div>'+
+        (F.ing.files.length?'<div class="ing-files">'+F.ing.files.map(f=>'<span>'+esc(f.name)+'</span>').join("")+
+          '<button class="lnk" id="ingClear">clear</button></div>':"");
+      return h;
+    case "extract":
+      return h+'<p class="muted">'+(G.pdfSupported
+        ? "this server can pull text out of pdfs, and caption images with the vision model. plain text and markdown pass straight through."
+        : "this server has no pdf or ocr extractor configured, so only text and markdown are accepted. see --pdf-cmd and --ocr-cmd.")+'</p>';
+    case "transform":{
+      const all=tfNames();
+      if(!all.length)return h+'<p class="muted">no scripts are registered. start the server with <b>--scripts &lt;dir&gt;</b> and every executable in it becomes a stage you can run here, in any language. it reads a document as json on stdin and writes one back on stdout.</p>';
+      const sel=selectedTransforms();
+      return h+'<p class="muted">run in this order, over each document, before it is chunked.</p>'+
+        all.map(nme=>'<div class="fp-row"><label class="tg-check"><input type="checkbox" data-tf-flow="'+esc(nme)+'" '+
+          (sel.includes(nme)?"checked":"")+'> '+esc(nme)+'</label></div>').join("");
+    }
+    case "chunk":
+      return h+'<div class="fp-row"><label>strategy</label><select id="ingChunk">'+
+        ["recursive","word","markdown","sentence"].map(o=>'<option'+((c.chunk_strategy||"recursive")===o?" selected":"")+'>'+o+'</option>').join("")+
+        '</select></div>'+
+        '<div class="fp-row"><label>target words</label><input type="number" id="ingWords" value="'+(c.chunk_words||120)+'"></div>'+
+        '<div class="fp-row"><label>overlap words</label><input type="number" id="ingOverlap" value="'+(c.chunk_overlap||24)+'"></div>'+
+        '<p class="muted">saved to the server config and applied to new ingests.</p>';
+    case "context":
+      return h+'<div class="fp-row"><label class="tg-check"><input type="checkbox" id="ingCtx" '+($("#ctxOpt").checked?"checked":"")+'> enabled</label></div>'+
+        '<p class="muted">prefixes each chunk, for indexing only, with a generated sentence placing it in its document. it costs one model call per chunk, and earns it on long documents whose later chunks lose the subject to pronouns.</p>';
+    case "embed":
+      return h+'<p class="muted">embedded with <b>'+esc(c.embed_model||"the configured model")+'</b>. change it in settings; it applies to new buckets.</p>';
+    case "index":
+      return h+'<p class="muted">vectors go into an HNSW index over TurboQuant codes, and the text into a BM25 index. both are searched and fused at query time.</p>';
+    case "entities":
+      return h+'<div class="fp-row"><label class="tg-check"><input type="checkbox" id="ingEnt" '+(F.ing.entities?"checked":"")+'> extract after indexing</label></div>'+
+        '<div class="fp-row"><label>chunks per model call</label><select id="ingEntBatch">'+
+          [1,2,4,8].map(b=>'<option value="'+b+'"'+((+($("#cfgEntBatch")?.value||2))===b?" selected":"")+'>'+b+'</option>').join("")+
+        '</select></div>'+
+        '<p class="muted">needs a model. batching more chunks per call is faster and measurably lossier on a small model.</p>';
+    case "comm":
+      return h+'<div class="fp-row"><label class="tg-check"><input type="checkbox" id="ingComm" '+(F.ing.communities?"checked":"")+'> detect after extraction</label></div>'+
+        '<p class="muted">groups the entity graph into communities by label propagation. cheap, and no model call.</p>';
+  }
+  return h;
+}
 function freeInspector(n){
   const b=FB[n.type];let h='<p class="muted">'+esc(b.det)+'</p>';
+  if(b.script)h+='<p class="muted">registered by the operator in the server\'s scripts directory. it receives each document as json on stdin and writes one back on stdout; it can rewrite the text, add metadata, or drop the document.</p>';
+  if(n.type==="source"){
+    h+='<div class="ing-drop" id="ingDrop">drop files here, or click to choose<small>'+
+      (G.pdfSupported?".txt .md .pdf, images":".txt .md")+'</small></div>'+
+      '<input id="ingFile" type="file" multiple hidden>'+
+      '<div class="fp-row"><label>or paste text</label>'+
+      '<textarea id="ingText" class="fp-q" rows="4" placeholder="paste a document to index">'+esc(F.ing.text)+'</textarea></div>'+
+      (F.ing.files.length?'<div class="ing-files">'+F.ing.files.map(f=>'<span>'+esc(f.name)+'</span>').join("")+
+        '<button class="lnk" id="ingClear">clear</button></div>':"");
+  }
   b.params.forEach(p=>{const v=n.params[p.k]!=null?n.params[p.k]:p.def;
-    if(p.t==="num")h+='<div class="fp-row"><label>'+esc(p.lbl)+'</label><input type="number" data-k="'+p.k+'" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+v+'"></div>';
-    else h+='<div class="fp-row"><label>'+esc(p.lbl)+' <b>'+(+v>0?(+v).toFixed(2):"off")+'</b></label><input type="range" data-k="'+p.k+'" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+v+'"></div>';
+    if(p.t==="num")h+='<div class="fp-row"><label>'+esc(p.lbl)+'</label><input type="number" data-k="'+p.k+'" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+esc(v)+'"></div>';
+    else if(p.t==="text")h+='<div class="fp-row"><label>'+esc(p.lbl)+'</label><input type="text" data-k="'+p.k+'" value="'+esc(v)+'"></div>';
+    else h+='<div class="fp-row"><label>'+esc(p.lbl)+' <b>'+(+v>0?(+v).toFixed(2):"off")+'</b></label><input type="range" data-k="'+p.k+'" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+esc(v)+'"></div>';
   });
-  if(!b.params.length)h+='<p class="muted">no settings.</p>';
+  if(!b.params.length&&n.type!=="source")h+='<p class="muted">no settings.</p>';
   h+='<button class="fp-del" id="si_del">delete block</button>';
   return h;
 }
 function runPanel(){
+  if(F.mode==="ingest"){
+    const ready=hasSource();
+    return '<h4 style="margin-top:16px">run</h4>'+
+      '<button class="fp-run" id="si_run"'+(ready?"":" disabled")+'>run ingest</button>'+
+      '<div class="fp-out" id="flowOut">'+(F.ing.result||'<span class="muted">'+(ready
+        ? "runs the stages above against this bucket, for real."
+        : "select the Documents stage to choose a file or paste text.")+'</span>')+'</div>';
+  }
   if(F.mode==="pipeline")
     return '<h4 style="margin-top:16px">test run</h4>'+
       '<div class="fp-row"><input type="text" id="flowQuery" class="fp-q" placeholder="ask a question to trace the pipeline"></div>'+
       '<button class="fp-run" id="si_run">run pipeline</button>'+
       '<div class="fp-out" id="flowOut"><span class="muted">runs a real query, lights up each stage as it executes, then lists the matches.</span></div>';
+  if(isIngestFlow()){
+    const tf=flowTransforms();
+    return '<h4 style="margin-top:16px">run</h4>'+
+      '<p class="muted">this flow ingests. '+(tf.length?'it runs <b>'+tf.map(esc).join("</b>, <b>")+'</b> over each document before chunking.':'wire a script block in to preprocess documents.')+'</p>'+
+      '<button class="fp-run" id="si_run"'+(hasSource()?"":" disabled")+'>run ingest</button>'+
+      '<div class="fp-out" id="flowOut">'+(F.ing.result||'<span class="muted">'+(hasSource()
+        ? "runs for real against this bucket."
+        : "select the Documents block to choose a file.")+'</span>')+'</div>';
+  }
   const has=F.nodes.some(n=>n.type==="retrieve");
   return '<h4 style="margin-top:16px">run</h4>'+(has
     ? '<div class="fp-row"><input type="text" id="flowQuery" class="fp-q" placeholder="ask this flow a question"></div>'+
       '<button class="fp-run" id="si_run">run flow</button><div class="fp-out" id="flowOut"><span class="muted">lights up each block as it runs, then lists the matches.</span></div>'
-    : '<p class="muted">add a retrieve block to run this flow.</p>');
+    : '<p class="muted">add a retrieve block for a query flow, or Documents and Index for an ingest flow.</p>');
 }
 function wireSide(n){
-  if(n&&n.pipe!=null){const s=PIPE[n.pipe];
+  if(n&&n.ing!=null){wireIng(ING[n.ing].key);}
+  else if(n&&n.pipe!=null){const s=PIPE[n.pipe];
     const chk=$("#si_chk");if(chk)chk.onchange=()=>{$("#"+s.set).checked=chk.checked;syncReadouts();saveSettings();renderPipeline();rebuildPipeEdges();renderFlow()};
     const on=$("#si_on"),rng=$("#si_rng");
     if(on)on.onchange=()=>{$("#"+s.set).value=on.checked?(s.def||.3):0;syncReadouts();saveSettings();renderPipeline();rebuildPipeEdges();renderFlow()};
@@ -2825,12 +3223,129 @@ function wireSide(n){
   }else if(n){
     flowSide.querySelectorAll("input[data-k]").forEach(inp=>{
       const ev=inp.type==="number"?"change":"input";
-      inp.addEventListener(ev,()=>{n.params[inp.dataset.k]=inp.type==="number"?(+inp.value):(+inp.value);saveWork();renderNodes();
-        if(ev==="input"){const lab=inp.previousElementSibling?inp.previousElementSibling.querySelector("b"):null;if(lab)lab.textContent=+inp.value>0?(+inp.value).toFixed(2):"off"}})});
+      inp.addEventListener(inp.type==="text"?"input":ev,()=>{
+        n.params[inp.dataset.k]=inp.type==="text"?inp.value:(+inp.value);
+        saveWork();renderNodes();renderEdges();
+        if(inp.type==="range"){const lab=inp.previousElementSibling?inp.previousElementSibling.querySelector("b"):null;
+          if(lab)lab.textContent=+inp.value>0?(+inp.value).toFixed(2):"off"}})});
+    if(n.type==="source")wireIng("source");
     const del=$("#si_del");if(del)del.onclick=()=>{F.edges=F.edges.filter(e=>e.from!==n.id&&e.to!==n.id);
       F.nodes=F.nodes.filter(x=>x.id!==n.id);F.sel=null;saveWork();renderFlow()};
   }
-  const run=$("#si_run");if(run)run.onclick=runFlow;
+  const run=$("#si_run");if(run)run.onclick=(F.mode==="ingest"?runIngest:runFlow);
+}
+
+// wireIng binds the inspector controls to the settings they represent. The chunk
+// controls post to /api/config, because that is where chunking actually lives; the
+// alternative would be a second copy of it that silently disagrees.
+function wireIng(k){
+  const redraw=()=>{renderNodes();renderEdges()};
+  if(k==="source"){
+    const dz=$("#ingDrop"),fi=$("#ingFile");
+    const take=fs=>{F.ing.files=[...fs];renderSide();redraw()};
+    dz.onclick=()=>fi.click();
+    fi.onchange=e=>take(e.target.files);
+    dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("over")});
+    dz.addEventListener("dragleave",()=>dz.classList.remove("over"));
+    dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("over");take(e.dataTransfer.files)});
+    $("#ingText").oninput=e=>{F.ing.text=e.target.value;redraw()};
+    const cl=$("#ingClear");if(cl)cl.onclick=()=>{F.ing.files=[];renderSide();redraw()};
+  }
+  else if(k==="transform"){
+    flowSide.querySelectorAll("input[data-tf-flow]").forEach(b=>b.onchange=()=>{
+      const src=document.querySelector('#tfList input[data-tf="'+CSS.escape(b.dataset.tfFlow)+'"]');
+      if(src)src.checked=b.checked;
+      redraw();
+    });
+  }
+  else if(k==="chunk"){
+    const push=async()=>{
+      const c=Object.assign({},F.cfg,{chunk_strategy:$("#ingChunk").value,
+        chunk_words:+$("#ingWords").value||0,chunk_overlap:+$("#ingOverlap").value||0});
+      F.cfg=c;redraw();
+      try{await api(bk("/api/config"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)});
+        toast("chunking saved")}catch(e){toast(e.message,true)}
+    };
+    ["#ingChunk","#ingWords","#ingOverlap"].forEach(id=>{const el=$(id);if(el)el.onchange=push});
+  }
+  else if(k==="context"){$("#ingCtx").onchange=e=>{$("#ctxOpt").checked=e.target.checked;redraw()}}
+  else if(k==="entities"){
+    $("#ingEnt").onchange=e=>{F.ing.entities=e.target.checked;saveIng();redraw()};
+    const b=$("#ingEntBatch");if(b)b.onchange=()=>{const c=$("#cfgEntBatch");if(c){c.value=b.value;c.onchange&&c.onchange()}redraw()};
+  }
+  else if(k==="comm"){$("#ingComm").onchange=e=>{F.ing.communities=e.target.checked;saveIng();redraw()}}
+}
+
+// ---- run the ingest pipeline for real ----
+// It calls the same endpoints the documents panel calls, in the same order. The
+// stages light up as the work they name is actually in flight, not on a timer.
+async function runIngest(){
+  if(!hasSource()){toast("choose a file or paste some text first",true);return}
+  const out=$("#flowOut"),btn=$("#si_run");
+  const mark=(keys,cls)=>keys.forEach(k=>{const el=nodeEl("i"+ING.findIndex(s=>s.key===k));
+    if(el){el.classList.remove("run","ran");if(cls)el.classList.add(cls)}});
+  // Keep the summary in state, not only in the DOM: clearing the source at the end
+  // re-renders the panel, which would otherwise wipe the result the run just produced.
+  const say=h=>{F.ing.result=h;const o=$("#flowOut");if(o)o.innerHTML=h};
+  flowNodes.querySelectorAll(".fnode").forEach(e=>e.classList.remove("run","ran"));
+  F.ing.result="";
+  if(btn)btn.disabled=true;
+  try{
+    // One request covers source through index: the server extracts, transforms, chunks,
+    // contextualises, embeds and indexes in that order, so they are all genuinely in
+    // flight together and are lit together.
+    const wave=["source","extract","transform","chunk","context","embed","index"];
+    mark(wave,"run");
+    say('<span class="muted">indexing...</span>');
+    const ctx=$("#ctxOpt").checked,tf=selectedTransforms();
+    let chunks=0;
+    if(F.ing.files.length){
+      const r=await ingestThroughPanel(F.ing.files);
+      chunks+=r||0;
+    }
+    if(F.ing.text.trim()){
+      const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({documents:[{id:"pasted-"+Date.now()+".txt",text:F.ing.text}],contextual:ctx,transform:tf})});
+      if(r.error)throw new Error(r.error);
+      reportTransform(r);chunks=r.chunks||chunks;
+    }
+    mark(wave,"ran");
+    say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks in the bucket.</div>');
+
+    if(F.ing.entities){
+      if(!G.model){toast("select a model to extract entities",true);mark(["entities","comm"],"")}
+      else{
+        mark(["entities"],"run");
+        say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks · extracting entities...</div>');
+        const r=await buildEntities(pg=>{
+          say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks · extracting entities '+
+            pg.done+'/'+pg.total+' · '+(pg.entities||0)+' found</div>');
+        });
+        mark(["entities"],"ran");
+        say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks · '+
+          (r?r.entities+' entities · '+r.relations+' relationships':'entities extracted')+'</div>');
+        if(F.ing.communities){
+          mark(["comm"],"run");
+          const c=await api(bk("/api/build-communities"),{method:"POST"}).catch(()=>null);
+          mark(["comm"],"ran");
+          if(c&&c.communities!=null)say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+
+            ' chunks · '+r.entities+' entities · '+r.relations+' relationships · '+c.communities+' communities</div>');
+        }
+      }
+    }
+    F.ing.files=[];F.ing.text="";
+    await loadStats();await loadGraph();
+    renderSide();renderNodes();renderEdges();
+    toast("ingest complete");
+  }catch(e){say('<span class="muted" style="color:var(--danger)">'+esc(e.message)+'</span>');toast(e.message,true)}
+  finally{if(btn)btn.disabled=false;setTimeout(()=>flowNodes.querySelectorAll(".fnode").forEach(e=>e.classList.remove("ran")),1600)}
+}
+// ingestThroughPanel hands the files to the documents panel's own ingest, so the
+// pipeline runs the identical code path rather than a second implementation of it.
+async function ingestThroughPanel(files){
+  await handleFiles(files);
+  const st=await api(bk("/stats")).catch(()=>null);
+  return st?st.chunks:0;
 }
 
 // ---- run a query flow against the live bucket, tracing each stage ----
@@ -2853,17 +3368,45 @@ async function animateRun(ids){
   for(let i=0;i<ids.length;i++){
     if(i>0){F._flowKey=ids[i-1]+">"+ids[i];renderEdges()}
     const el=nodeEl(ids[i]);
-    if(el){el.classList.add("run");el.scrollIntoView({block:"nearest",inline:"nearest"})}
+    if(el)el.classList.add("run");
     await sleep(300);
     if(el){el.classList.remove("run");el.classList.add("ran")}
   }
   F._flowKey=null;renderEdges();
   setTimeout(()=>flowNodes.querySelectorAll(".fnode").forEach(e=>e.classList.remove("ran")),1400);
 }
+// runParams folds the flow into one request. A modifier block only counts when it is
+// actually wired into the chain: an orphan block sitting on the canvas is a block you
+// have not connected yet, and pretending it ran would make the trace a lie.
 function runParams(){
-  if(F.mode==="pipeline")return{top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,
+  if(F.mode!=="free")return{top_k:+$("#pTopK").value||6,graph_mix:+$("#pMix").value,
     entity_mix:+$("#pEnt").value,mmr_lambda:+$("#pMMR").value,min_sim:+$("#pMinSim").value,rerank:$("#pRerank").checked};
-  const rn=F.nodes.find(n=>n.type==="retrieve");return rn?rn.params:null;
+  const rn=F.nodes.find(n=>n.type==="retrieve");
+  if(!rn)return null;
+  const chain=new Set(flowOrder());
+  const p=Object.assign({top_k:6,graph_mix:0,entity_mix:0,mmr_lambda:0,min_sim:0,
+    rerank:false,global:false,decompose:false,window:0,verify:false},rn.params);
+  const num=(n,k,d)=>{const v=n.params[k];return v!=null?+v:d};
+  for(const n of F.nodes){
+    if(!chain.has(n.id))continue;
+    switch(n.type){
+      case "rerank":   p.rerank=true;break;
+      case "ground":   p.min_sim=num(n,"min_sim",.3);break;
+      case "multihop": p.decompose=true;break;
+      case "global":   p.global=true;break;
+      case "window":   p.window=num(n,"window",1);break;
+      case "verify":   p.verify=true;break;
+    }
+  }
+  return p;
+}
+// A flow is an ingest flow when it starts at Documents and ends at Index; the script
+// blocks wired between them are its preprocessing, in chain order.
+function isIngestFlow(){
+  return F.nodes.some(n=>n.type==="source")&&F.nodes.some(n=>n.type==="store");
+}
+function flowTransforms(){
+  return flowOrder().map(nodeById).filter(n=>n&&FB[n.type]&&FB[n.type].script).map(n=>FB[n.type].script);
 }
 function runSourcesHTML(list){
   if(!list||!list.length)return '<div class="muted">no matches in this bucket</div>';
@@ -2873,6 +3416,7 @@ function runSourcesHTML(list){
     "<br>"+esc((c.text||"").slice(0,160))+"</div>").join("");
 }
 async function runFlow(){
+  if(F.mode==="free"&&isIngestFlow())return runFreeIngest();
   const qel=$("#flowQuery");const q=qel?qel.value.trim():"";
   if(!q){toast("enter a question to run",true);return}
   const p=runParams();
@@ -2891,6 +3435,47 @@ async function runFlow(){
     else await runRetrieval(q,p,out,wantsAnswer&&!G.model);
   }finally{if(btn)btn.disabled=false}
 }
+// A free-form ingest flow runs the real ingest with the scripts you wired into it,
+// in chain order, and with Contextual on if that block is in the chain.
+async function runFreeIngest(){
+  if(!hasSource()){toast("choose a file or paste text in the Documents block",true);return}
+  const chain=new Set(flowOrder());
+  const ctxBlock=F.nodes.some(n=>n.type==="contextual"&&chain.has(n.id));
+  const tf=flowTransforms();
+  const out=$("#flowOut"),btn=$("#si_run");
+  F.ing.result="";
+  if(btn)btn.disabled=true;
+  if(out)out.innerHTML='<span class="muted">indexing through this flow...</span>';
+  const prevCtx=$("#ctxOpt").checked;
+  const boxes=[...document.querySelectorAll('#tfList input[data-tf]')];
+  const prevTf=boxes.map(b=>b.checked);
+  try{
+    // Drive the ingest through the same controls the documents panel uses, so this is
+    // the identical code path rather than a parallel one that can drift from it.
+    $("#ctxOpt").checked=ctxBlock;
+    boxes.forEach(b=>b.checked=tf.includes(b.dataset.tf));
+    await animateRun(flowOrder());
+    let chunks=0;
+    if(F.ing.files.length)chunks=await ingestThroughPanel(F.ing.files)||0;
+    if(F.ing.text.trim()){
+      const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({documents:[{id:"pasted-"+Date.now()+".txt",text:F.ing.text}],
+          contextual:ctxBlock,transform:tf})});
+      if(r.error)throw new Error(r.error);
+      reportTransform(r);chunks=r.chunks||chunks;
+    }
+    F.ing.files=[];F.ing.text="";
+    await loadStats();await loadGraph();
+    F.ing.result='<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks'+
+      (tf.length?' · ran '+tf.map(esc).join(", "):"")+(ctxBlock?" · contextual":"")+'</div>';
+    renderSide();
+  }catch(e){if(out)out.innerHTML='<span style="color:var(--danger)">'+esc(e.message)+'</span>';toast(e.message,true)}
+  finally{
+    $("#ctxOpt").checked=prevCtx;boxes.forEach((b,i)=>b.checked=prevTf[i]);
+    if(btn)btn.disabled=false;
+  }
+}
+
 // Retrieval-only: hit /query and list the matches (no model needed).
 async function runRetrieval(q,p,out,needModel){
   if(out)out.innerHTML='<span class="muted">retrieving...</span>';
@@ -2912,7 +3497,8 @@ async function runAnswer(q,p,out){
     const resp=await fetch(bk("/api/chat"),{method:"POST",headers:{"Content-Type":"application/json"},signal:F._runAbort.signal,
       body:JSON.stringify({query:q,top_k:+(p.top_k!=null?p.top_k:6),graph_mix:+(p.graph_mix||0),
         mmr_lambda:+(p.mmr_lambda||0),entity_mix:+(p.entity_mix||0),min_sim:+(p.min_sim||0),
-        rerank:!!p.rerank,history:[],model:G.model})});
+        rerank:!!p.rerank,global:!!p.global,decompose:!!p.decompose,window:+(p.window||0),
+        verify:!!p.verify,history:[],model:G.model})});
     if(!resp.ok){let m="chat failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
     const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
     while(true){
