@@ -175,6 +175,11 @@ type Store struct {
 	// the model about every chunk it has already seen: adding one document to a large
 	// corpus cost a model call for every chunk in it. Persisted with the store.
 	extractCache map[[32]byte]cachedExtraction
+
+	// redact strips credentials from documents at ingest. On by default: see
+	// SetRedaction. lastRedactions records what the most recent ingest removed.
+	redact         bool
+	lastRedactions []Redaction
 }
 
 type edgeRec struct {
@@ -201,7 +206,10 @@ type Document struct {
 // New creates an empty store.
 func New(embedder Embedder, cfg Config) *Store {
 	cfg.withDefaults()
-	return &Store{cfg: cfg, embedder: embedder}
+	// Redaction defaults ON. The safe default matters more than the convenient one: a
+	// store is shared, and the cost of a false negative (a key in a file you gave away)
+	// is not comparable to the cost of a false positive (a [redacted:...] marker).
+	return &Store{cfg: cfg, embedder: embedder, redact: true}
 }
 
 // Len returns the number of indexed chunks.
@@ -227,6 +235,7 @@ func (s *Store) Communities() *graph.Communities {
 
 // Build indexes the documents from scratch, replacing any previous contents.
 func (s *Store) Build(ctx context.Context, docs []Document) error {
+	docs, redacted := s.redactDocs(docs)
 	chunks := make([]Chunk, 0, len(docs))
 	for _, d := range docs {
 		chunks = append(chunks, s.chunkDoc(d)...)
@@ -249,6 +258,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastRedactions = redacted
 	s.dim = len(vecs[0])
 	s.encoder = encoderOf(s.embedder)
 	s.initIndexes()
@@ -286,6 +296,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 // embeddings. New documents are added directly. The graph and communities are
 // then refreshed.
 func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
+	docs, redacted := s.redactDocs(docs)
 	docs = s.newDocuments(docs)
 	if len(docs) == 0 {
 		return nil
@@ -306,6 +317,7 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastRedactions = redacted
 	changed := false
 	for _, p := range preps {
 		if s.applyPreparedLocked(p) {

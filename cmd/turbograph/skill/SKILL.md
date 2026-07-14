@@ -141,6 +141,18 @@ freely as stores evolve.
 Both stores must have been built with the same embedding model. Merging stores built
 with different models fails with a clear error rather than producing a corrupt index.
 
+## Two things it does for you
+
+**Credentials are stripped at ingest.** An agent's knowledge base is fed from tool
+output: shell sessions, config files, environment dumps, CI logs. Those contain API
+keys, and a `.tg` is a file you hand to someone else. Anything that looks like a
+credential is replaced with a `[redacted:...]` marker before the text is chunked,
+embedded, or recorded in history, and `add` tells you what it took out. `--no-redact`
+turns it off, which you should not do for anything you intend to share.
+
+**Concurrent writes are safe.** Two `turbograph add` calls at once do not clobber each
+other; the second waits for the first. So you can fan out.
+
 ## Notes
 
 - Every command takes `--json` (and `search` emits JSON by default) — parse it, do

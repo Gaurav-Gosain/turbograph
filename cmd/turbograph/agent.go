@@ -15,6 +15,7 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
+	"github.com/Gaurav-Gosain/turbograph/redact"
 	"github.com/Gaurav-Gosain/turbograph/server"
 )
 
@@ -75,6 +76,42 @@ func openStore(path string, emb rag.Embedder, create bool) (*rag.Store, error) {
 	return rag.Load(emb, f)
 }
 
+// editStore opens a store for a read-modify-write cycle under an exclusive lock, and
+// returns a commit function that saves it and releases the lock.
+//
+// The lock spans the whole cycle, not just the write. A store's unit of work is a
+// process: `turbograph add` loads the file, changes it, and writes it back. Two agents
+// doing that at once both load the same store and the second save destroys the first
+// one's document, silently. Locking only the save would not help: both would still
+// have loaded the same stale copy.
+func editStore(path string, emb rag.Embedder, create bool) (*rag.Store, func() error, error) {
+	lock, err := rag.LockStore(path, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := openStore(path, emb, create)
+	if err != nil {
+		lock.Unlock()
+		return nil, nil, err
+	}
+	commit := func() error {
+		defer lock.Unlock()
+		return save(path, store)
+	}
+	return store, commit, nil
+}
+
+// readStore opens a store under a shared lock, so a reader never sees a store
+// half-written by a concurrent writer. Readers do not block each other.
+func readStore(path string, emb rag.Embedder) (*rag.Store, error) {
+	lock, err := rag.LockStore(path, true)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+	return openStore(path, emb, false)
+}
+
 // save writes a store back to its path atomically (see saveStore in main.go).
 func save(path string, s *rag.Store) error { return saveStore(s, path, rag.VectorsExact) }
 
@@ -100,6 +137,7 @@ func cmdAdd(args []string) error {
 	text := fs.String("text", "", "the text to add (default: read stdin)")
 	file := fs.String("file", "", "read the text from this file instead of stdin")
 	metaRaw := fs.String("meta", "", "arbitrary JSON metadata to attach, e.g. '{\"source\":\"slack\",\"date\":\"2026-07-14\"}'")
+	noRedact := fs.Bool("no-redact", false, "do not strip credentials from the text (they would be indexed, and shipped with the store)")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
 	eo := embedFlags(fs)
 	fs.Parse(args)
@@ -136,15 +174,22 @@ func cmdAdd(args []string) error {
 		}
 	}
 
-	store, err := openStore(*storePath, eo.embedder(), true)
+	store, commit, err := editStore(*storePath, eo.embedder(), true)
 	if err != nil {
 		return err
 	}
+	store.SetRedaction(!*noRedact)
 	// Work out what this call is actually doing BEFORE doing it. Inferring it afterwards
 	// from the chunk count is wrong: replacing a one-chunk document with another
 	// one-chunk document leaves the count unchanged, and reporting "nothing was added"
 	// tells an agent its correction failed when in fact it landed.
-	owner, contentKnown := store.ContentOwner(sha256.Sum256([]byte(body)))
+	// Hash the text as it will actually be stored: redaction rewrites it, so hashing the
+	// raw input would report "added" for a document whose redacted form is already here.
+	stored := body
+	if !*noRedact {
+		stored, _ = redact.Text(body)
+	}
+	owner, contentKnown := store.ContentOwner(sha256.Sum256([]byte(stored)))
 	action := "added"
 	switch {
 	case contentKnown && owner == docID:
@@ -162,7 +207,7 @@ func cmdAdd(args []string) error {
 		return err
 	}
 	delta := store.Len() - before
-	if err := save(*storePath, store); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 
@@ -173,7 +218,16 @@ func cmdAdd(args []string) error {
 	if action == "duplicate" {
 		res["duplicate_of"] = owner
 	}
+	// Say what was stripped. Altering someone's document silently is not acceptable
+	// even when the alteration is the right thing to do.
+	red := store.LastRedactions()
+	if len(red) > 0 {
+		res["redacted"] = red[0].Found
+	}
 	emit(*asJSON, res, func() {
+		if len(red) > 0 {
+			fmt.Fprintf(os.Stderr, "%s\n", redact.Summary(red[0].Found))
+		}
 		switch action {
 		case "unchanged":
 			fmt.Printf("%s is already in %s, unchanged\n", docID, *storePath)
@@ -209,7 +263,7 @@ func cmdSearch(args []string) error {
 	if *q == "" {
 		return fmt.Errorf("--q is required")
 	}
-	store, err := openStore(*storePath, eo.embedder(), false)
+	store, err := readStore(*storePath, eo.embedder())
 	if err != nil {
 		return err
 	}
@@ -269,7 +323,7 @@ func cmdAsk(args []string) error {
 	if *genModel == "" {
 		return fmt.Errorf("--gen-model is required (or set $TURBOGRAPH_MODEL); use `turbograph search` for retrieval without a model")
 	}
-	store, err := openStore(*storePath, eo.embedder(), false)
+	store, err := readStore(*storePath, eo.embedder())
 	if err != nil {
 		return err
 	}
@@ -318,7 +372,7 @@ func cmdDocs(args []string) error {
 	asJSON := fs.Bool("json", false, "print the list as JSON")
 	fs.Parse(args)
 
-	store, err := openStore(*storePath, nil, false)
+	store, err := readStore(*storePath, nil)
 	if err != nil {
 		return err
 	}
@@ -353,7 +407,7 @@ func cmdForget(args []string) error {
 	if *id == "" {
 		return fmt.Errorf("--id is required")
 	}
-	store, err := openStore(*storePath, eo.embedder(), false)
+	store, commit, err := editStore(*storePath, eo.embedder(), false)
 	if err != nil {
 		return err
 	}
@@ -361,7 +415,7 @@ func cmdForget(args []string) error {
 	if removed == 0 {
 		return fmt.Errorf("no document %q in %s", *id, *storePath)
 	}
-	if err := save(*storePath, store); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	emit(*asJSON, map[string]any{"store": *storePath, "id": *id, "chunks_removed": removed,
@@ -389,14 +443,14 @@ func cmdMerge(args []string) error {
 		return fmt.Errorf("name at least one store to merge, e.g. turbograph merge --into combined.tg a.tg b.tg")
 	}
 	emb := eo.embedder()
-	dst, err := openStore(*into, emb, true)
+	dst, commit, err := editStore(*into, emb, true)
 	if err != nil {
 		return err
 	}
 	total := rag.MergeStats{}
 	per := make([]map[string]any, 0, len(srcs))
 	for _, p := range srcs {
-		src, err := openStore(p, emb, false)
+		src, err := readStore(p, emb)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -411,7 +465,7 @@ func cmdMerge(args []string) error {
 		per = append(per, map[string]any{"store": p, "documents": st.Documents,
 			"chunks": st.Chunks, "skipped": st.Skipped})
 	}
-	if err := save(*into, dst); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	out := map[string]any{"into": *into, "sources": per,
@@ -469,7 +523,7 @@ func cmdEntities(args []string) error {
 	if *genModel == "" {
 		return fmt.Errorf("--gen-model is required (or set $TURBOGRAPH_MODEL)")
 	}
-	store, err := openStore(*storePath, eo.embedder(), false)
+	store, commit, err := editStore(*storePath, eo.embedder(), false)
 	if err != nil {
 		return err
 	}
@@ -498,7 +552,7 @@ func cmdEntities(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := save(*storePath, store); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	emit(*asJSON, map[string]any{"store": *storePath, "entities": store.EntityCount(),
