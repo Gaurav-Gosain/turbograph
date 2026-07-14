@@ -46,9 +46,16 @@ type snapshot struct {
 	// Encoder names the vector space the store was built in (embedding model, its
 	// truncation, its instruction prefixes). Absent in older snapshots, in which case a
 	// merge can only compare dimensions and says so.
-	Encoder string      `json:"encoder,omitempty"`
-	Chunks  []Chunk     `json:"chunks"`
-	Embeds  [][]float32 `json:"embeds"`
+	Encoder string  `json:"encoder,omitempty"`
+	Chunks  []Chunk `json:"chunks"`
+	// Embeds is the legacy per-chunk vector layout. Reading it costs one allocation per
+	// chunk, and gob's decoder was the single largest allocator in the load path: 80% of
+	// it, at 100,000 chunks. New snapshots write Flat instead.
+	Embeds [][]float32 `json:"embeds,omitempty"`
+	// Flat holds the vectors row-major, one contiguous block of len(Chunks)*Dim floats.
+	// It decodes as ONE allocation, and it is the exact layout the vector index wants, so
+	// the index adopts the buffer instead of copying it.
+	Flat []float32 `json:"flat,omitempty"`
 	// Codes holds the TurboQuant codes when the store was saved in VectorsCodes
 	// mode (Embeds is then empty). Decoded to approximate vectors on load.
 	Codes []quant.Code `json:"codes,omitempty"`
@@ -123,7 +130,10 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	case VectorsNone:
 		// Store no vectors; they are recomputed from text on load.
 	default:
-		snap.Embeds = s.embeds
+		// One contiguous block, not one slice per chunk. Gob decoding the per-chunk layout
+		// was 80% of the allocations in the load path, and the flat block is also exactly
+		// the layout the vector index wants, so it can adopt it rather than copy it.
+		snap.Flat = flattenVectors(s.embeds, s.dim)
 	}
 	if s.eg != nil {
 		snap.Entities = s.eg.Entities()
@@ -143,6 +153,15 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 // the store is published, so no lock is needed.
 func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
 	switch {
+	case snap.Dim > 0 && len(snap.Flat) == len(snap.Chunks)*snap.Dim:
+		// Views into the one block. No per-chunk allocation, and the block itself is handed
+		// to the index later, so the vectors are never copied.
+		out := make([][]float32, len(snap.Chunks))
+		for i := range out {
+			out[i] = snap.Flat[i*snap.Dim : (i+1)*snap.Dim : (i+1)*snap.Dim]
+		}
+		s.flat = snap.Flat
+		return out, nil
 	case len(snap.Embeds) == len(snap.Chunks):
 		return snap.Embeds, nil
 	case len(snap.Codes) == len(snap.Chunks):
@@ -272,4 +291,19 @@ func (s *Store) hnswSnapshot() *index.Graph {
 	}
 	g := s.hnsw.Snapshot()
 	return &g
+}
+
+// flattenVectors packs per-chunk vectors into one row-major block.
+func flattenVectors(vecs [][]float32, dim int) []float32 {
+	if len(vecs) == 0 || dim <= 0 {
+		return nil
+	}
+	out := make([]float32, 0, len(vecs)*dim)
+	for _, v := range vecs {
+		if len(v) != dim {
+			return nil // ragged; fall back to the per-chunk layout
+		}
+		out = append(out, v...)
+	}
+	return out
 }

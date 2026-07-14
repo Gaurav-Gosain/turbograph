@@ -227,3 +227,24 @@ func TestVectorsAreNotHeldTwice(t *testing.T) {
 	}
 	shared("after an append")
 }
+
+// BenchmarkSpeedOpenAndSearch is what an agent's `turbograph search` actually costs:
+// open the store, build the index from what was saved, run one query.
+func BenchmarkSpeedOpenAndSearch(b *testing.B) {
+	speedStore(b, 100000)
+	blob, err := os.ReadFile("/tmp/tg-speed-100000.tg")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		st, err := Load(newKeywordEmbedder(768), bytes.NewReader(blob))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := st.Retrieve(context.Background(), speedQuery, RetrieveParams{TopK: 10}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

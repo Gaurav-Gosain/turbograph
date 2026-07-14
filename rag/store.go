@@ -176,8 +176,10 @@ type Store struct {
 	// needed. Restoring from it skips link construction entirely, which is what makes
 	// opening and searching a large store fast rather than merely deferred.
 	savedHNSW *index.Graph
-	g         *graph.Graph
-	comm      *graph.Communities
+	// flat is the contiguous vector block read from disk, held until the index adopts it.
+	flat []float32
+	g    *graph.Graph
+	comm *graph.Communities
 
 	// Optional entity-relationship knowledge graph (GraphRAG style). Built on
 	// demand from an LLM extractor; nil until BuildEntityGraph runs.
@@ -609,6 +611,19 @@ func (s *Store) restoreHNSWLocked() bool {
 	ids := make([]string, len(s.chunks))
 	for i := range s.chunks {
 		ids[i] = s.chunks[i].ID
+	}
+	// When the vectors came off disk as one contiguous block, hand that block straight to
+	// the index. It is already the layout the index wants, so this copies nothing and
+	// halves the peak memory of opening a store.
+	if len(s.flat) == len(s.chunks)*s.dim {
+		flat := s.flat
+		s.flat = nil
+		if h, ok := index.AdoptFlat(s.dim, s.cfg.HNSW, ids, flat, *g); ok {
+			s.hnsw = h
+			return true
+		}
+		// AdoptFlat refused it; fall through and rebuild from the per-chunk views, which
+		// still reference the block.
 	}
 	h, ok := index.RestoreHNSW(s.dim, s.cfg.HNSW, ids, s.embeds, *g)
 	if !ok {

@@ -420,3 +420,39 @@ func RestoreHNSW(dim int, cfg HNSWConfig, ids []string, vecs [][]float32, g Grap
 	h.entry, h.top = g.Entry, g.Top
 	return h, true
 }
+
+// AdoptFlat builds an index from a previously exported link structure and a flat,
+// row-major vector buffer that it TAKES OWNERSHIP OF, normalizing it in place.
+//
+// It exists because the alternative is to copy. A store's vectors arrive from disk as
+// one contiguous block, which is exactly the layout the index wants, and copying them
+// into a second identical block cost the largest allocation in the load path and doubled
+// the peak memory of opening a store. The caller must not write to flat afterwards; it
+// is the index's buffer now.
+//
+// It reports false if the graph does not describe these vectors, in which case the
+// caller rebuilds. A stale graph is a cache miss, not an error.
+func AdoptFlat(dim int, cfg HNSWConfig, ids []string, flat []float32, g Graph) (*HNSW, bool) {
+	n := len(ids)
+	if n == 0 || len(flat) != n*dim || len(g.Levels) != n || len(g.Friends) != n {
+		return nil, false
+	}
+	h := NewHNSW(dim, cfg)
+	// Normalize in place: distances are computed against unit vectors, and normalize is
+	// safe when its destination and source are the same slice.
+	for i := 0; i < n; i++ {
+		v := flat[i*dim : (i+1)*dim]
+		normalize(v, v)
+	}
+	h.data = flat
+	h.ids = ids
+	for i, id := range ids {
+		h.idOrd[id] = int32(i)
+	}
+	h.nodes = make([]hnswNode, n)
+	for i := 0; i < n; i++ {
+		h.nodes[i] = hnswNode{level: int(g.Levels[i]), friends: g.Friends[i]}
+	}
+	h.entry, h.top = g.Entry, g.Top
+	return h, true
+}
