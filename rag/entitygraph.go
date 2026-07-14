@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"crypto/sha256"
 	"runtime"
 	"sort"
 	"strings"
@@ -17,12 +18,26 @@ type EntityProgress struct {
 	Total     int
 	Entities  int
 	Relations int
+	// Cached counts the chunks answered from the extraction cache rather than the
+	// model. They complete immediately, so a caller can say how much of the build was
+	// already paid for instead of showing a progress bar that jumps.
+	Cached int
 	// New lists the entities this chunk surfaced that had not been seen before, so a
 	// caller can show the graph populating as it is extracted rather than staring at
 	// a counter. These are the extractor's raw names: the final graph canonicalizes
 	// and prunes, so it is usually smaller than the number streamed here, and that
 	// difference is worth showing rather than hiding.
 	New []EntityBrief
+	// NewRelations lists the relationships this chunk asserted, so the caller can draw
+	// the graph as it is discovered rather than only its nodes.
+	NewRelations []RelationBrief
+}
+
+// RelationBrief is one newly asserted relationship, enough to draw an edge.
+type RelationBrief struct {
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	Description string `json:"description,omitempty"`
 }
 
 // EntityBrief is a newly discovered entity, enough to display it live.
@@ -42,8 +57,70 @@ type EntityBuildOptions struct {
 	// reading and drops most of what is in them. Measured with qwen3.5:4b, a batch of
 	// 4 found 6 entities and 4 relationships where a batch of 2 found 17 and 8. Keep
 	// it low (1 or 2) unless a large model has been shown to hold up.
-	BatchSize  int
+	BatchSize int
+	// Model names the model doing the extraction. It is part of the cache key: what
+	// a 4b local model said about a chunk is not what a frontier model would say, so
+	// switching models must re-extract rather than reuse.
+	Model string
+	// Refresh ignores the cache and re-extracts every chunk. Use it after changing
+	// something the cache key does not cover, or to retry a bad extraction.
+	Refresh    bool
 	OnProgress func(EntityProgress)
+}
+
+// extractPromptVersion salts the cache key. Bump it whenever the extraction prompt
+// changes, so a new turbograph does not silently reuse answers the old prompt got.
+const extractPromptVersion = "v1"
+
+// cachedExtraction is one memoized answer. It carries the hash of the text it came
+// from so the cache can be pruned against the live corpus without knowing which
+// models produced which entries.
+type cachedExtraction struct {
+	Text [32]byte          `json:"text"` // sha256 of the chunk text alone
+	Ex   entity.Extraction `json:"ex"`
+}
+
+// extractKey identifies a cached extraction: the chunk text, the model that read it,
+// and the prompt that was used. Any of the three changing means the cached answer is
+// no longer the answer to the question being asked.
+func extractKey(model, text string) [32]byte {
+	h := sha256.New()
+	h.Write([]byte(extractPromptVersion))
+	h.Write([]byte{0})
+	h.Write([]byte(model))
+	h.Write([]byte{0})
+	h.Write([]byte(text))
+	var k [32]byte
+	copy(k[:], h.Sum(nil))
+	return k
+}
+
+// CachedExtractions reports how many chunk extractions are memoized, so a caller can
+// tell how much of the next build is already paid for.
+func (s *Store) CachedExtractions() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.extractCache)
+}
+
+// pruneExtractCacheLocked drops entries whose chunk text is no longer in the corpus.
+// Without it the cache would keep an answer for every chunk that ever existed,
+// including every superseded version of an edited document, and persist them forever.
+// Entries for a model that is not the current one are kept: switching model and back
+// should not mean paying for the extraction twice.
+func (s *Store) pruneExtractCacheLocked() {
+	if len(s.extractCache) == 0 {
+		return
+	}
+	live := make(map[[32]byte]struct{}, len(s.chunks))
+	for _, c := range s.chunks {
+		live[sha256.Sum256([]byte(c.Text))] = struct{}{}
+	}
+	for k, e := range s.extractCache {
+		if _, ok := live[e.Text]; !ok {
+			delete(s.extractCache, k)
+		}
+	}
 }
 
 // HasEntityGraph reports whether an entity-relationship graph has been built.
@@ -80,13 +157,35 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	if opt.Workers <= 0 {
 		opt.Workers = runtime.GOMAXPROCS(0)
 	}
+	type chunkRef struct {
+		id, text string
+		key      [32]byte
+	}
 	s.mu.RLock()
-	type chunkRef struct{ id, text string }
 	refs := make([]chunkRef, len(s.chunks))
 	for i, c := range s.chunks {
-		refs[i] = chunkRef{c.ID, c.Text}
+		refs[i] = chunkRef{id: c.ID, text: c.Text, key: extractKey(opt.Model, c.Text)}
+	}
+	// Take the cached answers under the same lock that read the chunks.
+	cached := make(map[[32]byte]entity.Extraction, len(s.extractCache))
+	if !opt.Refresh {
+		for _, r := range refs {
+			if e, ok := s.extractCache[r.key]; ok {
+				cached[r.key] = e.Ex
+			}
+		}
 	}
 	s.mu.RUnlock()
+
+	// Only the chunks nobody has asked the model about go to the model. This is the
+	// whole game: extraction is ~1s of GPU per call and does not get faster with more
+	// workers, so the only way to make a rebuild quick is not to make the calls.
+	todo := make([]chunkRef, 0, len(refs))
+	for _, r := range refs {
+		if _, hit := cached[r.key]; !hit {
+			todo = append(todo, r)
+		}
+	}
 
 	// Group chunks into batches; a batch extractor handles a whole batch in one
 	// model call, otherwise each chunk is extracted individually.
@@ -97,8 +196,10 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	batcher, _ := ex.(entity.BatchExtractor)
 
 	type res struct {
-		id string
-		ex entity.Extraction
+		id       string
+		key      [32]byte
+		textHash [32]byte
+		ex       entity.Extraction
 	}
 	jobs := make(chan []chunkRef)
 	out := make(chan res, opt.Workers)
@@ -126,37 +227,49 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 					}
 				}
 				for i, r := range b {
-					out <- res{r.id, exs[i]}
+					out <- res{r.id, r.key, sha256.Sum256([]byte(r.text)), exs[i]}
 				}
 			}
 		}()
 	}
 	go func() {
 		defer close(jobs)
-		for i := 0; i < len(refs); i += batchSize {
-			end := min(i+batchSize, len(refs))
+		for i := 0; i < len(todo); i += batchSize {
+			end := min(i+batchSize, len(todo))
 			select {
 			case <-ctx.Done():
 				return
-			case jobs <- refs[i:end]:
+			case jobs <- todo[i:end]:
 			}
 		}
 	}()
 	go func() { wg.Wait(); close(out) }()
 
 	eg := entity.NewGraph()
-	prog := EntityProgress{Total: len(refs)}
+	prog := EntityProgress{Total: len(refs), Cached: len(cached)}
+	fresh := make(map[[32]byte]entity.Extraction, len(todo))
+	freshText := make(map[[32]byte][32]byte, len(todo))
 	seen := make(map[string]struct{})
-	for r := range out {
-		eg.Add(r.id, r.ex)
+
+	// absorb folds one chunk's extraction into the graph and reports what it added.
+	// The report is the raw extraction, not the finished graph: the graph is
+	// canonicalized and pruned at the end, so what streams here is what the model
+	// said, and the reconciliation between the two is shown rather than hidden.
+	absorb := func(id string, ex entity.Extraction) {
+		// Clean first, and stream what was cleaned. The graph drops relations whose
+		// endpoints are malformed, so reporting them would draw an edge, and a node for
+		// the relation's own verb, that the finished graph never contains.
+		ex = entity.Clean(ex)
+		eg.Add(id, ex)
 		prog.Done++
 		prog.Entities = eg.Len()
 		prog.Relations = len(eg.Relations())
+		prog.New = prog.New[:0]
+		prog.NewRelations = prog.NewRelations[:0]
 		// Report the entities this chunk surfaced for the first time, so the caller can
 		// show the graph filling in as it is extracted. Relationship endpoints count:
 		// an extractor routinely names an entity only inside a fact about it, and those
 		// become real nodes, so listing only ex.Entities under-reports the graph.
-		prog.New = prog.New[:0]
 		surface := func(name, typ string) {
 			name = strings.TrimSpace(name)
 			key := strings.ToLower(name)
@@ -169,16 +282,37 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 			seen[key] = struct{}{}
 			prog.New = append(prog.New, EntityBrief{Name: name, Type: typ})
 		}
-		for _, e := range r.ex.Entities {
+		for _, e := range ex.Entities {
 			surface(e.Name, e.Type)
 		}
-		for _, rel := range r.ex.Relations {
+		for _, rel := range ex.Relations {
 			surface(rel.Source, "")
 			surface(rel.Target, "")
+			src, tgt := strings.TrimSpace(rel.Source), strings.TrimSpace(rel.Target)
+			if src == "" || tgt == "" || strings.EqualFold(src, tgt) {
+				continue
+			}
+			prog.NewRelations = append(prog.NewRelations, RelationBrief{
+				Source: src, Target: tgt, Description: rel.Description,
+			})
 		}
 		if opt.OnProgress != nil {
 			opt.OnProgress(prog)
 		}
+	}
+
+	// The chunks already extracted go in first and cost nothing, so a rebuild of a
+	// corpus that has only grown a little draws almost the whole graph immediately and
+	// then fills in the new part.
+	for _, r := range refs {
+		if e, hit := cached[r.key]; hit {
+			absorb(r.id, e)
+		}
+	}
+	for r := range out {
+		fresh[r.key] = r.ex
+		freshText[r.key] = r.textHash
+		absorb(r.id, r.ex)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -193,6 +327,15 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 
 	s.mu.Lock()
 	s.eg = eg
+	// Remember what the model said, so the next build does not ask again. The cache is
+	// keyed by content, so a chunk that survives an edit unchanged keeps its answer.
+	if s.extractCache == nil {
+		s.extractCache = make(map[[32]byte]cachedExtraction, len(fresh))
+	}
+	for k, e := range fresh {
+		s.extractCache[k] = cachedExtraction{Text: freshText[k], Ex: e}
+	}
+	s.pruneExtractCacheLocked()
 	s.rebuildEntityLocked()
 	s.mu.Unlock()
 

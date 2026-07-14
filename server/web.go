@@ -229,18 +229,25 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 			batch = n
 		}
 	}
-	var extracted int // raw entity count before canonicalization merges duplicates
+	// refresh=1 ignores the extraction cache and re-asks the model about every chunk.
+	refresh := r.URL.Query().Get("refresh") == "1"
+
+	var extracted, cached int // raw entity count before canonicalization merges duplicates
 	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
 	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
 		BatchSize: batch,
+		Model:     model,
+		Refresh:   refresh,
 		OnProgress: func(p rag.EntityProgress) {
 			extracted = p.Entities // raw count, before canonicalization prunes and merges
-			// "new" carries the entities this chunk surfaced, so the UI can show the
-			// graph populating instead of a bare counter.
+			cached = p.Cached
+			// "new" and "edges" carry the entities and relationships this chunk surfaced,
+			// so the UI can draw the graph as it is discovered instead of showing a
+			// counter and then a finished picture.
 			send("progress", map[string]any{
-				"done": p.Done, "total": p.Total,
+				"done": p.Done, "total": p.Total, "cached": p.Cached,
 				"entities": p.Entities, "relations": p.Relations,
-				"new": p.New,
+				"new": p.New, "edges": p.NewRelations,
 			})
 		},
 	})
@@ -251,7 +258,10 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 	s.persist(bucketOf(r))
 	// extracted is the raw count before canonicalization and pruning; entities is what
 	// survived. Reporting both makes the merge visible rather than looking like loss.
-	send("done", map[string]int{"entities": st.EntityCount(), "extracted": extracted, "relations": st.RelationCount()})
+	// cached says how many chunks never reached the model, which is the difference
+	// between a rebuild that costs minutes and one that costs nothing.
+	send("done", map[string]int{"entities": st.EntityCount(), "extracted": extracted,
+		"relations": st.RelationCount(), "cached": cached})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

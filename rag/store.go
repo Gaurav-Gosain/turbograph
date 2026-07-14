@@ -140,6 +140,12 @@ type Store struct {
 	entCSR   *graph.Graph
 	entComm  *graph.Communities
 	entVec   [][]float32 // embedding per entity (name + description), index == node id
+	// extractCache remembers what the model said about a chunk, keyed by the chunk's
+	// text together with the model and prompt that produced it. Extraction is by far
+	// the most expensive thing turbograph does, and a rebuild would otherwise re-ask
+	// the model about every chunk it has already seen: adding one document to a large
+	// corpus cost a model call for every chunk in it. Persisted with the store.
+	extractCache map[[32]byte]cachedExtraction
 }
 
 type edgeRec struct {

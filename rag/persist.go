@@ -1,11 +1,13 @@
 package rag
 
 import (
+	"bytes"
 	"context"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/quant"
@@ -66,6 +68,22 @@ type snapshot struct {
 	// CommSummary persists per-community thematic summaries for global queries.
 	// Absent in older snapshots and when summaries were never built.
 	CommSummary map[int]string `json:"community_summaries"`
+	// ExtractCache persists what the model said about each chunk, so reopening a store
+	// and adding a document does not re-extract the whole corpus. Absent in older
+	// snapshots, in which case the next build pays for what it uses and fills it.
+	// A slice, not a map: the key is a hash, and a JSON object cannot have one as a
+	// key, which would have broken `export --json` on any store that had a cache.
+	ExtractCache []cacheEntry `json:"extract_cache,omitempty"`
+}
+
+// cacheEntry is one persisted extraction, carrying the key it is stored under. The
+// fields are spelled out rather than embedding cachedExtraction: gob silently drops an
+// embedded field whose type is unexported, so the keys persisted and the extractions
+// they pointed at came back empty, and every chunk then "hit" a cache of nothing.
+type cacheEntry struct {
+	Key  [32]byte          `json:"key"`
+	Text [32]byte          `json:"text"`
+	Ex   entity.Extraction `json:"ex"`
 }
 
 // Save serializes the store to w with exact float32 embeddings (VectorsExact).
@@ -81,7 +99,8 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions, DocMeta: s.docMeta, CommSummary: s.commSummary}
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions,
+		DocMeta: s.docMeta, CommSummary: s.commSummary, ExtractCache: flattenCache(s.extractCache)}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	switch mode {
 	case VectorsCodes:
@@ -193,6 +212,12 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	s.versions = snap.Versions
 	s.docMeta = snap.DocMeta
 	s.commSummary = snap.CommSummary
+	if len(snap.ExtractCache) > 0 {
+		s.extractCache = make(map[[32]byte]cachedExtraction, len(snap.ExtractCache))
+		for _, e := range snap.ExtractCache {
+			s.extractCache[e.Key] = cachedExtraction{Text: e.Text, Ex: e.Ex}
+		}
+	}
 	if len(snap.Entities) > 0 {
 		s.eg = entity.Restore(snap.Entities, snap.Relations)
 		s.rebuildEntityLocked()
@@ -202,4 +227,18 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	}
 	s.reindexLocked()
 	return s, nil
+}
+
+// flattenCache turns the in-memory extraction cache into its persisted form, sorted
+// so a save is byte-stable for the same contents.
+func flattenCache(m map[[32]byte]cachedExtraction) []cacheEntry {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]cacheEntry, 0, len(m))
+	for k, v := range m {
+		out = append(out, cacheEntry{Key: k, Text: v.Text, Ex: v.Ex})
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].Key[:], out[j].Key[:]) < 0 })
+	return out
 }

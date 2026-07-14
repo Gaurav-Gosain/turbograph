@@ -161,6 +161,7 @@
   .eb-count{color:var(--accent);font-variant-numeric:tabular-nums}
   .eb-bar{display:block;height:3px;background:var(--panel2);border-radius:2px;overflow:hidden}
   .eb-list{display:flex;flex-wrap:wrap;gap:4px;overflow-y:auto;align-content:flex-start;min-height:0}
+  .eb-cache{color:var(--faint)}
   .eb-ent{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;background:var(--panel2);
     border:1px solid var(--border);border-radius:5px;padding:2px 6px;color:var(--text);
     animation:ebIn .22s var(--ease-out) both}
@@ -3569,19 +3570,66 @@ async function buildEntities(onProg){
     }
   }
 }
+// liveGraphReset clears the canvas and puts it in entity mode, so the graph that is
+// about to be extracted has somewhere to appear.
+function liveGraphReset(){
+  G.graphMode="entities";
+  document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
+  G.nodes=[];G.edges=[];G.pos=[];G.adj=[];G.idIndex=new Map();
+  G.highlight.clear();G.selected=-1;G.hover=-1;G.hoverEdge=-1;G.selEdge=-1;G.pulse=-1;
+  $("#hint").style.display="none";
+  dirty=true;
+}
+// liveGraphAdd draws what a chunk just surfaced. The nodes and edges are the model's
+// raw output, not the finished graph: canonicalization merges surface variants and
+// pruning drops noise, so the final graph is loaded once the build ends and is usually
+// smaller. Watching it assemble is the point, and the reconciliation is reported.
+function liveGraphAdd(ents,rels){
+  const key=n=>(n||"").trim().toLowerCase();
+  let added=false;
+  for(const e of ents||[]){
+    const k=key(e.name);
+    if(!k||G.idIndex.has(k))continue;
+    const i=G.nodes.length;
+    G.nodes.push({index:i,id:e.name,doc_id:e.type||"",community:-1,degree:0,snippet:""});
+    G.idIndex.set(k,i);
+    G.adj.push([]);
+    // Drop it in near the middle with a little scatter; the simulation does the rest.
+    const a=Math.random()*6.2832,r=40+Math.random()*90;
+    G.pos.push({x:Math.cos(a)*r,y:Math.sin(a)*r,vx:0,vy:0});
+    added=true;
+  }
+  for(const rel of rels||[]){
+    const a=G.idIndex.get(key(rel.source)),b=G.idIndex.get(key(rel.target));
+    if(a==null||b==null||a===b)continue;
+    if(G.adj[a].includes(b))continue;
+    G.edges.push({source:a,target:b,weight:1});
+    G.adj[a].push(b);G.adj[b].push(a);
+    G.nodes[a].degree++;G.nodes[b].degree++;
+    added=true;
+  }
+  if(!added)return;
+  $("#sEnt").textContent=G.nodes.length;
+  $("#sEdges").textContent=G.edges.length;
+  reheat(0.5);
+  dirty=true;
+}
 async function runBuildEntities(){
   const box=$("#entBuild"),list=$("#ebList"),done=$("#ebDone");
   list.innerHTML="";done.textContent="";
   $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
   $("#ebBarFill").style.setProperty("--p",0);
   box.classList.add("open");
+  liveGraphReset();
   try{
     const res=await buildEntities(p=>{
-      $("#ebProg").textContent=p.done+"/"+p.total;
+      $("#ebProg").textContent=p.done+"/"+p.total+(p.cached?" · "+p.cached+" cached":"");
       $("#ebCount").textContent=p.entities+" entities · "+p.relations+" links";
       $("#ebBarFill").style.setProperty("--p",p.total?p.done/p.total:0);
-      // Append what this chunk surfaced. The list is the point: you watch the graph
-      // being discovered instead of waiting on a counter.
+      // Draw what this chunk surfaced, in the graph and in the list. The graph
+      // assembling itself is the point: you watch it being discovered instead of
+      // waiting on a counter and then being handed a finished picture.
+      liveGraphAdd(p.new,p.edges);
       for(const e of (p.new||[])){
         const el=document.createElement("span");el.className="eb-ent";
         el.innerHTML=esc(e.name)+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
@@ -3596,6 +3644,8 @@ async function runBuildEntities(){
     done.innerHTML=raw>kept
       ? '<b>'+raw+'</b> extracted &rarr; <b>'+kept+'</b> after merging duplicates &middot; <b>'+links+'</b> relationships'
       : '<b>'+kept+'</b> entities &middot; <b>'+links+'</b> relationships';
+    if(res.cached)done.innerHTML+='<br><span class="eb-cache">'+res.cached+
+      ' chunk'+(res.cached===1?"":"s")+' answered from cache, not re-read by the model</span>';
     if(!links&&kept)done.innerHTML+='<br>no relationships were found; the model may not be following the extraction format';
     toast("entity graph built");
     G.graphMode="entities";

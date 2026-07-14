@@ -574,6 +574,34 @@ Measured on 16 cores, 768-dimensional embeddings, 4 bits per coordinate.
 | HNSW build per insert (clustered)            | about 0.8 ms          |
 | flat quantized search, 1k / 10k / 50k       | 0.55 / 2.3 / 8.7 ms   |
 
+### Entity extraction
+
+Building the entity graph is the slowest thing turbograph does, because it reads
+every chunk with a language model. It is not slow for want of parallelism: the
+extraction already runs across all cores, and measured against a local Ollama,
+throughput is flat in the number of concurrent requests. One call takes about a
+second; twelve concurrent calls take about twelve seconds. The GPU is saturated by
+a single request, so extra workers only time-slice it. **Adding more concurrency
+cannot make this faster.**
+
+What makes it faster is not doing the work twice. Extractions are cached by content,
+keyed by the chunk text together with the model and the prompt that read it, and the
+cache is persisted with the store. A rebuild only sends the model the chunks it has
+never seen. Measured on a 40-chunk corpus with a pre-warmed `qwen3.5:4b`:
+
+| build                            | time   | graph              |
+| -------------------------------- | ------ | ------------------ |
+| cold, nothing cached             | ~235 s | 107 entities       |
+| rebuild, corpus unchanged        | 0.7 s  | identical          |
+| rebuild after adding 1 document  | 2.4 s  | 112 entities       |
+
+The cached rebuild reproduces exactly the same graph, and the cache survives a
+restart. Since ingesting a document normally means rebuilding the entity graph, this
+is the difference between adding a file costing four minutes and costing two seconds.
+`?refresh=1` on `/api/build-entities` ignores the cache and re-reads everything.
+
+### General
+
 The hottest function, the high-dimensional distance, is hand-tuned with multiple
 accumulators and bounds-check elimination (profiled with pprof for a 1.8x build
 speedup). Index scans and graph edge discovery run across all cores. Ingestion

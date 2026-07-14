@@ -166,3 +166,45 @@ func TestExtractBatchOneCall(t *testing.T) {
 		t.Errorf("batch prompt should number passages, got: %s", g.prompt)
 	}
 }
+
+// TestCleanDropsVerbEndpoints pins the malformed output seen in real builds: the
+// model intermittently puts the relation's verb in an endpoint slot, and the verb
+// then becomes a permanent node. Pruning cannot catch it, because it protects
+// relation endpoints on purpose.
+func TestCleanDropsVerbEndpoints(t *testing.T) {
+	ex := Extraction{
+		Entities: []ExtractedEntity{
+			{Name: "Project Corvus", Type: "project"},
+			{Name: "Dr. Ana Ruiz", Type: "person"},
+		},
+		Relations: []ExtractedRelation{
+			{Source: "Dr. Ana Ruiz", Target: "Project Corvus", Description: "leads it"},
+			{Source: "Project Corvus", Target: "led at", Description: "Lab 0"},
+			{Source: "Project Corvus", Target: "funded as part of funder relation to"},
+			{Source: "built in", Target: "Lakemont"},
+			// An endpoint that is a proper name but was never listed as an entity is
+			// still real: extractors routinely name one only inside a fact about it.
+			{Source: "Project Corvus", Target: "Lakemont", Description: "built in"},
+		},
+	}
+	got := Clean(ex)
+	if len(got.Relations) != 2 {
+		for _, r := range got.Relations {
+			t.Logf("kept: %q -> %q", r.Source, r.Target)
+		}
+		t.Fatalf("Clean kept %d relations, want 2", len(got.Relations))
+	}
+
+	g := NewGraph()
+	g.Add("c1", ex)
+	for _, e := range g.Entities() {
+		switch e.Name {
+		case "led at", "built in", "funded as part of funder relation to":
+			t.Errorf("a relation verb became an entity: %q", e.Name)
+		}
+	}
+	// The real endpoint that was only ever named inside a fact must survive.
+	if _, ok := g.entities["lakemont"]; !ok {
+		t.Error("Lakemont was dropped; a capitalized endpoint is a real entity")
+	}
+}

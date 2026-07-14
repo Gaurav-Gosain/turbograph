@@ -14,6 +14,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // ExtractedEntity is one entity as produced by an Extractor.
@@ -98,8 +99,51 @@ func (g *Graph) ensure(name, display, typ string) *Entity {
 	return e
 }
 
+// plausibleEndpoint rejects a relation endpoint that is really the relation's verb.
+// Models intermittently emit "relation|Project X|led at|Lab 0", putting the verb in
+// the target slot, and the endpoint then becomes a permanent node: real graphs came
+// back with "led at" and "funded as part of funder relation to" sitting in them as
+// entities. Pruning cannot remove them, because an endpoint that anchors a
+// relationship is exactly what pruning is supposed to protect.
+//
+// An endpoint the model also listed as an entity is trusted outright. Anything else
+// has to look like a name, which in practice means containing an uppercase letter:
+// entity names are proper nouns and verb phrases are not.
+func plausibleEndpoint(name string, named map[string]struct{}) bool {
+	n := norm(name)
+	if n == "" {
+		return false
+	}
+	if _, ok := named[n]; ok {
+		return true
+	}
+	return strings.ContainsFunc(name, unicode.IsUpper)
+}
+
+// Clean drops relations whose endpoints are malformed. It is idempotent, and it is
+// exported because a caller streaming an extraction as it arrives must show the same
+// thing that will end up in the graph: reporting a relation here and then silently
+// discarding it in Add would draw an edge that never existed.
+func Clean(ex Extraction) Extraction {
+	named := make(map[string]struct{}, len(ex.Entities))
+	for _, ent := range ex.Entities {
+		if n := norm(ent.Name); n != "" {
+			named[n] = struct{}{}
+		}
+	}
+	rels := ex.Relations[:0:0]
+	for _, rel := range ex.Relations {
+		if plausibleEndpoint(rel.Source, named) && plausibleEndpoint(rel.Target, named) {
+			rels = append(rels, rel)
+		}
+	}
+	ex.Relations = rels
+	return ex
+}
+
 // Add merges an extraction from the chunk with the given id into the graph.
 func (g *Graph) Add(chunkID string, ex Extraction) {
+	ex = Clean(ex)
 	mentioned := map[string]struct{}{}
 	for _, ent := range ex.Entities {
 		e := g.ensure(ent.Name, ent.Name, ent.Type)
