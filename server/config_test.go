@@ -13,15 +13,21 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
 
-// stubBackend is an inert Backend for config tests.
-type stubBackend struct{ model string }
+// stubBackend is an inert Backend for config tests. It records the endpoint it was
+// built from so tests can assert what the server resolved.
+type stubBackend struct {
+	model string
+	ep    Endpoint
+}
 
 func (stubBackend) Generate(context.Context, string, string, string) (string, error) { return "", nil }
 func (stubBackend) GenerateStream(context.Context, string, string, string, func(string) error) error {
 	return nil
 }
-func (stubBackend) ListModels(context.Context) ([]string, error) { return nil, nil }
-func (stubBackend) Ping(context.Context) error                   { return nil }
+func (b stubBackend) ListModels(context.Context) ([]string, error) {
+	return []string{"stub-" + b.ep.BaseURL}, nil
+}
+func (stubBackend) Ping(context.Context) error { return nil }
 
 func newConfigServer(t *testing.T) (*Server, string) {
 	t.Helper()
@@ -34,8 +40,8 @@ func newConfigServer(t *testing.T) (*Server, string) {
 	s.EnableConfig(RuntimeConfig{
 		GenAPI: "ollama", GenModel: "m1", EmbedModel: "e1", ChunkStrategy: rag.StrategyRecursive,
 	}, path, Factories{
-		Backend:  func(api, url, key string) Backend { return stubBackend{model: api} },
-		Embedder: func(api, url, key, model string, dim int) rag.Embedder { return hashEmbedder{dim: 64} },
+		Backend:  func(ep Endpoint) Backend { return stubBackend{model: ep.API, ep: ep} },
+		Embedder: func(Endpoint, string, int) rag.Embedder { return hashEmbedder{dim: 64} },
 	})
 	return s, path
 }

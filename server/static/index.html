@@ -480,6 +480,38 @@
   .cfg-foot #cfgMsg{font-size:11px;color:var(--muted)}
   .cfg-foot #cfgMsg.warn{color:var(--warn)} .cfg-foot #cfgMsg.ok{color:var(--accent)}
   .cfg-hide{display:none}
+
+  /* model providers: named OpenAI-compatible endpoints, each with its own headers */
+  .prov{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:10px 12px;margin-bottom:8px}
+  .prov-top{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .prov-top input{flex:1;min-width:0;background:transparent;border:0;border-bottom:1px solid var(--border);
+    color:var(--text);font:600 12px var(--mono);padding:2px 0}
+  .prov-top input:focus{outline:none;border-bottom-color:var(--accent)}
+  .prov-top .used{font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;white-space:nowrap}
+  .prov-rm{background:transparent;border:0;color:var(--faint);cursor:pointer;font:11px var(--mono);padding:2px 4px;border-radius:4px}
+  .prov-rm:hover{color:var(--danger);background:var(--danger-wash)}
+  .prov-rm:focus-visible{outline:2px solid var(--danger);outline-offset:1px}
+  .prov .cfg-row label{flex:0 0 74px;font-size:10.5px}
+  .prov-hdrs{margin:9px 0 0;padding-top:9px;border-top:1px solid var(--border)}
+  .prov-hdrs .cap{display:flex;align-items:center;justify-content:space-between;color:var(--faint);font-size:10.5px;margin-bottom:7px}
+  .prov-hdr{display:flex;gap:6px;margin-bottom:6px}
+  .prov-hdr input{min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:4px;
+    color:var(--text);font:11px var(--mono);padding:5px 7px}
+  .prov-hdr .hk{flex:0 0 38%} .prov-hdr .hv{flex:1}
+  .prov-hdr input:focus{outline:none;border-color:var(--accent)}
+  .prov-foot{display:flex;align-items:center;gap:8px;margin-top:9px}
+  .prov-foot .res{font-size:10.5px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .prov-foot .res.ok{color:var(--accent)} .prov-foot .res.bad{color:var(--danger)}
+  .lnk{background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--muted);
+    cursor:pointer;font:10.5px var(--mono);padding:4px 8px;transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .lnk:hover{color:var(--text);border-color:var(--muted)}
+  .lnk:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+    cursor:pointer;font:10.5px var(--mono);padding:3px 7px}
+  .prov-new{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:2px}
+  .prov-new .from{color:var(--faint);font-size:10.5px}
+  .prov-empty{color:var(--faint);font-size:11px;padding:10px 0 12px;border-top:1px dashed var(--border);
+    border-bottom:1px dashed var(--border);margin-bottom:10px;text-align:center}
+
   .cfg-status{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px}
   .cfg-status .k{color:var(--faint)} .cfg-status .v{color:var(--text)}
   .cfg-status .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
@@ -888,20 +920,38 @@
         <div id="cfgPipeline" class="cfg-pipe"></div>
       </div>
       <div class="cfg-sec">
+        <h4>model providers <span class="cfg-tag">openai-compatible</span></h4>
+        <small>anything that speaks the OpenAI wire format: OpenRouter, Groq, Together, vLLM, LM Studio, llama.cpp,
+          an internal gateway. being compatible in the request body says nothing about the request headers, so each
+          provider carries its own: OpenRouter attributes traffic with HTTP-Referer, a gateway may route on one of its
+          own. write a key as <code>${MY_API_KEY}</code> to read it from the environment instead of storing it on disk.</small>
+        <div id="cfgProvs"></div>
+        <div class="prov-new">
+          <button id="cfgProvAdd" class="lnk">+ add provider</button>
+          <span class="from">or start from</span>
+          <button class="lnk" data-preset="openai">OpenAI</button>
+          <button class="lnk" data-preset="openrouter">OpenRouter</button>
+          <button class="lnk" data-preset="groq">Groq</button>
+          <button class="lnk" data-preset="together">Together</button>
+          <button class="lnk" data-preset="vllm">vLLM</button>
+          <button class="lnk" data-preset="lmstudio">LM Studio</button>
+        </div>
+      </div>
+      <div class="cfg-sec">
         <h4>generation model</h4>
         <small>the language model that writes answers and extracts the entity graph. applies immediately.</small>
-        <div class="cfg-row"><label>backend</label><select id="cfgGenApi"><option value="ollama">Ollama (local)</option><option value="openai">OpenAI-compatible</option></select></div>
+        <div class="cfg-row"><label>backend</label><select id="cfgGenApi"></select></div>
         <div class="cfg-row cfg-gen-oa"><label>base URL</label><input id="cfgGenUrl" placeholder="https://api.openai.com"></div>
         <div class="cfg-row cfg-gen-oa"><label>API key</label><input id="cfgGenKey" type="password" placeholder="leave blank to keep current"></div>
-        <div class="cfg-row"><label>default model</label><input id="cfgGenModel" placeholder="qwen3.5:2b"></div>
+        <div class="cfg-row"><label>default model</label><input id="cfgGenModel" list="cfgGenModels" placeholder="qwen3.5:2b" spellcheck="false"><datalist id="cfgGenModels"></datalist></div>
       </div>
       <div class="cfg-sec">
         <h4>embedding model <span class="cfg-tag">new buckets</span></h4>
         <small>turns text into vectors. changing it applies to newly created buckets; existing buckets keep their vectors. restart to rebind fully.</small>
-        <div class="cfg-row"><label>backend</label><select id="cfgEmbApi"><option value="ollama">Ollama (local)</option><option value="openai">OpenAI-compatible</option></select></div>
+        <div class="cfg-row"><label>backend</label><select id="cfgEmbApi"></select></div>
         <div class="cfg-row cfg-emb-oa"><label>base URL</label><input id="cfgEmbUrl" placeholder="https://api.openai.com"></div>
         <div class="cfg-row cfg-emb-oa"><label>API key</label><input id="cfgEmbKey" type="password" placeholder="leave blank to keep current"></div>
-        <div class="cfg-row"><label>model</label><input id="cfgEmbModel" placeholder="embeddinggemma"></div>
+        <div class="cfg-row"><label>model</label><input id="cfgEmbModel" list="cfgEmbModels" placeholder="embeddinggemma" spellcheck="false"><datalist id="cfgEmbModels"></datalist></div>
         <div class="cfg-row"><label>Matryoshka dim</label><input id="cfgEmbDim" type="number" placeholder="0 = full (e.g. 256, 512)"></div>
       </div>
       <div class="cfg-sec">
@@ -1011,7 +1061,11 @@ const PALETTE=["#5ad1c8","#7aa2f7","#e5c07b","#c8a2e8","#e06c91","#9ece6a",
 const $=s=>document.querySelector(s);
 const $$=s=>document.querySelectorAll(s);
 const api=(u,o)=>fetch(u,o).then(r=>r.json());
-const esc=s=>(s==null?"":""+s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+// esc escapes for HTML, including quotes: it is used inside attribute values as well
+// as in text, and a value carrying a double quote would otherwise break out of the
+// attribute. In text content the browser decodes the entities back, so widening it
+// costs nothing.
+const esc=s=>(s==null?"":""+s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // bk appends the active bucket so every corpus stays isolated.
 const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 
@@ -1735,11 +1789,145 @@ $("#input").addEventListener("keydown",e=>{
 const cfgEl=$("#config");
 function cfgOpen(){return cfgEl.classList.contains("open")}
 function cfgToggleOA(){
+  // The inline base-URL/key pair only exists for a server started with --llm-api openai
+  // on the command line. Providers replace it in the UI, so it is shown only when it is
+  // what the server is actually running, and never offered as a new choice.
   $$(".cfg-gen-oa").forEach(e=>e.classList.toggle("cfg-hide",$("#cfgGenApi").value!=="openai"));
   $$(".cfg-emb-oa").forEach(e=>e.classList.toggle("cfg-hide",$("#cfgEmbApi").value!=="openai"));
 }
-$("#cfgGenApi").onchange=cfgToggleOA;
-$("#cfgEmbApi").onchange=cfgToggleOA;
+// Changing the backend also changes which provider card is marked as in use.
+$("#cfgGenApi").onchange=()=>{cfgToggleOA();renderProvs();syncModelLists()};
+$("#cfgEmbApi").onchange=()=>{cfgToggleOA();renderProvs();syncModelLists()};
+
+// PRESETS are starting points, not a closed list: every one is just a base URL and
+// the headers that service happens to want. Anything else can be typed by hand.
+const PRESETS={
+  openai:{name:"openai-api",base_url:"https://api.openai.com",note:"gpt-4o, text-embedding-3"},
+  openrouter:{name:"openrouter",base_url:"https://openrouter.ai/api",note:"one key, most models",
+    headers:[["HTTP-Referer","https://turbograph.local"],["X-Title","turbograph"]]},
+  groq:{name:"groq",base_url:"https://api.groq.com/openai",note:"very fast inference"},
+  together:{name:"together",base_url:"https://api.together.xyz",note:"open-weight models"},
+  vllm:{name:"vllm",base_url:"http://localhost:8000",note:"self-hosted"},
+  lmstudio:{name:"lmstudio",base_url:"http://localhost:1234",note:"self-hosted"},
+};
+// provs is the edit buffer for the provider list. Headers are held as ordered pairs
+// rather than an object so a half-typed row (an empty name) survives a re-render.
+let provs=[];
+const provKey=p=>p.name||"";
+
+function renderProvs(){
+  const wrap=$("#cfgProvs");wrap.innerHTML="";
+  if(!provs.length){
+    const e=document.createElement("div");e.className="prov-empty";
+    e.textContent="no providers yet. turbograph is talking to Ollama on localhost.";
+    wrap.appendChild(e);return;
+  }
+  provs.forEach((p,i)=>{
+    const card=document.createElement("div");card.className="prov";
+    const inUse=[$("#cfgGenApi").value,$("#cfgEmbApi").value].filter(v=>v===provKey(p));
+    const used=inUse.length?'<span class="used">'+(inUse.length>1?"generation + embedding":($("#cfgGenApi").value===provKey(p)?"generation":"embedding"))+'</span>':"";
+    card.innerHTML=
+      '<div class="prov-top"><input class="pn" value="'+esc(p.name||"")+'" placeholder="name (how you will pick it below)" spellcheck="false">'
+      +used+'<button class="prov-rm" title="remove this provider">remove</button></div>'
+      +'<div class="cfg-row"><label>base URL</label><input class="pu" value="'+esc(p.base_url||"")+'" placeholder="https://api.example.com" spellcheck="false"></div>'
+      +'<div class="cfg-row"><label>API key</label><input class="pk" type="password" value="'+esc(p.api_key||"")+'" placeholder="'
+        +(p.key_set?"set · leave blank to keep":"blank for none, or ${MY_API_KEY}")+'" spellcheck="false"></div>'
+      +'<div class="cfg-row"><label>note</label><input class="pnote" value="'+esc(p.note||"")+'" placeholder="what this is for (optional)"></div>'
+      +'<div class="prov-hdrs"><div class="cap"><span>extra headers &middot; sent on every request</span><button class="lnk ph-add">+ header</button></div>'
+        +(p.headers||[]).map((h,j)=>
+          '<div class="prov-hdr" data-j="'+j+'"><input class="hk" value="'+esc(h[0])+'" placeholder="X-Header-Name" spellcheck="false">'
+          +'<input class="hv" value="'+esc(h[1])+'" placeholder="value, or ${ENV_VAR}" spellcheck="false">'
+          +'<button class="prov-rm hrm" title="remove this header">&times;</button></div>').join("")
+      +'</div>'
+      +'<div class="prov-foot"><button class="lnk ptest">test connection</button><span class="res"></span></div>';
+
+    const bind=(cls,fld)=>{const el=card.querySelector(cls);el.oninput=()=>{
+      const prev=p[fld];p[fld]=el.value;
+      if(fld!=="name")return;
+      // Follow the rename in the pickers. Rebuilding them blind would drop a backend
+      // that pointed at the old name back to Ollama, mid-keystroke.
+      const want={gen:$("#cfgGenApi").value,emb:$("#cfgEmbApi").value};
+      if(want.gen===prev)want.gen=el.value;
+      if(want.emb===prev)want.emb=el.value;
+      cfgFillBackendSelects(want);
+    }};
+    bind(".pn","name");bind(".pu","base_url");bind(".pk","api_key");bind(".pnote","note");
+    card.querySelector(".prov-top .prov-rm").onclick=()=>{provs.splice(i,1);cfgFillBackendSelects();renderProvs()};
+    card.querySelector(".ph-add").onclick=()=>{(p.headers=p.headers||[]).push(["",""]);renderProvs()};
+    card.querySelectorAll(".prov-hdr").forEach(row=>{
+      const j=+row.dataset.j;
+      row.querySelector(".hk").oninput=e=>{p.headers[j][0]=e.target.value};
+      row.querySelector(".hv").oninput=e=>{p.headers[j][1]=e.target.value};
+      row.querySelector(".hrm").onclick=()=>{p.headers.splice(j,1);renderProvs()};
+    });
+    card.querySelector(".ptest").onclick=()=>testProv(p,card);
+    wrap.appendChild(card);
+  });
+}
+
+// provBody converts one edit-buffer entry to the wire shape, dropping half-typed
+// header rows (a header with no name is not a header yet).
+function provBody(p){
+  const h={};
+  (p.headers||[]).forEach(([k,v])=>{if(k.trim())h[k.trim()]=v});
+  const out={name:(p.name||"").trim(),base_url:(p.base_url||"").trim(),note:(p.note||"").trim()};
+  if(Object.keys(h).length)out.headers=h;
+  if(p.api_key)out.api_key=p.api_key;
+  return out;
+}
+
+// testProv asks the server to call the endpoint and report what it found, so a
+// provider can be proven before it is saved. What it found is then worth keeping:
+// the model names become the autocomplete for the model fields below, which is the
+// only sane way to pick one out of the several hundred a gateway advertises.
+async function testProv(p,card){
+  const res=card.querySelector(".res"),btn=card.querySelector(".ptest");
+  res.className="res";res.textContent="connecting...";btn.disabled=true;
+  try{
+    const r=await api(bk("/api/provider/test"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(provBody(p))});
+    if(!r.ok){res.className="res bad";res.textContent=r.error||"unreachable";p.models=null;return}
+    p.models=r.models||[];
+    const n=p.models.length;
+    res.className="res ok";
+    res.textContent="reachable · "+n+" model"+(n===1?"":"s")+(n?" · the model fields below now autocomplete":"");
+    syncModelLists();
+  }catch(e){res.className="res bad";res.textContent=e.message;p.models=null}
+  finally{btn.disabled=false}
+}
+
+// syncModelLists points each model field's autocomplete at the models advertised by
+// the provider that field is bound to. A provider that has not been tested yet has
+// nothing to offer, which is honest: the list is empty rather than stale.
+function syncModelLists(){
+  [["#cfgGenApi","#cfgGenModels"],["#cfgEmbApi","#cfgEmbModels"]].forEach(([sel,dl])=>{
+    const p=provs.find(x=>provKey(x)===$(sel).value);
+    $(dl).innerHTML=((p&&p.models)||[]).map(m=>'<option value="'+esc(m)+'">').join("");
+  });
+}
+
+// cfgFillBackendSelects rebuilds the backend pickers from the provider list. The
+// legacy inline "openai" target appears only when the server is already running it
+// (set from the command line); it is not offered as a new choice.
+function cfgFillBackendSelects(want){
+  [["#cfgGenApi","gen"],["#cfgEmbApi","emb"]].forEach(([id,k])=>{
+    const sel=$(id),cur=(want&&want[k])||sel.value;
+    sel.innerHTML="";
+    const add=(v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;sel.appendChild(o)};
+    add("ollama","Ollama (local)");
+    if(cur==="openai")add("openai","OpenAI-compatible (from the command line)");
+    provs.forEach(p=>{if(provKey(p))add(p.name,p.name+(p.note?" · "+p.note:""))});
+    sel.value=[...sel.options].some(o=>o.value===cur)?cur:"ollama";
+  });
+}
+$("#cfgProvAdd").onclick=()=>{provs.push({name:"",base_url:"",headers:[]});renderProvs()};
+$$(".prov-new [data-preset]").forEach(b=>b.onclick=()=>{
+  const t=PRESETS[b.dataset.preset];
+  let name=t.name,n=2;
+  while(provs.some(p=>p.name===name))name=t.name+"-"+(n++);
+  provs.push({name,base_url:t.base_url,note:t.note,headers:(t.headers||[]).map(h=>[...h])});
+  cfgFillBackendSelects();renderProvs();
+});
+
 async function openConfig(){
   $("#cfgMsg").textContent="";$("#cfgMsg").className="";
   try{
@@ -1749,13 +1937,16 @@ async function openConfig(){
     const sel=$("#cfgChunk");sel.innerHTML="";
     (c.strategies||["recursive","word","markdown","sentence"]).forEach(s=>{
       const o=document.createElement("option");o.value=s;o.textContent=s;sel.appendChild(o)});
-    $("#cfgGenApi").value=c.gen_api||"ollama";$("#cfgGenUrl").value=c.gen_url||"";$("#cfgGenModel").value=c.gen_model||"";
+    provs=(c.providers||[]).map(p=>({name:p.name,base_url:p.base_url,note:p.note||"",key_set:!!p.key_set,
+      api_key:"",headers:Object.entries(p.headers||{})}));
+    cfgFillBackendSelects({gen:c.gen_api||"ollama",emb:c.embed_api||"ollama"});
+    $("#cfgGenUrl").value=c.gen_url||"";$("#cfgGenModel").value=c.gen_model||"";
     $("#cfgGenKey").value="";$("#cfgGenKey").placeholder=c.gen_key_set?"set · leave blank to keep":"leave blank for none";
-    $("#cfgEmbApi").value=c.embed_api||"ollama";$("#cfgEmbUrl").value=c.embed_url||"";$("#cfgEmbModel").value=c.embed_model||"";
+    $("#cfgEmbUrl").value=c.embed_url||"";$("#cfgEmbModel").value=c.embed_model||"";
     $("#cfgEmbDim").value=c.embed_dim||"";$("#cfgEmbKey").value="";$("#cfgEmbKey").placeholder=c.embed_key_set?"set · leave blank to keep":"leave blank for none";
     sel.value=c.chunk_strategy||"recursive";$("#cfgChunkWords").value=c.chunk_words||"";$("#cfgChunkOverlap").value=c.chunk_overlap||"";
     $("#cfgS3Endpoint").value=c.s3_endpoint||"";$("#cfgS3Bucket").value=c.s3_bucket||"";$("#cfgS3Region").value=c.s3_region||"";$("#cfgS3Prefix").value=c.s3_prefix||"";
-    cfgToggleOA();renderPipeline();cfgEl.classList.add("open");renderStatus();
+    renderProvs();cfgToggleOA();renderPipeline();cfgEl.classList.add("open");renderStatus();
   }catch(e){toast("could not load config: "+e.message,true)}
 }
 async function renderStatus(){
@@ -1825,6 +2016,7 @@ cfgEl.addEventListener("click",e=>{if(e.target===cfgEl)closeConfig()});
 $("#cfgSave").onclick=async()=>{
   const num=v=>{const n=parseInt(v,10);return isNaN(n)?0:n};
   const body={
+    providers:provs.filter(p=>(p.name||"").trim()).map(provBody),
     gen_api:$("#cfgGenApi").value,gen_url:$("#cfgGenUrl").value.trim(),gen_model:$("#cfgGenModel").value.trim(),
     embed_api:$("#cfgEmbApi").value,embed_url:$("#cfgEmbUrl").value.trim(),embed_model:$("#cfgEmbModel").value.trim(),embed_dim:num($("#cfgEmbDim").value),
     chunk_strategy:$("#cfgChunk").value,chunk_words:num($("#cfgChunkWords").value),chunk_overlap:num($("#cfgChunkOverlap").value),

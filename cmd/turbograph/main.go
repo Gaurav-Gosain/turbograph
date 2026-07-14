@@ -37,21 +37,22 @@ func orEnv(v, env string) string {
 	return os.Getenv(env)
 }
 
-// buildEmbedder builds the document/query embedder for the chosen backend.
-// "openai" targets any OpenAI-compatible /v1/embeddings endpoint at baseURL;
-// anything else uses Ollama (baseURL overrides its default when set). Both satisfy
+// buildEmbedder builds the document/query embedder for a resolved endpoint.
+// "openai" targets any OpenAI-compatible /v1/embeddings endpoint; anything else
+// uses Ollama (the base URL overrides its default when set). Both satisfy
 // rag.Embedder and the asymmetric QueryEmbedder.
-func buildEmbedder(api, baseURL, key, model string, dim int) rag.Embedder {
-	if api == "openai" {
-		c := oai.New(baseURL, key, model)
+func buildEmbedder(ep server.Endpoint, model string, dim int) rag.Embedder {
+	if ep.API == "openai" {
+		c := oai.New(ep.BaseURL, ep.APIKey, model)
+		c.Headers = ep.Headers
 		c.EmbedDim = dim
 		return c
 	}
 	c := ollama.New()
 	c.SetEmbedModel(model)
 	c.EmbedDim = dim
-	if baseURL != "" {
-		c.BaseURL = baseURL
+	if ep.BaseURL != "" {
+		c.BaseURL = ep.BaseURL
 	}
 	return c
 }
@@ -66,14 +67,25 @@ func pingBackend(ctx context.Context, e any) error {
 	return nil
 }
 
-// buildBackend builds the generation backend for the chosen provider at baseURL.
-func buildBackend(api, baseURL, key string) server.Backend {
+// cliEndpoint resolves the flag-driven backend selection to an endpoint. The
+// command line has no provider list, so it is the inline "ollama"/"openai" pair.
+func cliEndpoint(api, baseURL, key string) server.Endpoint {
 	if api == "openai" {
-		return oai.New(baseURL, key, "")
+		return server.Endpoint{API: "openai", BaseURL: baseURL, APIKey: orEnv(key, "OPENAI_API_KEY")}
+	}
+	return server.Endpoint{API: "ollama", BaseURL: baseURL}
+}
+
+// buildBackend builds the generation backend for a resolved endpoint.
+func buildBackend(ep server.Endpoint) server.Backend {
+	if ep.API == "openai" {
+		c := oai.New(ep.BaseURL, ep.APIKey, "")
+		c.Headers = ep.Headers
+		return c
 	}
 	c := ollama.New()
-	if baseURL != "" {
-		c.BaseURL = baseURL
+	if ep.BaseURL != "" {
+		c.BaseURL = ep.BaseURL
 	}
 	return c
 }
@@ -217,15 +229,8 @@ func cmdServe(args []string) error {
 		fmt.Fprintf(os.Stderr, "loaded settings from %s\n", cfgFile)
 	}
 
-	embedBase, genBase := rc.OllamaURL, rc.OllamaURL
-	if rc.EmbedAPI == "openai" {
-		embedBase = rc.EmbedURL
-	}
-	if rc.GenAPI == "openai" {
-		genBase = rc.GenURL
-	}
-	embedder := buildEmbedder(rc.EmbedAPI, embedBase, rc.EmbedKey, rc.EmbedModel, rc.EmbedDim)
-	backend := buildBackend(rc.GenAPI, genBase, rc.GenKey)
+	embedder := buildEmbedder(rc.EmbedEndpoint(), rc.EmbedModel, rc.EmbedDim)
+	backend := buildBackend(rc.GenEndpoint())
 
 	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{
 		Strategy: rc.ChunkStrategy, TargetWords: rc.ChunkWords, OverlapWords: rc.ChunkOverlap,
@@ -288,12 +293,7 @@ func cmdServe(args []string) error {
 			fmt.Fprintln(os.Stderr, "warning: image ingestion disabled:", err)
 		}
 	}
-	srv.EnableConfig(rc, cfgFile, server.Factories{
-		Backend: func(api, url, key string) server.Backend { return buildBackend(api, url, key) },
-		Embedder: func(api, url, key, model string, dim int) rag.Embedder {
-			return buildEmbedder(api, url, key, model, dim)
-		},
-	})
+	srv.EnableConfig(rc, cfgFile, server.Factories{Backend: buildBackend, Embedder: buildEmbedder})
 
 	reg := buildRegistry(*pdfCmd, *ocrCmd)
 	srv.SetExtractor(reg)
@@ -427,7 +427,7 @@ func cmdIngest(args []string) error {
 	if *embedAPI == "openai" {
 		embedBase = *embedURL
 	}
-	embedder := buildEmbedder(*embedAPI, embedBase, orEnv(*embedKey, "OPENAI_API_KEY"), *embedModel, *embedDim)
+	embedder := buildEmbedder(cliEndpoint(*embedAPI, embedBase, *embedKey), *embedModel, *embedDim)
 	emb := &batchingEmbedder{inner: embedder, batch: *batch}
 
 	// Cancel on the first interrupt so ingestion stops cleanly after checkpointing.
@@ -509,7 +509,7 @@ func cmdIngest(args []string) error {
 			return fmt.Errorf("--entities requires --gen-model for extraction")
 		}
 		fmt.Fprintf(os.Stderr, "extracting entity graph with %s ...\n", *entModel)
-		gen := buildBackend("ollama", *ollamaURL, "")
+		gen := buildBackend(server.Endpoint{API: "ollama", BaseURL: *ollamaURL})
 		ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: *entModel})
 		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 			BatchSize: *entBatch,
@@ -798,7 +798,7 @@ func cmdBench(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "loaded %d documents, %d labeled queries\n", len(ds.Docs), len(ds.Cases))
 
-	embedder := buildEmbedder(*embedAPI, *embedURL, orEnv(*embedKey, "OPENAI_API_KEY"), *embedModel, *embedDim)
+	embedder := buildEmbedder(cliEndpoint(*embedAPI, *embedURL, *embedKey), *embedModel, *embedDim)
 	cfg := rag.Config{Seed: 1, GraphKNN: *knn, MinSimilarity: 0.5,
 		Chunk: rag.ChunkConfig{Strategy: rag.StrategyRecursive, TargetWords: *chunkWords, OverlapWords: *chunkWords / 5}}
 	opt := bench.Options{K: *k, DocLevel: true,

@@ -312,8 +312,10 @@ explains the pipeline.
 A **config** panel (header button or command palette) makes the whole engine
 configurable without the command line, and persists to a JSON file:
 
-- **Model backends.** Point generation and embeddings at Ollama or any
-  OpenAI-compatible endpoint, with base URL, API key, and model, edited live.
+- **Model providers.** Add any number of named OpenAI-compatible endpoints, each
+  with its own base URL, key, and **extra headers**, then bind generation and
+  embeddings to whichever you like. Test a provider before saving it; its model
+  list becomes the autocomplete for the model fields.
 - **Chunking.** Pick the strategy (recursive, word, markdown, sentence) and sizes
   for new ingests.
 - **Storage.** Configure S3-compatible storage (endpoint, bucket, region, prefix).
@@ -445,6 +447,29 @@ turbograph serve \
 
 `ingest` takes the same `--embed-api/--embed-url/--embed-key` flags. Pulling
 models from the UI is offered only when the backend supports it (Ollama).
+
+Being OpenAI-compatible in the request *body* says nothing about the request
+*headers*, so a provider added in the config panel carries its own. OpenRouter
+attributes traffic with `HTTP-Referer` and `X-Title`; a gateway may route on a
+header of its own; a service may authenticate with something other than a bearer
+token, which a configured `Authorization` header overrides. A key written as
+`${MY_API_KEY}` is read from the environment at use, so the secret itself never
+lands in the config file.
+
+```json
+{
+  "providers": [
+    {
+      "name": "openrouter",
+      "base_url": "https://openrouter.ai/api",
+      "api_key": "${OPENROUTER_API_KEY}",
+      "headers": {"HTTP-Referer": "https://turbograph.local", "X-Title": "turbograph"}
+    }
+  ],
+  "gen_api": "openrouter",
+  "gen_model": "anthropic/claude-sonnet-5"
+}
+```
 
 ### OpenAI-compatible API
 

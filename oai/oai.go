@@ -26,6 +26,13 @@ type Client struct {
 	EmbedModel string
 	HTTP       *http.Client
 
+	// Headers are sent on every request. Providers that are OpenAI-compatible on the
+	// wire still differ at the edges: OpenRouter attributes traffic with HTTP-Referer
+	// and X-Title, Azure authenticates with an api-key header rather than a bearer
+	// token, and gateways route on their own headers. They are applied last, so a
+	// header set here overrides Authorization or Content-Type deliberately.
+	Headers map[string]string
+
 	// QueryPrefix/DocPrefix and EmbedDim mirror ollama.Client for parity: most
 	// hosted models do not need prefixes, but the fields exist so the same wiring
 	// works for instruction-tuned embedders, and EmbedDim truncates (Matryoshka).
@@ -63,6 +70,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	for k, v := range c.Headers {
+		req.Header.Set(k, v)
 	}
 	return c.HTTP.Do(req)
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
@@ -19,8 +21,13 @@ import (
 // the API: send them to set, but they are never read back (booleans report
 // whether one is set).
 type RuntimeConfig struct {
+	// Providers are named OpenAI-compatible endpoints the operator has added. GenAPI
+	// and EmbedAPI may name one, so generation and embedding can sit on different
+	// services without either being hard-coded.
+	Providers []Provider `json:"providers,omitempty"`
+
 	// Generation backend (hot-swappable).
-	GenAPI   string `json:"gen_api"` // "ollama" or "openai"
+	GenAPI   string `json:"gen_api"` // "ollama", "openai", or a provider name
 	GenURL   string `json:"gen_url"`
 	GenKey   string `json:"gen_key,omitempty"`
 	GenModel string `json:"gen_model"`
@@ -46,12 +53,111 @@ type RuntimeConfig struct {
 	S3Prefix   string `json:"s3_prefix"`
 }
 
+// Provider is a named OpenAI-compatible endpoint. Everything that differs between
+// one such service and another lives here, which is why arbitrary headers are part
+// of it: being OpenAI-compatible on the request body says nothing about what a
+// service wants in the request headers.
+type Provider struct {
+	Name    string            `json:"name"`              // unique; what GenAPI/EmbedAPI reference
+	BaseURL string            `json:"base_url"`          // host root, no /v1
+	APIKey  string            `json:"api_key,omitempty"` // write-only over the API
+	Headers map[string]string `json:"headers,omitempty"` // sent on every request
+	Note    string            `json:"note,omitempty"`    // operator's own label
+}
+
+// Endpoint is a resolved backend target: which wire protocol, where, and with what
+// credentials and headers. The server resolves a provider name to one of these and
+// hands it to a factory, so adding a provider never means touching the factories.
+type Endpoint struct {
+	API     string // "ollama" or "openai"
+	BaseURL string
+	APIKey  string
+	Headers map[string]string
+}
+
 // Factories build backends from configuration. The cmd layer injects these so the
 // server can rebuild the generation/embedding backends when the config changes,
 // without the server package importing the concrete provider clients.
 type Factories struct {
-	Backend  func(api, url, key string) Backend
-	Embedder func(api, url, key, model string, dim int) rag.Embedder
+	Backend  func(Endpoint) Backend
+	Embedder func(ep Endpoint, model string, dim int) rag.Embedder
+}
+
+// endpoint resolves a provider to the target to talk to, dereferencing any
+// environment-variable references in its key and headers.
+func (p Provider) endpoint() Endpoint {
+	var h map[string]string
+	if len(p.Headers) > 0 {
+		h = make(map[string]string, len(p.Headers))
+		for k, v := range p.Headers {
+			h[k] = envRef(v)
+		}
+	}
+	return Endpoint{API: "openai", BaseURL: p.BaseURL, APIKey: envRef(p.APIKey), Headers: h}
+}
+
+// provider returns the named provider, or false. The lookup is linear because the
+// list is operator-sized (a handful), not user-sized.
+func (c RuntimeConfig) provider(name string) (Provider, bool) {
+	for _, p := range c.Providers {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}
+
+// endpoint resolves a backend selector to the target to talk to. The selector is
+// "ollama", the legacy inline "openai" (from the command-line flags), or the name
+// of an added provider.
+func (c RuntimeConfig) endpoint(api, inlineURL, inlineKey string) Endpoint {
+	switch api {
+	case "", "ollama":
+		return Endpoint{API: "ollama", BaseURL: c.OllamaURL}
+	case "openai":
+		return Endpoint{API: "openai", BaseURL: inlineURL, APIKey: inlineKey}
+	}
+	if p, ok := c.provider(api); ok {
+		return p.endpoint()
+	}
+	// A selector naming a provider that no longer exists: fall back to Ollama rather
+	// than silently building a client that points nowhere.
+	return Endpoint{API: "ollama", BaseURL: c.OllamaURL}
+}
+
+// envRef resolves a value that is entirely an environment-variable reference
+// ("$GROQ_API_KEY" or "${GROQ_API_KEY}") to that variable, and returns anything
+// else unchanged. It lets an operator point a provider at a secret without the
+// secret being written to the config file. The match is deliberately all-or-nothing:
+// a key that merely contains a dollar sign is a literal key, not a reference.
+func envRef(v string) string {
+	name, ok := strings.CutPrefix(v, "$")
+	if !ok {
+		return v
+	}
+	if inner, braced := strings.CutPrefix(name, "{"); braced {
+		if inner, closed := strings.CutSuffix(inner, "}"); closed {
+			name = inner
+		} else {
+			return v
+		}
+	}
+	if name == "" || strings.ContainsAny(name, "${} \t") {
+		return v
+	}
+	if got, set := os.LookupEnv(name); set {
+		return got
+	}
+	return v
+}
+
+// GenEndpoint and EmbedEndpoint resolve the configured backends.
+func (c RuntimeConfig) GenEndpoint() Endpoint {
+	return c.endpoint(c.GenAPI, c.GenURL, c.GenKey)
+}
+
+func (c RuntimeConfig) EmbedEndpoint() Endpoint {
+	return c.endpoint(c.EmbedAPI, c.EmbedURL, c.EmbedKey)
 }
 
 // EnableConfig turns on the /api/config endpoints, persisting edits to path and
@@ -97,8 +203,18 @@ func saveConfig(path string, c RuntimeConfig) error {
 // handleGetConfig returns the current configuration with secrets redacted.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	c := s.cfg
+	// Providers go out without their keys: the client is told only whether one is
+	// set, and sends a blank back to leave it alone.
+	provs := make([]map[string]any, 0, len(c.Providers))
+	for _, p := range c.Providers {
+		provs = append(provs, map[string]any{
+			"name": p.Name, "base_url": p.BaseURL, "headers": p.Headers,
+			"note": p.Note, "key_set": p.APIKey != "",
+		})
+	}
 	resp := map[string]any{
-		"gen_api": c.GenAPI, "gen_url": c.GenURL, "gen_model": c.GenModel,
+		"providers": provs,
+		"gen_api":   c.GenAPI, "gen_url": c.GenURL, "gen_model": c.GenModel,
 		"gen_key_set": c.GenKey != "",
 		"embed_api":   c.EmbedAPI, "embed_url": c.EmbedURL, "embed_model": c.EmbedModel, "embed_dim": c.EmbedDim,
 		"embed_key_set":  c.EmbedKey != "",
@@ -133,6 +249,13 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	if in.EmbedKey == "" {
 		in.EmbedKey = prev.EmbedKey
 	}
+	for i, p := range in.Providers {
+		if p.APIKey == "" {
+			if old, ok := prev.provider(p.Name); ok {
+				in.Providers[i].APIKey = old.APIKey
+			}
+		}
+	}
 	if err := validateConfig(in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -140,7 +263,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Hot-swap the generation backend.
 	if s.factories.Backend != nil {
-		s.gen = s.factories.Backend(in.GenAPI, genBaseURL(in), in.GenKey)
+		s.gen = s.factories.Backend(in.GenEndpoint())
 		s.genModel = in.GenModel
 		s.embedModel = in.EmbedModel
 	}
@@ -149,7 +272,7 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	mgrCfg.Chunk = rag.ChunkConfig{Strategy: in.ChunkStrategy, TargetWords: in.ChunkWords, OverlapWords: in.ChunkOverlap}
 	s.mgr.SetConfig(mgrCfg)
 	if s.factories.Embedder != nil {
-		s.mgr.SetEmbedder(s.factories.Embedder(in.EmbedAPI, embedBaseURL(in), in.EmbedKey, in.EmbedModel, in.EmbedDim))
+		s.mgr.SetEmbedder(s.factories.Embedder(in.EmbedEndpoint(), in.EmbedModel, in.EmbedDim))
 	}
 
 	restart := prev.S3Endpoint != in.S3Endpoint || prev.S3Bucket != in.S3Bucket ||
@@ -162,10 +285,79 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"saved": true, "restart_required": restart})
 }
 
+// handleTestProvider probes a provider without saving it: it builds a throwaway
+// client from the posted definition and lists the models the endpoint advertises,
+// so the UI can tell the operator whether the URL, key, and headers actually work
+// before the configuration is committed. A blank key means "use the saved one",
+// matching the config endpoints. It is gated on config editing being enabled,
+// because it makes the server issue an outbound request the caller controls.
+func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	if s.cfgPath == "" {
+		writeErr(w, http.StatusForbidden, fmt.Errorf("configuration editing is disabled on this server"))
+		return
+	}
+	if s.factories.Backend == nil {
+		writeErr(w, http.StatusForbidden, fmt.Errorf("this server cannot swap backends"))
+		return
+	}
+	var p Provider
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if p.BaseURL == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("a base URL is required"))
+		return
+	}
+	if err := validateBackendURL(p.BaseURL); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateHeaders(p.Headers); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if p.APIKey == "" {
+		if old, ok := s.cfg.provider(p.Name); ok {
+			p.APIKey = old.APIKey
+		}
+	}
+	back := s.factories.Backend(p.endpoint())
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	models, err := back.ListModels(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": models})
+}
+
 func validateConfig(c RuntimeConfig) error {
+	seen := make(map[string]bool, len(c.Providers))
+	for _, p := range c.Providers {
+		switch {
+		case strings.TrimSpace(p.Name) == "":
+			return fmt.Errorf("every provider needs a name")
+		case p.Name == "ollama" || p.Name == "openai":
+			return fmt.Errorf("provider name %q is reserved", p.Name)
+		case seen[p.Name]:
+			return fmt.Errorf("duplicate provider name %q", p.Name)
+		case p.BaseURL == "":
+			return fmt.Errorf("provider %q needs a base URL", p.Name)
+		}
+		seen[p.Name] = true
+		if err := validateBackendURL(p.BaseURL); err != nil {
+			return err
+		}
+		if err := validateHeaders(p.Headers); err != nil {
+			return fmt.Errorf("provider %q: %w", p.Name, err)
+		}
+	}
 	for _, api := range []string{c.GenAPI, c.EmbedAPI} {
-		if api != "" && api != "ollama" && api != "openai" {
-			return fmt.Errorf("backend api must be ollama or openai, got %q", api)
+		if api != "" && api != "ollama" && api != "openai" && !seen[api] {
+			return fmt.Errorf("backend %q is neither ollama, openai, nor an added provider", api)
 		}
 	}
 	if c.EmbedAPI == "openai" && c.EmbedURL == "" {
@@ -220,17 +412,35 @@ func validateBackendURL(raw string) error {
 	return nil
 }
 
-// genBaseURL / embedBaseURL pick the right base URL for the chosen api.
-func genBaseURL(c RuntimeConfig) string {
-	if c.GenAPI == "openai" {
-		return c.GenURL
+// validateHeaders rejects header names and values that are not well-formed. A
+// value carrying a newline would let a configured header inject further headers
+// into every outbound request, so it is refused rather than silently sanitized.
+func validateHeaders(h map[string]string) error {
+	for k, v := range h {
+		if k == "" {
+			return fmt.Errorf("a header name cannot be empty")
+		}
+		for i := 0; i < len(k); i++ {
+			if !isTokenChar(k[i]) {
+				return fmt.Errorf("%q is not a valid header name", k)
+			}
+		}
+		for i := 0; i < len(v); i++ {
+			// Visible ASCII, space, tab, and obs-text (>= 0x80) only: anything else is a
+			// control character, and CR or LF would be header injection.
+			if c := v[i]; c < 0x20 && c != '\t' || c == 0x7f {
+				return fmt.Errorf("header %q has a value containing control characters", k)
+			}
+		}
 	}
-	return c.OllamaURL
+	return nil
 }
 
-func embedBaseURL(c RuntimeConfig) string {
-	if c.EmbedAPI == "openai" {
-		return c.EmbedURL
+// isTokenChar reports whether c may appear in an HTTP field name (RFC 9110 token).
+func isTokenChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
 	}
-	return c.OllamaURL
+	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
 }

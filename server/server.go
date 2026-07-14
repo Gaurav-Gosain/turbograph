@@ -163,6 +163,7 @@ func (s *Server) routes(opt Options) http.Handler {
 	// Runtime configuration.
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handlePostConfig)
+	mux.HandleFunc("POST /api/provider/test", s.handleTestProvider)
 
 	// Bucket management.
 	mux.HandleFunc("GET /api/buckets", s.handleBuckets)

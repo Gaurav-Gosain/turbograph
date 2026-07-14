@@ -130,3 +130,30 @@ func TestOAIEmbedDimTruncates(t *testing.T) {
 		t.Fatalf("want truncated dim 4, got %d", len(v[0]))
 	}
 }
+
+// TestHeadersOnTheWire pins that configured extra headers are actually sent, and
+// that they win over the defaults: Azure-style deployments authenticate with an
+// api-key header rather than a bearer token, so overriding must be possible.
+func TestHeadersOnTheWire(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "sk-test", "e")
+	c.Headers = map[string]string{
+		"HTTP-Referer":  "https://turbograph.dev",
+		"Authorization": "Basic overridden",
+	}
+	if _, err := c.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("HTTP-Referer") != "https://turbograph.dev" {
+		t.Errorf("extra header not sent: %q", got.Get("HTTP-Referer"))
+	}
+	if got.Get("Authorization") != "Basic overridden" {
+		t.Errorf("extra header did not override the bearer token: %q", got.Get("Authorization"))
+	}
+}
