@@ -1,0 +1,6 @@
+# SKILL.md is embedded into the binary with go:embed, so its bytes ship as-is. Without
+# this, a Windows checkout rewrites it to CRLF and the binary there carries different
+# bytes than every other platform's. Pin the line endings so the same file ships
+# everywhere, rather than depending on who checked the repository out.
+*.md text eol=lf
+*.go text eol=lf
