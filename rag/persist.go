@@ -40,10 +40,14 @@ const (
 // rebuilt on load, which keeps the format small, forward-compatible, and immune
 // to index-internal layout changes.
 type snapshot struct {
-	Cfg    Config      `json:"config"`
-	Dim    int         `json:"dim"`
-	Chunks []Chunk     `json:"chunks"`
-	Embeds [][]float32 `json:"embeds"`
+	Cfg Config `json:"config"`
+	Dim int    `json:"dim"`
+	// Encoder names the vector space the store was built in (embedding model, its
+	// truncation, its instruction prefixes). Absent in older snapshots, in which case a
+	// merge can only compare dimensions and says so.
+	Encoder string      `json:"encoder,omitempty"`
+	Chunks  []Chunk     `json:"chunks"`
+	Embeds  [][]float32 `json:"embeds"`
 	// Codes holds the TurboQuant codes when the store was saved in VectorsCodes
 	// mode (Embeds is then empty). Decoded to approximate vectors on load.
 	Codes []quant.Code `json:"codes,omitempty"`
@@ -99,7 +103,7 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 	if s.hnsw == nil {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
-	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions,
+	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Encoder: s.encoder, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions,
 		DocMeta: s.docMeta, CommSummary: s.commSummary, ExtractCache: flattenCache(s.extractCache)}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	switch mode {
@@ -211,6 +215,7 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	}
 	s.versions = snap.Versions
 	s.docMeta = snap.DocMeta
+	s.encoder = snap.Encoder
 	s.commSummary = snap.CommSummary
 	if len(snap.ExtractCache) > 0 {
 		s.extractCache = make(map[[32]byte]cachedExtraction, len(snap.ExtractCache))

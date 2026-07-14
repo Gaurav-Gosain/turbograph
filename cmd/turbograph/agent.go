@@ -384,7 +384,7 @@ func cmdMerge(args []string) error {
 	if *into == "" {
 		return fmt.Errorf("--into is required")
 	}
-	srcs := fs.Args()
+	srcs := permuteArgs(fs)
 	if len(srcs) == 0 {
 		return fmt.Errorf("name at least one store to merge, e.g. turbograph merge --into combined.tg a.tg b.tg")
 	}
@@ -430,6 +430,26 @@ func cmdMerge(args []string) error {
 		}
 	})
 	return nil
+}
+
+// permuteArgs collects the positional arguments, allowing flags to appear after them.
+// Go's flag package stops parsing at the first non-flag argument, so
+//
+//	turbograph merge --into team.tg a.tg b.tg --embed-model nomic
+//
+// silently treated "--embed-model" as the name of a store to merge and failed with
+// "no such file or directory". Which is exactly the order a person writes it in.
+func permuteArgs(fs *flag.FlagSet) []string {
+	var pos []string
+	rest := fs.Args()
+	for len(rest) > 0 {
+		pos = append(pos, rest[0])
+		if err := fs.Parse(rest[1:]); err != nil {
+			return pos
+		}
+		rest = fs.Args()
+	}
+	return pos
 }
 
 // cmdEntities builds or refreshes the entity graph on an existing store. It is

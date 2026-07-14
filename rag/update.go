@@ -133,6 +133,11 @@ func (s *Store) DeleteDocument(id string) int {
 			s.eg.DropChunks(gone)
 			s.rebuildEntityLocked()
 		}
+		// The extraction cache remembers what the model SAID about each chunk: entity
+		// names and descriptions derived from its text. Left behind, they are written into
+		// the .tg and handed to whoever you share it with, so a forgotten document is not
+		// forgotten at all, only hidden from retrieval. Prune it against the live corpus.
+		s.pruneExtractCacheLocked()
 		s.reindexLocked()
 	}
 	return removed
@@ -172,6 +177,7 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 	}
 	if s.hnsw == nil {
 		s.dim = len(p.vecs[0])
+		s.encoder = encoderOf(s.embedder)
 		s.initIndexes()
 	}
 	if len(p.vecs[0]) != s.dim {
@@ -185,6 +191,13 @@ func (s *Store) applyPreparedLocked(p prepared) bool {
 		if s.idHash[p.id] == p.hash {
 			return false // unchanged
 		}
+		// The document's text is being replaced, so every entity mention citing its old
+		// chunks is evidence for a passage that no longer exists. Chunk ids are docID#pos,
+		// so the new text REUSES the same ids: leaving the graph alone does not merely
+		// strand the mentions, it silently re-points each one at different content. Drop
+		// them, exactly as a delete does. Must run before removeDocLocked, while the old
+		// chunks are still there to be identified.
+		s.dropEntityChunksLocked(p.id)
 		s.removeDocLocked(p.id)
 		s.appendToArraysLocked(p.chunks, p.vecs)
 		s.recordHashLocked(p.id, p.hash)
@@ -215,4 +228,24 @@ func (s *Store) applyPrepared(p prepared) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.applyPreparedLocked(p)
+}
+
+// dropEntityChunksLocked removes a document's chunks from the entity graph and prunes
+// the extraction cache. Both the delete path and the update path need it: an update
+// replaces a document's text under the same chunk ids, so entity mentions that are not
+// dropped end up citing a passage whose content has silently changed underneath them.
+func (s *Store) dropEntityChunksLocked(id string) {
+	gone := make(map[string]bool)
+	for _, c := range s.chunks {
+		if c.DocID == id {
+			gone[c.ID] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if s.eg != nil {
+		s.eg.DropChunks(gone)
+		s.rebuildEntityLocked()
+	}
 }

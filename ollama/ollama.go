@@ -417,3 +417,12 @@ func (c *Client) Ping(ctx context.Context) error {
 	resp.Body.Close()
 	return nil
 }
+
+// Fingerprint identifies the vector space this client produces. Two stores whose
+// fingerprints differ hold vectors that are not comparable, even when they have the
+// same dimension: "768-dimensional" says nothing about which 768 dimensions. It
+// includes everything that changes the geometry, which is the model, the truncation,
+// and the instruction prefixes an asymmetric model prepends before encoding.
+func (c *Client) Fingerprint() string {
+	return fmt.Sprintf("ollama/%s/dim=%d/q=%s/d=%s", c.EmbedModel, c.EmbedDim, c.QueryPrefix, c.DocPrefix)
+}

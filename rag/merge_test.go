@@ -3,6 +3,7 @@ package rag
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,60 @@ func TestMergeSurvivesRoundTrip(t *testing.T) {
 	}
 	if loaded.DocCount() != 2 || loaded.Len() != a.Len() {
 		t.Fatalf("merged store did not round-trip: %d docs / %d chunks", loaded.DocCount(), loaded.Len())
+	}
+}
+
+// fpEmbedder is a keyword embedder that also names its vector space, like the real
+// clients do.
+type fpEmbedder struct {
+	*keywordEmbedder
+	name string
+}
+
+func (e fpEmbedder) Fingerprint() string { return e.name }
+
+// TestMergeRefusesDifferentEmbedders is the case a dimension check cannot catch, and
+// the one that matters: two models at the SAME dimension do not agree on which
+// dimensions. Merging them produces an index whose distances are meaningless. Nothing
+// errors, retrieval just quietly gets worse and stays that way, in a file you shared.
+func TestMergeRefusesDifferentEmbedders(t *testing.T) {
+	mk := func(model, id, text string) *Store {
+		s := New(fpEmbedder{newKeywordEmbedder(32), model}, Config{Seed: 1})
+		if err := s.Build(context.Background(), []Document{{ID: id, Text: text}}); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	a := mk("ollama/nomic-embed-text/dim=0", "a", "alpha content")
+	b := mk("ollama/bge-base/dim=0", "b", "beta content") // same dimension, different space
+
+	if a.Encoder() == "" || b.Encoder() == "" {
+		t.Fatal("the store did not record its encoder")
+	}
+	_, err := Merge(a, b)
+	if err == nil {
+		t.Fatal("merging stores built with different embedders must fail; it silently corrupts the vector space")
+	}
+	if !strings.Contains(err.Error(), "different embedders") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+	// The same embedder still merges.
+	c := mk("ollama/nomic-embed-text/dim=0", "c", "gamma content")
+	if _, err := Merge(a, c); err != nil {
+		t.Errorf("stores built with the same embedder must merge: %v", err)
+	}
+}
+
+// TestMergeAllowsUnfingerprintedStores: a .tg written before fingerprints has no
+// encoder recorded. It must still merge, with only the dimension check, rather than
+// becoming unusable.
+func TestMergeAllowsUnfingerprintedStores(t *testing.T) {
+	a := mergeStore(t, Document{ID: "a", Text: "alpha"}) // keywordEmbedder: no Fingerprint
+	b := mergeStore(t, Document{ID: "b", Text: "beta"})
+	if a.Encoder() != "" {
+		t.Fatalf("expected no encoder, got %q", a.Encoder())
+	}
+	if _, err := Merge(a, b); err != nil {
+		t.Errorf("stores without a fingerprint must still merge: %v", err)
 	}
 }

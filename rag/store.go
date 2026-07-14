@@ -29,6 +29,30 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// Fingerprinter is an optional extension of Embedder that names the vector space it
+// produces. When an embedder implements it, the store records the fingerprint and
+// refuses to merge a store built in a different space. Both shipped clients implement
+// it; an embedder that does not simply gets no protection.
+type Fingerprinter interface {
+	Fingerprint() string
+}
+
+// encoderOf returns the embedder's fingerprint, or "" when it does not have one.
+func encoderOf(e Embedder) string {
+	if f, ok := e.(Fingerprinter); ok {
+		return f.Fingerprint()
+	}
+	return ""
+}
+
+// Encoder reports the vector space the store was built in, or "" for a store built
+// before fingerprints, or by an embedder that does not provide one.
+func (s *Store) Encoder() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.encoder
+}
+
 // QueryEmbedder is an optional extension of Embedder for asymmetric, instruction
 // tuned models that encode a query differently from a document. When the store's
 // embedder implements it, retrieval embeds the query through EmbedQuery instead
@@ -112,15 +136,20 @@ type Store struct {
 	// at ingest (Anthropic contextual retrieval). Off by default; never persisted.
 	contextualizer Contextualizer
 
-	dim    int
-	q      *quant.Quantizer
-	hnsw   *index.HNSW
-	bm25   *lexical.Index
-	chunks []Chunk
-	embeds [][]float32         // raw embeddings, the source of truth for rebuilds and MMR
-	docSet map[string]struct{} // document ids already ingested, for dedup and resume
-	hashes map[[32]byte]string // content hash -> owning doc id, for content-level dedup
-	idHash map[string][32]byte // doc id -> content hash, persisted so dedup survives reload
+	dim int
+	// encoder identifies the vector space the store was built in: the embedding model,
+	// its truncation, and its instruction prefixes. "768-dimensional" says nothing about
+	// WHICH 768 dimensions, so a dimension check alone lets two stores built with
+	// different models merge into one incoherent space, silently and permanently.
+	encoder string
+	q       *quant.Quantizer
+	hnsw    *index.HNSW
+	bm25    *lexical.Index
+	chunks  []Chunk
+	embeds  [][]float32         // raw embeddings, the source of truth for rebuilds and MMR
+	docSet  map[string]struct{} // document ids already ingested, for dedup and resume
+	hashes  map[[32]byte]string // content hash -> owning doc id, for content-level dedup
+	idHash  map[string][32]byte // doc id -> content hash, persisted so dedup survives reload
 
 	versions    map[string][]docVersion    // doc id -> content history, oldest first
 	docMeta     map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
@@ -221,6 +250,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dim = len(vecs[0])
+	s.encoder = encoderOf(s.embedder)
 	s.initIndexes()
 	s.chunks = s.chunks[:0]
 	s.embeds = s.embeds[:0]
@@ -284,6 +314,12 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 	}
 	if changed {
 		s.commSummary = nil // graph changed; community summaries are now stale
+		// An update replaced a document's text. Its old chunks are gone, so the model's
+		// answers about them are answers about text that is no longer in the corpus: drop
+		// them, or they persist into the .tg and would be reused if that exact text ever
+		// came back. Prune here, after the new chunks have landed, so the cache is judged
+		// against the corpus as it now stands.
+		s.pruneExtractCacheLocked()
 	}
 	s.reindexLocked()
 	return nil
@@ -415,6 +451,9 @@ func (s *Store) AddEmbedded(chunks []Chunk, vecs [][]float32) error {
 	if s.hnsw == nil {
 		s.dim = len(vecs[0])
 		s.initIndexes()
+	}
+	if s.encoder == "" {
+		s.encoder = encoderOf(s.embedder)
 	}
 	if len(vecs[0]) != s.dim {
 		return fmt.Errorf("rag: embedding dim %d does not match store dim %d", len(vecs[0]), s.dim)

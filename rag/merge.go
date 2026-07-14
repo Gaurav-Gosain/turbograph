@@ -39,6 +39,7 @@ func Merge(dst, src *Store) (MergeStats, error) {
 
 	src.mu.RLock()
 	srcDim := src.dim
+	srcEnc := src.encoder
 	srcChunks := make([]Chunk, len(src.chunks))
 	copy(srcChunks, src.chunks)
 	srcEmbeds := make([][]float32, len(src.embeds))
@@ -62,6 +63,15 @@ func Merge(dst, src *Store) (MergeStats, error) {
 		dst.mu.Unlock()
 		return MergeStats{}, fmt.Errorf("rag: cannot merge a store of dim %d into one of dim %d; they were built with different embedding models",
 			srcDim, dst.dim)
+	}
+	// A matching dimension is not a matching vector space. Two 768-dimensional models do
+	// not agree on which 768 dimensions, so merging them produces an index whose
+	// distances are meaningless: nothing fails, retrieval just quietly gets worse and
+	// stays that way. Refuse it.
+	if dstEnc := dst.encoder; dstEnc != "" && srcEnc != "" && dstEnc != srcEnc {
+		dst.mu.Unlock()
+		return MergeStats{}, fmt.Errorf("rag: refusing to merge stores built with different embedders;\n  into: %s\n  from: %s\nre-index one of them with the other's embedding model",
+			dstEnc, srcEnc)
 	}
 	// Decide which of src's documents are new. A document is already known if dst has
 	// its id, or if dst has its exact content under any id.

@@ -244,3 +244,58 @@ func TestForgetPrunesEntityGraph(t *testing.T) {
 		t.Errorf("all relations were dropped; the surviving entity should still link to the hub")
 	}
 }
+
+// TestForgetErasesFromTheSharedFile: forgetting must erase the document from the
+// artifact you hand to someone else, not merely hide it from retrieval. The extraction
+// cache stores what the model SAID about each chunk (entity names, descriptions
+// derived from its text) and is persisted, so a cache that is not pruned on delete
+// ships every forgotten document to everyone you share the .tg with.
+func TestForgetErasesFromTheSharedFile(t *testing.T) {
+	s := buildStore(t, "public alpha text", "SECRET-PAYLOAD confidential")
+	if err := s.BuildEntityGraph(context.Background(), &countingExtractor{}, EntityBuildOptions{Model: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.DeleteDocument("SECRET-PAYLOAD confidential"); n == 0 {
+		t.Fatal("nothing deleted")
+	}
+	var buf bytes.Buffer
+	if err := s.Save(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("SECRET-PAYLOAD")) {
+		t.Error("a forgotten document is still present in the saved .tg")
+	}
+}
+
+// TestUpdateDropsStaleExtractions: correcting a document must not leave the model's
+// reading of the superseded text behind. Chunk ids are docID#pos, so an update REUSES
+// the ids under different content: an entity mention that is not dropped ends up
+// citing a passage whose text has silently changed underneath it.
+//
+// Note the deliberate boundary. The superseded TEXT does survive, in the document's
+// version history, which is what /api/versions and restore are built on and what
+// `forget` clears. What must not survive is the extraction derived from it.
+func TestUpdateDropsStaleExtractions(t *testing.T) {
+	s := buildStore(t, "alpha")
+	if err := s.BuildEntityGraph(context.Background(), &countingExtractor{}, EntityBuildOptions{Model: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.CachedExtractions(); got != 1 {
+		t.Fatalf("setup: want 1 cached extraction, got %d", got)
+	}
+	// Replace the document's content under the same id, as `turbograph add --id` does.
+	if err := s.AddDocuments(context.Background(),
+		[]Document{{ID: "alpha", Text: "the corrected fact"}}); err != nil {
+		t.Fatal(err)
+	}
+	// The old text is gone from the corpus, so the model's answer about it must be gone
+	// from the cache: otherwise it is persisted, shipped, and silently reused if that
+	// exact text ever reappears.
+	if got := s.CachedExtractions(); got != 0 {
+		t.Errorf("an extraction of the superseded text survived the update: %d entries", got)
+	}
+	// And the entity graph must no longer cite the replaced chunk.
+	if s.EntityCount() != 0 {
+		t.Errorf("entities from the superseded text survived the update: %d", s.EntityCount())
+	}
+}

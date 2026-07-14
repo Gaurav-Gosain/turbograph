@@ -283,3 +283,9 @@ func truncateNormalize(v []float32, dim int) []float32 {
 	}
 	return out
 }
+
+// Fingerprint identifies the vector space this client produces. See the Ollama
+// client's Fingerprint for why the model name alone is not enough.
+func (c *Client) Fingerprint() string {
+	return fmt.Sprintf("openai/%s/%s/dim=%d/q=%s/d=%s", c.BaseURL, c.EmbedModel, c.EmbedDim, c.QueryPrefix, c.DocPrefix)
+}
