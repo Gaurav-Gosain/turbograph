@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -236,12 +237,34 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, fmt.Errorf("configuration editing is disabled on this server"))
 		return
 	}
-	var in RuntimeConfig
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	prev := s.cfg
+	// Merge onto the stored configuration rather than replacing it. A partial request,
+	// such as {"gen_model": "..."}, used to decode into a zero value and write every
+	// omitted field back as its zero, which destroyed configured providers and the API
+	// keys stored with them, while still returning {"saved": true}. Decoding onto a copy
+	// of the current config means a field absent from the request keeps its stored value.
+	in := prev
+	// Reset the provider list before decoding: JSON unmarshal into a non-nil slice merges
+	// element by element, so a new provider at index i would inherit the old provider's
+	// key at index i. Nil forces a clean decode; an absent "providers" is restored below.
+	in.Providers = nil
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, sent := raw["providers"]; !sent {
+		in.Providers = prev.Providers // omitted entirely: keep the stored providers and their keys
+	}
 	// Keep existing secrets when the client sends a blank (it never receives them).
 	if in.GenKey == "" {
 		in.GenKey = prev.GenKey

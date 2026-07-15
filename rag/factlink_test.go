@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -100,5 +101,62 @@ func TestFactAndNodeLinkingBothRun(t *testing.T) {
 		if len(res) == 0 {
 			t.Errorf("link=%q returned nothing", link)
 		}
+	}
+}
+
+// TestFactIndexSurvivesSaveLoad pins issue #17: the fact index is built when the entity
+// graph is built and persisted with the store, so the first entity-linked query after a
+// restart does not re-embed every relation inside the request.
+func TestFactIndexSurvivesSaveLoad(t *testing.T) {
+	ctx := context.Background()
+	s := New(newKeywordEmbedder(64), Config{Seed: 1, MinSimilarity: 0.0})
+	if err := s.Build(ctx, []Document{
+		{ID: "d1", Text: "jane doe leads acme corporation as chief executive"},
+		{ID: "d2", Text: "bob smith founded beta industries in berlin"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ex := factExtractor{ex: entity.Extraction{
+		Entities: []entity.ExtractedEntity{
+			{Name: "Jane Doe", Type: "person"}, {Name: "Acme Corporation", Type: "organization"},
+			{Name: "Bob Smith", Type: "person"}, {Name: "Beta Industries", Type: "organization"},
+		},
+		Relations: []entity.ExtractedRelation{
+			{Source: "Jane Doe", Target: "Acme Corporation", Description: "leads"},
+			{Source: "Bob Smith", Target: "Beta Industries", Description: "founded"},
+		},
+	}}
+	if err := s.BuildEntityGraph(ctx, ex, EntityBuildOptions{Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	// The fact index must have been built during BuildEntityGraph, not lazily later.
+	if len(s.factVec) == 0 {
+		t.Fatal("fact index was not built when the entity graph was built")
+	}
+	built := len(s.factVec)
+
+	var buf bytes.Buffer
+	if err := s.Save(&buf); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(newKeywordEmbedder(64), &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The loaded store must already carry the fact index, remapped to its node indices.
+	if len(loaded.factVec) != built {
+		t.Fatalf("fact index did not survive save/load: %d entries, want %d", len(loaded.factVec), built)
+	}
+	for i := range loaded.factSrc {
+		if loaded.factSrc[i] < 0 || loaded.factSrc[i] >= len(loaded.entList) ||
+			loaded.factTgt[i] < 0 || loaded.factTgt[i] >= len(loaded.entList) {
+			t.Fatalf("restored fact %d has an out-of-range endpoint", i)
+		}
+	}
+	// A fact-linked query works immediately, without a rebuild.
+	res, err := loaded.Retrieve(ctx, "who leads acme corporation",
+		RetrieveParams{TopK: 2, EntityMix: 0.5, EntityLink: "fact"})
+	if err != nil || len(res) == 0 {
+		t.Fatalf("fact-linked query on the loaded store failed: %v %v", res, err)
 	}
 }

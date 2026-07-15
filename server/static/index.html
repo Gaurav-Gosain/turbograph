@@ -1409,6 +1409,15 @@ async function loadGraph(keepView){
   if(seq!==G.loadSeq)return;
   G.nodes=v.nodes||[];G.edges=v.edges||[];
   G.idIndex=new Map(G.nodes.map((n,i)=>[n.id,i]));
+  // In the entity graph, each node carries the chunks it draws on. Index chunk id ->
+  // entity node indices, so an answer's retrieved chunks can be reflected as entity
+  // highlights even when the query did not use the entity graph for ranking (issue #16).
+  G.chunkToEnt=null;
+  if(G.graphMode==="entities"){
+    const m=new Map();
+    G.nodes.forEach((n,i)=>{(n.chunks||[]).forEach(cid=>{let a=m.get(cid);if(!a){a=[];m.set(cid,a)}a.push(i)})});
+    G.chunkToEnt=m;
+  }
   G.adj=G.nodes.map(()=>[]);
   for(const e of G.edges){G.adj[e.source].push(e.target);G.adj[e.target].push(e.source)}
   if(G.pos.length!==G.nodes.length){
@@ -1742,11 +1751,21 @@ function renderSources(msgEl,sources,retrieveMS){
 // set that matches the visible graph produces any node ids.
 function applyHighlight(msgEl){
   G.activeMsg=msgEl;
-  let ids=[];
-  if(G.graphMode==="entities"&&msgEl&&msgEl._entities)ids=msgEl._entities.map(e=>e.name);
-  else if(msgEl&&msgEl._sources)ids=msgEl._sources.map(s=>s.id);
   G.highlight=new Set();
-  for(const id of ids){const i=G.idIndex.get(id);if(i!=null)G.highlight.add(i)}
+  if(msgEl){
+    if(G.graphMode==="entities"){
+      if(msgEl._entities){
+        // The entities the query activated through PageRank, the strongest signal.
+        for(const e of msgEl._entities){const i=G.idIndex.get(e.name);if(i!=null)G.highlight.add(i)}
+      }else if(msgEl._sources&&G.chunkToEnt){
+        // No entity-graph ranking this query: still reflect the evidence by lighting the
+        // entity nodes that the retrieved chunks belong to, instead of doing nothing.
+        for(const s of msgEl._sources){for(const i of (G.chunkToEnt.get(s.id)||[]))G.highlight.add(i)}
+      }
+    }else if(msgEl._sources){
+      for(const s of msgEl._sources){const i=G.idIndex.get(s.id);if(i!=null)G.highlight.add(i)}
+    }
+  }
   if(G.highlight.size)fit(G.highlight);
   dirty=true;
 }

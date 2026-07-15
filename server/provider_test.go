@@ -162,3 +162,40 @@ func mustDecode(t *testing.T, resp *http.Response) map[string]any {
 	}
 	return out
 }
+
+// TestConfigMergePreservesProvidersOnPartialPost pins issue #15: a partial POST that
+// omits "providers" must not destroy the stored providers and their API keys.
+func TestConfigMergePreservesProvidersOnPartialPost(t *testing.T) {
+	s, _ := newConfigServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// Save a provider with a key, selected for generation.
+	full := `{"providers":[{"name":"p1","base_url":"https://x.test","api_key":"sk-secret"}],
+	  "gen_api":"p1","gen_model":"m1","embed_api":"ollama","embed_model":"e1"}`
+	if r, _ := http.Post(ts.URL+"/api/config", "application/json", bytes.NewBufferString(full)); r.StatusCode != 200 {
+		t.Fatalf("save status %d", r.StatusCode)
+	}
+	// Change one unrelated field, omitting everything else.
+	if r, _ := http.Post(ts.URL+"/api/config", "application/json", bytes.NewBufferString(`{"gen_model":"m2"}`)); r.StatusCode != 200 {
+		t.Fatalf("partial status %d", r.StatusCode)
+	}
+	// The provider, its key, and the other fields must survive.
+	p, ok := s.cfg.provider("p1")
+	if !ok {
+		t.Fatal("the stored provider was destroyed by a partial POST")
+	}
+	if p.APIKey != "sk-secret" {
+		t.Errorf("the provider's API key was lost: %q", p.APIKey)
+	}
+	if s.cfg.GenAPI != "p1" || s.cfg.GenModel != "m2" || s.cfg.EmbedModel != "e1" {
+		t.Errorf("merge dropped fields: gen_api=%q gen_model=%q embed_model=%q",
+			s.cfg.GenAPI, s.cfg.GenModel, s.cfg.EmbedModel)
+	}
+	// An explicit empty array still clears providers (intentional, not an omission), as
+	// long as nothing still references one -- so switch generation back to ollama too.
+	http.Post(ts.URL+"/api/config", "application/json", bytes.NewBufferString(`{"providers":[],"gen_api":"ollama"}`))
+	if len(s.cfg.Providers) != 0 {
+		t.Errorf("an explicit empty providers array should clear them, got %d", len(s.cfg.Providers))
+	}
+}

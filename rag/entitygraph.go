@@ -343,6 +343,11 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	// semantic similarity to the query, not just literal token overlap. This is a
 	// best-effort enhancement: if embedding fails, seeding falls back to lexical.
 	s.embedEntities(ctx)
+	// Build the query-to-fact index now, while the graph is being built, so it is present
+	// when the store is saved and does not have to be rebuilt inside the first
+	// entity-linked query after every restart (which, on a graph with thousands of
+	// relations, is a ~100s re-embed the caller cannot see).
+	s.ensureFactIndex(ctx)
 	return nil
 }
 
@@ -435,6 +440,7 @@ func (s *Store) EntityGraphView() GraphView {
 			Community: community,
 			Degree:    s.entCSR.Degree(i),
 			Snippet:   snippet(e.Description, 200),
+			Chunks:    e.Chunks,
 		}
 	}
 	for _, r := range s.eg.Relations() {
