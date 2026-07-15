@@ -117,7 +117,7 @@ jobs:
           python -m pytest -q
 
       - name: set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
