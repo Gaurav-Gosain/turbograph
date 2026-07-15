@@ -1145,10 +1145,17 @@ const esc=s=>(s==null?"":""+s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">
 // bk appends the active bucket so every corpus stays isolated.
 const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 
+// The selected bucket is a preference like the API key and the ingest options, so it
+// survives a reload. Without it every refresh silently reverts to "default", which is
+// usually an empty corpus, so queries return nothing and the store looks lost.
+// loadBuckets still falls back when the remembered bucket no longer exists.
+const BUCKETK="tg.bucket";
+
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,hoverEdge:-1,selEdge:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",backend:"",bucket:"default",graphMode:"chunks",activeMsg:null,docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false,verify:false};
+  model:"",backend:"",bucket:(()=>{try{return localStorage.getItem(BUCKETK)||"default"}catch(e){return"default"}})(),
+  graphMode:"chunks",activeMsg:null,docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false,verify:false};
 
 // ---------- settings persistence + popover ----------
 const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim","pWindow"];
@@ -1496,6 +1503,7 @@ async function loadBuckets(){
   }catch(e){}
 }
 async function switchBucket(){
+  try{localStorage.setItem(BUCKETK,G.bucket)}catch(e){}
   G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;G.pos=[];
   clearMessages();G.docs=new Map();renderDocList();
   await loadDocuments();await loadStats();await loadGraph();
