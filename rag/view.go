@@ -14,6 +14,12 @@ type GraphNode struct {
 	Community int    `json:"community"`
 	Degree    int    `json:"degree"`
 	Snippet   string `json:"snippet"`
+	// Chunks lists the ids of the chunks this node draws on. It is populated only for the
+	// entity graph, where it lets the UI map an answer's retrieved chunks to the entity
+	// nodes that mention them and highlight those, so the entity view reflects the
+	// evidence even when the query did not use the entity graph for ranking. Omitted for
+	// the chunk graph, whose node id is already the chunk id.
+	Chunks []string `json:"chunks,omitempty"`
 }
 
 // GraphEdge is an undirected similarity edge between two chunk indices.
