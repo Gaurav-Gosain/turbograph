@@ -90,7 +90,8 @@ func TestFactAndNodeLinkingBothRun(t *testing.T) {
 	if err := s.BuildEntityGraph(ctx, ex, EntityBuildOptions{Model: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, link := range []string{"node", "fact"} {
+	// "" must default to fact-linking; all three must run without error.
+	for _, link := range []string{"", "node", "fact"} {
 		res, err := s.Retrieve(ctx, "who leads acme corporation",
 			RetrieveParams{TopK: 2, EntityMix: 0.5, EntityLink: link})
 		if err != nil {

@@ -895,8 +895,10 @@ func cmdBench(args []string) error {
 			{Name: "hybrid w=1.0", Params: rag.RetrieveParams{LexicalWeight: 1.0}},
 			{Name: "lexical-dominant w=8", Params: rag.RetrieveParams{LexicalWeight: 8}},
 			{Name: "+ graph 0.2", Params: rag.RetrieveParams{GraphMix: 0.2}},
-			{Name: "+ entity 0.3", Params: rag.RetrieveParams{EntityMix: 0.3}},
-			{Name: "+ entity 0.5", Params: rag.RetrieveParams{EntityMix: 0.5}},
+			{Name: "+ entity 0.3 (node-link)", Params: rag.RetrieveParams{EntityMix: 0.3, EntityLink: "node"}},
+			{Name: "+ entity 0.5 (node-link)", Params: rag.RetrieveParams{EntityMix: 0.5, EntityLink: "node"}},
+			{Name: "+ entity 0.3 (fact-link)", Params: rag.RetrieveParams{EntityMix: 0.3, EntityLink: "fact"}},
+			{Name: "+ entity 0.5 (fact-link)", Params: rag.RetrieveParams{EntityMix: 0.5, EntityLink: "fact"}},
 			{Name: "+ MMR 0.5", Params: rag.RetrieveParams{MMRLambda: 0.5}},
 		}
 		var res []bench.ArmResult

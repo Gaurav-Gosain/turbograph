@@ -455,11 +455,15 @@ func (s *Store) entityChunkScores(query string, qv []float32, link string) map[i
 	if s.entCSR == nil || len(s.entList) == 0 {
 		return nil
 	}
+	// Fact-linking is the default: seeding PageRank from the relationships a query
+	// matches beats seeding from entity names it matches, measured on MultiHop-RAG (fact
+	// vs node, higher recall and nDCG at every mix level), which is what HippoRAG 2's
+	// ablation predicts. "node" selects the older name-matching behavior for comparison.
 	var seeds map[int]float32
-	if link == "fact" {
-		seeds = s.factSeeds(qv)
-	} else {
+	if link == "node" {
 		seeds = s.entitySeeds(query, qv)
+	} else {
+		seeds = s.factSeeds(qv)
 	}
 	if len(seeds) == 0 {
 		return nil

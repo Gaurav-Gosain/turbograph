@@ -805,12 +805,12 @@ type RetrieveParams struct {
 	MMRLambda     float32 // MMR relevance/diversity tradeoff; 0 disables diversification
 	EntityMix     float32 // weight of the entity-graph signal in [0,1]; 0 ignores it
 	// EntityLink selects how the query is linked to the entity graph to seed PageRank.
-	// "" or "node": match the query against entity name+description vectors (the
-	// original behavior). "fact": match the query against the RELATIONSHIPS -- each
-	// relation embedded as a short fact -- and seed from the endpoints of the facts
-	// that match, damped by how many chunks each endpoint appears in. HippoRAG 2's
-	// ablation reports linking to facts rather than to entity names as its single
-	// largest retrieval gain; this makes both selectable so it can be measured here.
+	// "" or "fact" (the default): match the query against the RELATIONSHIPS -- each
+	// relation embedded as a short fact -- and seed from the endpoints of the facts that
+	// match, damped by how many chunks each endpoint appears in. "node": match against
+	// entity name+description vectors instead (the original behavior). Fact-linking
+	// measured better on MultiHop-RAG at every mix level, which is what HippoRAG 2's
+	// ablation predicts; "node" is kept for comparison.
 	EntityLink string
 	// PRF enables pseudo-relevance feedback: an initial dense search of this many
 	// chunks is run, their vectors are averaged into the query (Rocchio in
@@ -862,7 +862,8 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	// The fact index is built the first time a fact-linked query asks for it. It takes
 	// the write lock, so it must run before the read lock below, like the other builds.
-	if p.EntityMix > 0 && p.EntityLink == "fact" {
+	// Fact-linking is the default; only an explicit "node" opts out of it.
+	if p.EntityMix > 0 && p.EntityLink != "node" {
 		s.ensureFactIndex(ctx)
 	}
 	s.mu.RLock()

@@ -362,6 +362,49 @@ lexical channel removes exactly the recall the feature exists to add.
 
 Recorded because the argument is a good one and will be made again.
 
+### 8. Query-to-fact linking beats query-to-node linking (HippoRAG 2)
+
+The research sweep's best-evidenced retrieval idea: turbograph seeds its entity-graph
+PageRank by embedding the whole query and matching it against entity NAME vectors, which
+is exactly HippoRAG 2's worst ablation arm. Their fix is to link the query to the
+relationships instead. Both are now selectable, and on MultiHop-RAG -- the dataset whose
+queries need evidence from several documents, which is what exercises the graph -- fact
+linking wins at every mix level:
+
+| entity arm             | recall@10 | nDCG@10 |
+| ---------------------- | --------- | ------- |
+| hybrid (no entity)     | 0.837     | 0.794   |
+| + entity 0.3 node-link | 0.871     | 0.790   |
+| + entity 0.5 node-link | 0.901     | 0.767   |
+| + entity 0.3 fact-link | 0.917     | 0.799   |
+| + entity 0.5 fact-link | **0.935** | 0.814   |
+
+Node-linking raises recall but LOWERS nDCG (it pulls in associated documents and
+mis-orders them); fact-linking raises both. Fact-linking is now the default; `node` is
+kept for comparison. This is the first idea from the sweep that measured as a real
+improvement -- the previous one, keeping the contextual prefix out of BM25, was
+well-argued and wrong (finding 7).
+
+**Two honest caveats.** First, this is a pilot: 80 news articles, 436 queries, entity
+graph extracted with qwen3.5:2b (the fast model, so the graph is lossier than a real
+run would produce). The relative comparison holds on any graph, but the definitive
+version is the full corpus with a stronger extractor. Reproduce with:
+
+```
+turbograph bench --format multihop --corpus corpus.json --queries MultiHopRAG.json \
+  --build-store mh.tg --gen-model qwen3.5:4b --chunk-strategy word --chunk-words 500
+turbograph bench --format multihop --store mh.tg --corpus corpus.json \
+  --queries MultiHopRAG.json --ablate
+```
+
+Second, and more important: on this corpus the entity graph is not the strongest lever
+at all. MMR (+0.058 nDCG) and a heavier lexical weight (+0.048) both beat every entity
+arm, because MultiHop-RAG queries name specific entities and exact lexical matching is
+powerful on news text. So fact-linking is the right WAY to do entity linking, but entity
+linking is not the headline win here. The bench harness that measures all of this at
+once (`--build-store` / `--store` / `--ablate`, and the MultiHop-RAG loader) is arguably
+the more durable outcome than any single number.
+
 ## Low-storage snapshot modes
 
 Stored embeddings dominate a `.tg` file: on a 173-chunk real-prose corpus at
