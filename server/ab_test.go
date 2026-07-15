@@ -152,7 +152,7 @@ func TestABRetrievalImprovements(t *testing.T) {
 		for _, qc := range abCases {
 			rq := req
 			rq.Query = qc.q
-			res, _, err := srv.retrieveForChat(ctx, st, rq, chatModel)
+			res, _, err := srv.retrieveForChat(ctx, st, rq, chatModel, nil)
 			if err != nil {
 				t.Fatalf("%s: retrieve %q: %v", name, qc.q, err)
 			}
@@ -184,7 +184,7 @@ func TestABRetrievalImprovements(t *testing.T) {
 		for _, qc := range abCases {
 			rq := req
 			rq.Query = qc.q
-			res, _, err := srv.retrieveForChat(ctx, st, rq, chatModel)
+			res, _, err := srv.retrieveForChat(ctx, st, rq, chatModel, nil)
 			if err != nil {
 				t.Fatalf("%s answer retrieve %q: %v", name, qc.q, err)
 			}

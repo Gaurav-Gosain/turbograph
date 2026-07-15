@@ -119,6 +119,8 @@
     display:flex;align-items:center;gap:8px}
   .msg .who .act{color:var(--faint);cursor:pointer;font-size:10px}
   .msg .who .act:hover{color:var(--accent)}
+  /* Which backend answered, next to the model name. Muted so the model reads first. */
+  .msg .who .via{color:var(--faint);letter-spacing:0;text-transform:none;margin-left:-3px}
   /* The question is a contained aside; the answer is the page. Hierarchy comes from
      containment and the who-label, not from a coloured rule down one edge. */
   .msg.user .body{background:var(--panel2);border:1px solid var(--border);
@@ -184,6 +186,27 @@
 
   .src-time{font-size:10px;color:var(--muted);margin-top:9px}
   .src-time b{color:var(--accent);font-weight:600}
+  /* Entity-graph contribution: shown only when the graph actually fired for this query.
+     A quiet block, distinct from the numbered source chips, that ties the answer to the
+     knowledge graph and lets you jump to the nodes it lit up. */
+  .ent-used{margin-top:9px;border-top:1px solid var(--border);padding-top:8px}
+  .eu-head{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--muted)}
+  .eu-head b{color:var(--accent2);font-weight:600;font-variant-numeric:tabular-nums}
+  .eu-glyph{color:var(--accent2);font-size:12px;line-height:1}
+  .eu-view{margin-left:auto;color:var(--faint);cursor:pointer;font-size:10px;
+    border:1px solid var(--border);border-radius:4px;padding:2px 7px;transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .eu-view:hover{color:var(--accent2);border-color:var(--accent2)}
+  .eu-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+  .eu-chip{font-size:10px;color:var(--muted);background:var(--panel2);opacity:var(--a,1);
+    border:1px solid var(--border);border-radius:5px;padding:3px 7px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:5px;max-width:100%;
+    transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  /* A lossy extraction can produce a very long entity name; keep it on one line and clip
+     it so one bad node cannot blow out the row. */
+  .eu-chip .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+  .eu-chip .ty{flex:none}
+  .eu-chip:hover{border-color:var(--accent2);color:var(--accent2);opacity:1}
+  .eu-chip .ty{color:var(--faint);font-size:8.5px;text-transform:uppercase;letter-spacing:.4px}
   .sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
   .chip{font-size:10px;color:var(--muted);background:var(--panel2);
     border:1px solid var(--border);border-radius:5px;padding:3px 7px;cursor:pointer;transition:.12s}
@@ -1125,7 +1148,7 @@ const bk=u=>u+(u.includes("?")?"&":"?")+"bucket="+encodeURIComponent(G.bucket);
 const G={nodes:[],edges:[],pos:[],adj:[],idIndex:new Map(),
   highlight:new Set(),pulse:-1,selected:-1,hover:-1,hoverEdge:-1,selEdge:-1,
   view:{scale:1,tx:0,ty:0},sim:{alpha:0,running:false},
-  model:"",bucket:"default",graphMode:"chunks",docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false,verify:false};
+  model:"",backend:"",bucket:"default",graphMode:"chunks",activeMsg:null,docs:new Map(),pdfSupported:false,loadSeq:0,global:false,decompose:false,verify:false};
 
 // ---------- settings persistence + popover ----------
 const SETTINGS=["pTopK","pMix","pMMR","pEnt","pMinSim","pWindow"];
@@ -1420,6 +1443,7 @@ async function loadModels(){
     if(m.pdf!=null){G.pdfSupported=m.pdf;$("#dropTypes").textContent=(m.pdf?".txt .md .pdf":".txt .md")+" images"}
     // Surface a missing embedding model: it is required to index anything.
     G.embedModel=m.embed_model||"";
+    G.backend=m.backend||"";
     $("#embedName").textContent=G.embedModel;
     $("#embedNotice").style.display=(m.embed_ready===false&&G.embedModel)?"flex":"none";
     const sel=$("#model");sel.innerHTML="";
@@ -1583,12 +1607,20 @@ function addUser(text){
   d.querySelector(".body").textContent=text;messages.appendChild(d);messages.scrollTop=messages.scrollHeight;
   updateEmpty();
 }
+// backendLabel makes the backend id human: "ollama", "openai-compatible", or a named
+// provider the operator added (which is already a friendly name).
+function backendLabel(b){
+  if(b==="ollama")return "ollama";
+  if(b==="openai")return "openai-compatible";
+  return b; // a provider name from the config
+}
 function addBot(){
   const d=document.createElement("div");d.className="msg bot";
   // The body starts with a thinking indicator rather than the streaming caret: an
   // empty box with a blinking cursor reads as broken while the model is still
   // working. The first token replaces it (flush rewrites innerHTML).
   d.innerHTML='<div class="who"><span class="lbl">'+esc(G.model||"assistant")+'</span>'+
+    (G.backend?'<span class="via" title="which backend is answering">via '+esc(backendLabel(G.backend))+'</span>':"")+
     '<span class="act copy" style="display:none">copy</span></div>'+
     '<div class="body md"><span class="think" role="status" aria-label="generating"><i></i><i></i><i></i></span></div>';
   messages.appendChild(d);messages.scrollTop=messages.scrollHeight;return d;
@@ -1631,7 +1663,8 @@ async function sendChat(){
       buf+=dec.decode(value,{stream:true});let i;
       while((i=buf.indexOf("\n\n"))>=0){
         const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
-        if(ev.event==="sources"){highlightIDs(ev.data.sources.map(s=>s.id));renderSources(msgEl,ev.data.sources,ev.data.retrieve_ms)}
+        if(ev.event==="sources"){renderSources(msgEl,ev.data.sources,ev.data.retrieve_ms);applyHighlight(msgEl)}
+        else if(ev.event==="entities"){renderEntityRow(msgEl,ev.data.entities,ev.data.link);applyHighlight(msgEl)}
         else if(ev.event==="prompt"){msgEl._prompt=ev.data;addPromptLink(msgEl)}
         else if(ev.event==="verify"){renderVerify(msgEl,ev.data.claims)}
         else if(ev.event==="token"){answer+=ev.data.text;nb=nearBottom();
@@ -1685,6 +1718,58 @@ function renderSources(msgEl,sources,retrieveMS){
   });
   msgEl.appendChild(wrap);
 }
+// applyHighlight lights up, in the graph, the nodes this message used -- and it is the
+// current graph mode that decides which nodes: the retrieved chunks when the chunk graph
+// is shown, the activated entities when the entity graph is shown. Routing both the
+// sources and the entities events through here (rather than each calling highlight
+// directly) stops the second event from clearing the first's highlight, since only the
+// set that matches the visible graph produces any node ids.
+function applyHighlight(msgEl){
+  G.activeMsg=msgEl;
+  let ids=[];
+  if(G.graphMode==="entities"&&msgEl&&msgEl._entities)ids=msgEl._entities.map(e=>e.name);
+  else if(msgEl&&msgEl._sources)ids=msgEl._sources.map(s=>s.id);
+  G.highlight=new Set();
+  for(const id of ids){const i=G.idIndex.get(id);if(i!=null)G.highlight.add(i)}
+  if(G.highlight.size)fit(G.highlight);
+  dirty=true;
+}
+// ensureEntityMode switches the graph to the entity view and waits for it to load, so a
+// chat can point at the entity nodes it activated even when the chunk graph was showing.
+async function ensureEntityMode(){
+  if(G.graphMode==="entities")return;
+  G.graphMode="entities";
+  document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
+  G.pos=[];G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;
+  await loadGraph();
+}
+// renderEntityRow shows that the entity graph contributed to this answer, and which
+// entities it activated. The row appears only when the graph actually fired, so its
+// presence is the honest signal that the graph was used; its absence means it was not.
+function renderEntityRow(msgEl,entities,link){
+  if(!entities||!entities.length||msgEl.querySelector(".ent-used"))return;
+  msgEl._entities=entities;
+  const box=document.createElement("div");box.className="ent-used";
+  const linkName=link==="node"?"entity names":"facts";
+  box.innerHTML='<div class="eu-head" title="the entity knowledge graph drove part of this retrieval, linked by '+linkName+'">'
+    +'<span class="eu-glyph">&#x2b21;</span><span>entity graph &middot; <b>'+entities.length+'</b> activated</span>'
+    +'<span class="eu-view lnk">show in graph</span></div>'
+    +'<div class="eu-chips"></div>';
+  const chips=box.querySelector(".eu-chips");
+  entities.forEach(e=>{
+    const c=document.createElement("span");c.className="eu-chip";c.dataset.name=e.name;
+    // opacity tracks activation strength so the strongest entities read first
+    c.style.setProperty("--a",(0.45+0.55*(e.score||0)).toFixed(2));
+    c.innerHTML='<span class="nm">'+esc(e.name)+'</span>'+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
+    c.onmouseenter=()=>{if(G.graphMode==="entities"){const i=G.idIndex.get(e.name);if(i!=null){G.pulse=i;dirty=true}}};
+    c.onmouseleave=()=>{G.pulse=-1;dirty=true};
+    c.onclick=async()=>{await ensureEntityMode();applyHighlight(msgEl);const i=G.idIndex.get(e.name);if(i!=null){G.selected=i;fit(new Set([i]));dirty=true}};
+    chips.appendChild(c);
+  });
+  box.querySelector(".eu-view").onclick=async()=>{await ensureEntityMode();applyHighlight(msgEl)};
+  msgEl.appendChild(box);
+}
+
 // addPromptLink adds a "view prompt" affordance once the assembled prompt for a
 // message has arrived, and showPrompt reveals it in the inspector panel. Seeing
 // the exact context the model received is the fastest way to explain an answer.
@@ -3552,7 +3637,10 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
   if(G.graphMode===b.dataset.m)return;
   G.graphMode=b.dataset.m;
   document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x===b));
-  G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;loadGraph();
+  G.pos=[];G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;
+  // Switching mode by hand keeps the current answer's highlight meaningful: re-light its
+  // nodes for the newly shown graph once it loads.
+  loadGraph().then(()=>{if(G.activeMsg)applyHighlight(G.activeMsg)});
 });
 async function buildEntities(onProg){
   if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}

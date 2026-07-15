@@ -289,6 +289,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		"pdf":         pdf,
 		"embed_model": embed,
 		"embed_ready": embedReady,
+		// Which backend answers, so the chat can show "model via ollama" or the provider
+		// name. GenAPI is "ollama", "openai", or the name of an added provider.
+		"backend": orStr(s.cfg.GenAPI, "ollama"),
 	})
 }
 
@@ -426,20 +429,21 @@ type chatTurn struct {
 }
 
 type chatRequest struct {
-	Query     string     `json:"query"`
-	TopK      int        `json:"top_k"`
-	GraphMix  float32    `json:"graph_mix"`
-	MMRLambda float32    `json:"mmr_lambda"`
-	EntityMix float32    `json:"entity_mix"`
-	MinSim    float32    `json:"min_sim"` // abstain if the top hit's cosine is below this
-	Rerank    bool       `json:"rerank"`  // pointwise LLM reranking of candidates
-	History   []chatTurn `json:"history"` // recent turns, for query rewriting
-	Model     string     `json:"model"`
-	MetaKeys  []string   `json:"meta_keys"` // document metadata keys to include in each passage
-	Global    bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
-	Decompose bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
-	Window    int        `json:"window"`    // expand each cited chunk with this many neighbor chunks for context
-	Verify    bool       `json:"verify"`    // after answering, audit each claim's support in the evidence
+	Query      string     `json:"query"`
+	TopK       int        `json:"top_k"`
+	GraphMix   float32    `json:"graph_mix"`
+	MMRLambda  float32    `json:"mmr_lambda"`
+	EntityMix  float32    `json:"entity_mix"`
+	EntityLink string     `json:"entity_link,omitempty"` // "fact" (default) or "node"
+	MinSim     float32    `json:"min_sim"`               // abstain if the top hit's cosine is below this
+	Rerank     bool       `json:"rerank"`                // pointwise LLM reranking of candidates
+	History    []chatTurn `json:"history"`               // recent turns, for query rewriting
+	Model      string     `json:"model"`
+	MetaKeys   []string   `json:"meta_keys"` // document metadata keys to include in each passage
+	Global     bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
+	Decompose  bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
+	Window     int        `json:"window"`    // expand each cited chunk with this many neighbor chunks for context
+	Verify     bool       `json:"verify"`    // after answering, audit each claim's support in the evidence
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -491,7 +495,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	retrieveStart := time.Now()
-	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model)
+	var trace rag.RetrieveTrace
+	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model, &trace)
 	if err != nil {
 		send("error", map[string]string{"error": err.Error()})
 		return
@@ -507,6 +512,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("sources", map[string]any{"sources": toQueryResults(res), "retrieve_ms": retrieveMS})
+
+	// When the entity graph actually contributed to this query, say which entities it
+	// activated, so the UI can show the graph was used and light those nodes up. Only
+	// sent when it fired: entity_mix > 0 with no match, or no graph, sends nothing, which
+	// is the honest signal that the graph was not used.
+	if trace.EntityLinked && len(trace.Entities) > 0 {
+		send("entities", map[string]any{"entities": trace.Entities, "link": entityLinkOf(req)})
+	}
 
 	if s.gen == nil || model == "" {
 		send("error", map[string]string{"error": "no language model configured"})
@@ -547,7 +560,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // optional pointwise LLM reranking. It returns the final ranked results, whether
 // the gate fired, and any retrieval error. Each stage is independently optional,
 // so the cheap default path is identical to plain retrieval.
-func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatRequest, model string) ([]rag.Retrieved, bool, error) {
+func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatRequest, model string, trace *rag.RetrieveTrace) ([]rag.Retrieved, bool, error) {
 	// Rewrite an elliptical follow-up into a standalone query for retrieval only;
 	// the original question is still what the model answers.
 	retrievalQuery := s.rewriteQuery(ctx, req.History, req.Query, model)
@@ -561,10 +574,11 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 		}
 	}
 	params := rag.RetrieveParams{
-		TopK:      candK,
-		GraphMix:  req.GraphMix,
-		MMRLambda: req.MMRLambda,
-		EntityMix: req.EntityMix,
+		TopK:       candK,
+		GraphMix:   req.GraphMix,
+		MMRLambda:  req.MMRLambda,
+		EntityMix:  req.EntityMix,
+		EntityLink: req.EntityLink,
 	}
 	var res []rag.Retrieved
 	var err error
@@ -572,8 +586,11 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 		// One model call splits a multi-hop question into focused subqueries, then
 		// the candidate sets are unioned so each hop contributes evidence.
 		subs := s.decomposeQuery(ctx, model, retrievalQuery)
-		res, err = s.retrieveDecomposed(ctx, st, subs, params)
+		// The subqueries retrieve concurrently, so they cannot share one trace pointer;
+		// retrieveDecomposed gives each its own and merges them into this one.
+		res, err = s.retrieveDecomposed(ctx, st, subs, params, trace)
 	} else {
+		params.Trace = trace
 		res, err = st.Retrieve(ctx, retrievalQuery, params)
 	}
 	if err != nil {
@@ -588,6 +605,14 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 		res = res[:req.TopK]
 	}
 	return res, false, nil
+}
+
+// entityLinkOf reports how the query was linked to the entity graph, for display.
+func entityLinkOf(req chatRequest) string {
+	if req.EntityLink == "node" {
+		return "node"
+	}
+	return "fact"
 }
 
 func toQueryResults(res []rag.Retrieved) []queryResult {

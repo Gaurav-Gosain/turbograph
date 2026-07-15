@@ -113,7 +113,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model)
+	res, abstain, err := s.retrieveForChat(r.Context(), st, req, model, nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

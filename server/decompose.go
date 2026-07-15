@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -57,12 +58,13 @@ func (s *Server) decomposeQuery(ctx context.Context, model, query string) []stri
 // each hop gets its own seed set, so evidence that lives in different documents
 // and never co-occurs with the full question still surfaces. With a single
 // subquery it is identical to one Retrieve call.
-func (s *Server) retrieveDecomposed(ctx context.Context, st *rag.Store, subs []string, p rag.RetrieveParams) ([]rag.Retrieved, error) {
+func (s *Server) retrieveDecomposed(ctx context.Context, st *rag.Store, subs []string, p rag.RetrieveParams, trace *rag.RetrieveTrace) ([]rag.Retrieved, error) {
 	if len(subs) <= 1 {
 		q := ""
 		if len(subs) == 1 {
 			q = subs[0]
 		}
+		p.Trace = trace
 		return st.Retrieve(ctx, q, p)
 	}
 	// Each subquery's retrieval is independent and read-only, so run them
@@ -70,16 +72,27 @@ func (s *Server) retrieveDecomposed(ctx context.Context, st *rag.Store, subs []s
 	// the sum of all hops. Results are collected by subquery index, then merged in
 	// order, so the union is identical to the sequential version.
 	perSub := make([][]rag.Retrieved, len(subs))
+	subTrace := make([]rag.RetrieveTrace, len(subs))
 	errs := make([]error, len(subs))
 	var wg sync.WaitGroup
 	for i, sub := range subs {
 		wg.Add(1)
 		go func(i int, sub string) {
 			defer wg.Done()
-			perSub[i], errs[i] = st.Retrieve(ctx, sub, p)
+			sp := p
+			if trace != nil {
+				sp.Trace = &subTrace[i] // each hop traces into its own struct; no shared writes
+			}
+			perSub[i], errs[i] = st.Retrieve(ctx, sub, sp)
 		}(i, sub)
 	}
 	wg.Wait()
+	// Merge the hops' activated entities into the caller's trace: the union across hops,
+	// keeping each entity's strongest activation, is the honest "what the graph lit up"
+	// for a multi-hop question.
+	if trace != nil {
+		mergeTraces(trace, subTrace)
+	}
 	for _, err := range errs {
 		if err != nil {
 			return nil, err
@@ -105,6 +118,30 @@ func (s *Server) retrieveDecomposed(ctx context.Context, st *rag.Store, subs []s
 	// Re-sort by the fused (max) score, highest first.
 	sortByScoreDesc(out)
 	return out, nil
+}
+
+// mergeTraces unions the per-hop entity activations into dst, keeping the highest score
+// per entity, sorted strongest first.
+func mergeTraces(dst *rag.RetrieveTrace, subs []rag.RetrieveTrace) {
+	best := map[string]rag.EntityHit{}
+	for _, t := range subs {
+		if t.EntityLinked {
+			dst.EntityLinked = true
+		}
+		for _, e := range t.Entities {
+			if cur, ok := best[e.Name]; !ok || e.Score > cur.Score {
+				best[e.Name] = e
+			}
+		}
+	}
+	dst.Entities = dst.Entities[:0]
+	for _, e := range best {
+		dst.Entities = append(dst.Entities, e)
+	}
+	sort.Slice(dst.Entities, func(a, b int) bool { return dst.Entities[a].Score > dst.Entities[b].Score })
+	if len(dst.Entities) > 14 {
+		dst.Entities = dst.Entities[:14]
+	}
 }
 
 func sortByScoreDesc(res []rag.Retrieved) {

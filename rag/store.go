@@ -832,6 +832,10 @@ type RetrieveParams struct {
 	// measured better on MultiHop-RAG at every mix level, which is what HippoRAG 2's
 	// ablation predicts; "node" is kept for comparison.
 	EntityLink string
+	// Trace, when non-nil, is filled with diagnostics about how the query was retrieved:
+	// which entities the entity graph activated, and whether it actually contributed. It
+	// is opt-in so the hot path allocates nothing when a caller does not ask for it.
+	Trace *RetrieveTrace
 	// PRF enables pseudo-relevance feedback: an initial dense search of this many
 	// chunks is run, their vectors are averaged into the query (Rocchio in
 	// embedding space), and the expanded query drives retrieval. It surfaces
@@ -844,6 +848,18 @@ type RetrieveParams struct {
 	PRFWeight float32
 	Filter    func(Chunk) bool // optional metadata filter
 	PPR       graph.PPRParams
+}
+
+// RetrieveTrace records how a query was retrieved, for callers that want to show it.
+type RetrieveTrace struct {
+	// EntityLinked is true when the entity graph actually contributed: the query matched
+	// entities or facts and their PageRank was blended into the ranking. entity_mix > 0
+	// with no match leaves it false, which is honest -- the graph was available but did
+	// not fire for this query.
+	EntityLinked bool
+	// Entities are the entities the query activated most strongly, for display and for
+	// highlighting in the entity-graph view.
+	Entities []EntityHit
 }
 
 // Retrieved is a scored chunk.
@@ -967,7 +983,12 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	var escore map[int]float32
 	if p.EntityMix > 0 && s.entCSR != nil {
-		escore = s.entityChunkScores(query, qv[0], p.EntityLink)
+		var hits []EntityHit
+		escore, hits = s.entityChunkScores(query, qv[0], p.EntityLink)
+		if p.Trace != nil {
+			p.Trace.EntityLinked = escore != nil
+			p.Trace.Entities = hits
+		}
 	}
 
 	type sc struct {

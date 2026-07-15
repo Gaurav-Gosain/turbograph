@@ -447,13 +447,25 @@ func (s *Store) EntityGraphView() GraphView {
 	return view
 }
 
+// EntityHit is one entity the query activated in the knowledge graph, strong enough to
+// show and to highlight in the entity-graph view. Name is the entity's display form,
+// which is the same string the graph view uses as a node id, so a caller can light the
+// node up directly.
+type EntityHit struct {
+	Name  string  `json:"name"`
+	Type  string  `json:"type"`
+	Score float32 `json:"score"` // PageRank activation, normalized to the strongest at 1
+}
+
 // entityChunkScores propagates query-matched entities over the entity graph with
 // Personalized PageRank and projects the resulting entity scores onto chunks,
-// returning a normalized score per chunk ordinal. The caller must hold the read
-// lock. It returns nil when there is no entity graph or nothing matched.
-func (s *Store) entityChunkScores(query string, qv []float32, link string) map[int]float32 {
+// returning a normalized score per chunk ordinal. It also returns the entities the
+// query activated most strongly, so the caller can show which part of the graph drove
+// the answer. The caller must hold the read lock. Both returns are nil/empty when there
+// is no entity graph or nothing matched.
+func (s *Store) entityChunkScores(query string, qv []float32, link string) (map[int]float32, []EntityHit) {
 	if s.entCSR == nil || len(s.entList) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Fact-linking is the default: seeding PageRank from the relationships a query
 	// matches beats seeding from entity names it matches, measured on MultiHop-RAG (fact
@@ -466,7 +478,7 @@ func (s *Store) entityChunkScores(query string, qv []float32, link string) map[i
 		seeds = s.factSeeds(qv)
 	}
 	if len(seeds) == 0 {
-		return nil
+		return nil, nil
 	}
 	ppr := s.entCSR.PersonalizedPageRank(seeds, graph.DefaultPPR())
 
@@ -497,7 +509,38 @@ func (s *Store) entityChunkScores(query string, qv []float32, link string) map[i
 			scores[k] /= max
 		}
 	}
-	return scores
+	return scores, s.topEntities(ppr, 14)
+}
+
+// topEntities returns the highest-PageRank entities, normalized to the strongest at 1,
+// as the activated set to display. It skips the generic and typeless noise so the
+// highlighted nodes are the ones a person would recognize as the answer's subject.
+func (s *Store) topEntities(ppr []float32, k int) []EntityHit {
+	var pmax float32
+	for _, p := range ppr {
+		if p > pmax {
+			pmax = p
+		}
+	}
+	if pmax <= 0 {
+		return nil
+	}
+	hits := make([]EntityHit, 0, len(s.entList))
+	for i, e := range s.entList {
+		if ppr[i] <= 0 {
+			continue
+		}
+		name := e.Display
+		if name == "" {
+			name = e.Name
+		}
+		hits = append(hits, EntityHit{Name: name, Type: e.Type, Score: ppr[i] / pmax})
+	}
+	sort.Slice(hits, func(a, b int) bool { return hits[a].Score > hits[b].Score })
+	if len(hits) > k {
+		hits = hits[:k]
+	}
+	return hits
 }
 
 // entitySeeds picks the entity nodes to seed Personalized PageRank for a query.
