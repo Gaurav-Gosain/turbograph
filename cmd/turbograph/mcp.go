@@ -23,11 +23,25 @@ import (
 func cmdMCP(args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	storePath := fs.String("store", "store.tg", "store path to serve")
-	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
-	genModel := fs.String("gen-model", "", "ollama model for the answer tool (omit to expose search only)")
+	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "embedding model (must match the one the store was built with)")
+	embedDim := fs.Int("embed-dim", 0, "Matryoshka embedding dimension the store was built with (0 = full)")
+	embedAPI := fs.String("embed-api", "ollama", "embedding backend: ollama or openai")
+	embedURL := fs.String("embed-url", "", "base URL for an openai embedding backend")
+	embedKey := fs.String("embed-key", "", "API key for an openai embedding backend (also $OPENAI_API_KEY)")
+	genModel := fs.String("gen-model", "", "model for the answer tool and reranking (omit to expose search only)")
+	genAPI := fs.String("llm-api", "ollama", "generation backend: ollama or openai")
+	genURL := fs.String("llm-url", "", "base URL for an openai generation backend")
+	genKey := fs.String("llm-key", "", "API key for an openai generation backend (also $OPENAI_API_KEY)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
+	// Retrieval defaults. Each is also a per-call argument on the search and answer
+	// tools, so an operator sets the default and an agent tunes it per query.
 	topk := fs.Int("topk", 8, "default chunks to retrieve")
-	mix := fs.Float64("mix", 0.6, "graph vs similarity blend in [0,1]")
+	graphMix := fs.Float64("graph-mix", 0, "default graph boost in [0,1]; 0 is off")
+	entityMix := fs.Float64("entity-mix", 0, "default entity-graph blend in [0,1]; 0 is off")
+	entityLink := fs.String("entity-link", "fact", "how the query links to the entity graph: fact or node")
+	mmr := fs.Float64("mmr", 0, "default MMR diversity in (0,1); 0 is off")
+	minSim := fs.Float64("min-sim", 0, "default grounding floor; abstain when the top hit's cosine is below this")
+	rerank := fs.Bool("rerank", false, "re-score candidates with the model by default")
 	fs.Parse(args)
 
 	f, err := os.Open(*storePath)
@@ -36,47 +50,103 @@ func cmdMCP(args []string) error {
 	}
 	defer f.Close()
 
-	client := ollama.New()
-	client.SetEmbedModel(*embedModel)
-	if *ollamaURL != "" {
-		client.BaseURL = *ollamaURL
-	}
-	store, err := rag.Load(client, f)
+	embedder := buildEmbedder(cliEndpoint(*embedAPI, orStr(*embedURL, *ollamaURL), *embedKey), *embedModel, *embedDim)
+	store, err := rag.Load(embedder, f)
 	if err != nil {
 		return err
 	}
+	// The generation backend answers and reranks. It may be Ollama or any
+	// OpenAI-compatible endpoint, independent of the embedding backend.
+	gen := buildBackend(cliEndpoint(*genAPI, orStr(*genURL, *ollamaURL), *genKey))
 
 	srv := mcp.NewServer("turbograph", "1")
 
-	type searchArgs struct {
-		Query string `json:"query"`
-		TopK  int    `json:"top_k"`
+	// tuneArgs are the retrieval knobs an agent may set per call. Each field is a pointer
+	// so an omitted one falls back to the server default rather than to a zero that would
+	// silently turn a feature off.
+	type tuneArgs struct {
+		Query      string   `json:"query"`
+		TopK       int      `json:"top_k"`
+		GraphMix   *float64 `json:"graph_mix"`
+		EntityMix  *float64 `json:"entity_mix"`
+		EntityLink string   `json:"entity_link"`
+		MMR        *float64 `json:"mmr"`
+		MinSim     *float64 `json:"min_sim"`
+		Rerank     *bool    `json:"rerank"`
 	}
-	retrieve := func(ctx context.Context, query string, k int) ([]rag.Retrieved, error) {
+	f64 := func(p *float64, def float64) float32 {
+		if p != nil {
+			return float32(*p)
+		}
+		return float32(def)
+	}
+	retrieve := func(ctx context.Context, a tuneArgs) ([]rag.Retrieved, error) {
+		k := a.TopK
 		if k <= 0 {
 			k = *topk
 		}
-		return store.Retrieve(ctx, query, rag.RetrieveParams{TopK: k, GraphMix: float32(*mix)})
+		link := a.EntityLink
+		if link == "" {
+			link = *entityLink
+		}
+		doRerank := *rerank
+		if a.Rerank != nil {
+			doRerank = *a.Rerank
+		}
+		candK := k
+		if doRerank && gen != nil && *genModel != "" {
+			candK = k * 4
+			if candK < 20 {
+				candK = 20
+			}
+		}
+		res, err := store.Retrieve(ctx, a.Query, rag.RetrieveParams{
+			TopK:       candK,
+			GraphMix:   f64(a.GraphMix, *graphMix),
+			EntityMix:  f64(a.EntityMix, *entityMix),
+			EntityLink: link,
+			MMRLambda:  f64(a.MMR, *mmr),
+		})
+		if err != nil {
+			return nil, err
+		}
+		floor := f64(a.MinSim, *minSim)
+		if rag.ShouldAbstain(res, floor) {
+			return nil, nil
+		}
+		if doRerank && gen != nil && *genModel != "" {
+			res = rag.Rerank(ctx, cliGenerator{c: gen, model: *genModel}, a.Query, res, k)
+		} else if len(res) > k {
+			res = res[:k]
+		}
+		return res, nil
 	}
 
-	searchSchema := json.RawMessage(`{
+	tuneSchema := json.RawMessage(`{
   "type": "object",
   "properties": {
     "query": {"type": "string", "description": "the search query"},
-    "top_k": {"type": "integer", "description": "number of chunks to return"}
+    "top_k": {"type": "integer", "description": "number of chunks to return"},
+    "graph_mix": {"type": "number", "description": "similarity-graph boost in [0,1]; 0 is off. Lifts chunks associated with a strong hit; helps thematic queries, lowers precision on direct lookups"},
+    "entity_mix": {"type": "number", "description": "entity knowledge-graph blend in [0,1]; 0 is off. Best on multi-hop questions whose evidence spans documents"},
+    "entity_link": {"type": "string", "enum": ["fact", "node"], "description": "how the query links to the entity graph: fact (default, seed from matched relationships) or node (seed from matched entity names)"},
+    "mmr": {"type": "number", "description": "MMR diversity in (0,1); 0 is off. Trades some relevance for less redundant results"},
+    "min_sim": {"type": "number", "description": "grounding floor: return nothing when the best hit's cosine is below this, rather than surfacing weak matches"},
+    "rerank": {"type": "boolean", "description": "re-score the candidates with the model for sharper ordering, at one extra model call"}
   },
   "required": ["query"]
 }`)
-	srv.Register("search", "Search the turbograph corpus and return the most relevant chunks as JSON.",
-		searchSchema, func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var a searchArgs
+
+	srv.Register("search", "Search the turbograph corpus and return the most relevant chunks as JSON. Accepts retrieval tuning: graph_mix, entity_mix, entity_link, mmr, min_sim, rerank.",
+		tuneSchema, func(ctx context.Context, raw json.RawMessage) (string, error) {
+			var a tuneArgs
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", err
 			}
 			if a.Query == "" {
 				return "", fmt.Errorf("query is required")
 			}
-			res, err := retrieve(ctx, a.Query, a.TopK)
+			res, err := retrieve(ctx, a)
 			if err != nil {
 				return "", err
 			}
@@ -95,27 +165,31 @@ func cmdMCP(args []string) error {
 			return string(b), nil
 		})
 
-	if *genModel != "" {
-		srv.Register("answer", "Answer a question grounded in the turbograph corpus, citing the passages used.",
-			searchSchema, func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a searchArgs
+	if *genModel != "" && gen != nil {
+		srv.Register("answer", "Answer a question grounded in the turbograph corpus, citing the passages used. Accepts the same retrieval tuning as search.",
+			tuneSchema, func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a tuneArgs
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
 				if a.Query == "" {
 					return "", fmt.Errorf("query is required")
 				}
-				res, err := retrieve(ctx, a.Query, a.TopK)
+				res, err := retrieve(ctx, a)
 				if err != nil {
 					return "", err
 				}
-				return client.Generate(ctx, *genModel, ragSystemPrompt, buildPrompt(a.Query, res))
+				if len(res) == 0 {
+					return "Nothing in this corpus is relevant enough to answer that.", nil
+				}
+				return gen.Generate(ctx, *genModel, ragSystemPrompt, buildPrompt(a.Query, res))
 			})
 	}
 
 	registerFetchTools(srv, store)
 
-	fmt.Fprintf(os.Stderr, "turbograph mcp serving %s (%d chunks) on stdio\n", *storePath, store.Len())
+	fmt.Fprintf(os.Stderr, "turbograph mcp serving %s (%d chunks, embed=%s, gen=%s) on stdio\n",
+		*storePath, store.Len(), *embedModel, orStr(*genModel, "none"))
 	return srv.Serve(context.Background(), os.Stdin, os.Stdout)
 }
 
@@ -294,4 +368,12 @@ func clipBytes(s string, n int) (string, bool) {
 		b = b[:len(b)-1]
 	}
 	return string(b), true
+}
+
+// orStr returns a if it is non-empty, else b.
+func orStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

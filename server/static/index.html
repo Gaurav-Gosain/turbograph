@@ -1039,9 +1039,8 @@
       </div>
       <div class="cfg-sec">
         <h4>entity extraction <span class="cfg-tag">knowledge graph</span></h4>
-        <small>how many chunks go into one model call. batching is faster, but a small local model
-          loses track of which passage it is reading: measured with qwen3.5:4b, a batch of 4 found
-          6 entities and 4 relationships where a batch of 2 found 17 and 8.</small>
+        <small>extraction reads each chunk with the model selected top right (<b id="cfgEntModel">none</b>),
+          and embeds with your embedding model. a stronger model finds more; a small one drops a lot.</small>
         <div class="cfg-row"><label>chunks per call</label>
           <select id="cfgEntBatch">
             <option value="1">1 &middot; most faithful, slowest</option>
@@ -1050,6 +1049,14 @@
             <option value="8">8 &middot; fastest, very lossy</option>
           </select>
         </div>
+        <small>batching is faster, but a small local model loses track of which passage it is reading:
+          measured with qwen3.5:4b, a batch of 4 found 6 entities and 4 relationships where a batch of 2
+          found 17 and 8.</small>
+        <div class="cfg-row"><label>re-extract</label>
+          <button id="cfgEntRebuild" class="lnk" title="run extraction again from scratch, ignoring the per-chunk cache; use after changing the model or batch size">re-extract from scratch</button>
+        </div>
+        <small>the extraction cache reuses what the model already said about each chunk, so a normal
+          rebuild only reads new chunks. re-extract ignores it and reads everything again.</small>
       </div>
       <div class="cfg-sec">
         <h4>storage &middot; S3-compatible <span class="cfg-tag">restart to apply</span></h4>
@@ -1454,7 +1461,8 @@ async function loadModels(){
     if(cmdkOpen())renderCmdk(cmdkInput.value); // keep the palette's model count and list live
   }catch(e){}
 }
-$("#model").onchange=e=>{G.model=e.target.value;saveSettings()};
+function syncEntModel(){const el=$("#cfgEntModel");if(el)el.textContent=G.model||"none"}
+$("#model").onchange=e=>{G.model=e.target.value;saveSettings();syncEntModel()};
 
 // ---------- model pulling ----------
 async function pullModel(name,onProg){
@@ -2085,7 +2093,7 @@ async function openConfig(){
     $("#cfgEmbDim").value=c.embed_dim||"";$("#cfgEmbKey").value="";$("#cfgEmbKey").placeholder=c.embed_key_set?"set · leave blank to keep":"leave blank for none";
     sel.value=c.chunk_strategy||"recursive";$("#cfgChunkWords").value=c.chunk_words||"";$("#cfgChunkOverlap").value=c.chunk_overlap||"";
     $("#cfgS3Endpoint").value=c.s3_endpoint||"";$("#cfgS3Bucket").value=c.s3_bucket||"";$("#cfgS3Region").value=c.s3_region||"";$("#cfgS3Prefix").value=c.s3_prefix||"";
-    renderProvs();cfgToggleOA();renderPipeline();cfgEl.classList.add("open");renderStatus();
+    renderProvs();cfgToggleOA();renderPipeline();syncEntModel();cfgEl.classList.add("open");renderStatus();
   }catch(e){toast("could not load config: "+e.message,true)}
 }
 async function renderStatus(){
@@ -2148,6 +2156,13 @@ function renderPipeline(){
     wrap.appendChild(row);
   });
 }
+const cfgEntRebuild=$("#cfgEntRebuild");
+if(cfgEntRebuild)cfgEntRebuild.onclick=async()=>{
+  if(!G.model){toast("select a model (top right) first",true);return}
+  closeConfig();
+  await ensureEntityMode();
+  runBuildEntities(true); // ignore the extraction cache
+};
 function closeConfig(){cfgEl.classList.remove("open")}
 $("#cfgClose").onclick=closeConfig;
 $("#cfgBtn").onclick=openConfig;
@@ -3642,9 +3657,9 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
   // nodes for the newly shown graph once it loads.
   loadGraph().then(()=>{if(G.activeMsg)applyHighlight(G.activeMsg)});
 });
-async function buildEntities(onProg){
+async function buildEntities(onProg,refresh){
   if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
-  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2),{method:"POST"});
+  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2)+(refresh?"&refresh=1":""),{method:"POST"});
   if(!resp.ok){let m="entity build failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
   const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
   while(true){
@@ -3702,7 +3717,7 @@ function liveGraphAdd(ents,rels){
   reheat(0.5);
   dirty=true;
 }
-async function runBuildEntities(){
+async function runBuildEntities(refresh){
   const box=$("#entBuild"),list=$("#ebList"),done=$("#ebDone");
   list.innerHTML="";done.textContent="";
   $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
@@ -3724,7 +3739,7 @@ async function runBuildEntities(){
         list.appendChild(el);
       }
       list.scrollTop=list.scrollHeight;
-    });
+    },refresh);
     // Canonicalization merges surface variants and prunes noise, so fewer entities
     // survive than were extracted. Say so plainly rather than letting the number
     // quietly shrink.

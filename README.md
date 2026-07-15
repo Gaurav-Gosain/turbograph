@@ -557,12 +557,22 @@ curl -s localhost:8080/v1/chat/completions -d '{
 
 `turbograph mcp --store store.tg` serves the corpus to MCP hosts (editors,
 agents, Claude Desktop) over stdio as line-delimited JSON-RPC. Add it to a host's
-MCP config as a command entry; no network port is opened. It registers the tools
-an agent actually needs to work a corpus:
+MCP config as a command entry; no network port is opened.
+
+The backend is configurable, and independent for embedding and generation: point
+either at Ollama (the default) or any OpenAI-compatible endpoint with
+`--embed-api/--embed-url/--embed-key` and `--llm-api/--llm-url/--llm-key`, and pick
+the models with `--embed-model` and `--gen-model`. Retrieval defaults are flags too
+(`--graph-mix`, `--entity-mix`, `--entity-link`, `--mmr`, `--min-sim`, `--rerank`,
+`--topk`), and every one is also a per-call argument on the tools, so an operator
+sets the default and an agent tunes it per query. It registers the tools an agent
+actually needs to work a corpus:
 
 - **`search`** returns the top chunks as JSON, each with its score *and* the
   additive breakdown of that score (dense, lexical, graph, entity), so an agent
-  can tell an exact keyword match from a graph-associated one.
+  can tell an exact keyword match from a graph-associated one. It accepts the full
+  retrieval tuning per call: `graph_mix`, `entity_mix`, `entity_link` (fact or
+  node), `mmr`, `min_sim`, and `rerank`.
 - **`get`** fetches the source text back out: a whole document, a line range
   (`"lines": "50:100"`), or a chunk widened by a `window` of neighbouring chunks.
   Chunks are sized for embedding, not for reading, so an agent usually wants to
@@ -571,7 +581,8 @@ an agent actually needs to work a corpus:
   `max_bytes` budget, split evenly and truncated per item (each result reports its
   size and whether it was cut), so an agent can pull a set of sources without
   overflowing its context window.
-- **`answer`** (with `--gen-model`) synthesizes a grounded, cited answer.
+- **`answer`** (with `--gen-model`) synthesizes a grounded, cited answer, taking the
+  same retrieval tuning as `search`.
 
 Together these give the loop an agent harness wants: search, see *why* something
 ranked, then pull exactly the regions it needs within a context budget.
