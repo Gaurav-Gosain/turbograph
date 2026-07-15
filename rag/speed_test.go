@@ -20,6 +20,12 @@ import (
 //
 // Run: go test ./rag/ -run xxx -bench Speed -benchtime 200x
 
+// bigBench reports whether the heavy benchmarks (which build 100k-chunk, ~500 MB stores)
+// should run. CI runs `go test -bench=. -benchtime=1x ./...` as a smoke test, and
+// building a store that size there would time out or run it out of memory. Set
+// TG_BENCH_BIG=1 to run the full set locally.
+func bigBench() bool { return os.Getenv("TG_BENCH_BIG") != "" }
+
 // speedCorpus gives each document its own vocabulary, as a real corpus does.
 //
 // This matters more than it looks. A templated corpus, where every document is the same
@@ -90,7 +96,11 @@ func speedStore(tb testing.TB, n int) *Store {
 // BenchmarkSpeedSearch is the number comparable with another engine's: how long one
 // query takes once the vector is in hand.
 func BenchmarkSpeedSearch(b *testing.B) {
-	for _, n := range []int{1000, 10000, 100000} {
+	sizes := []int{1000, 10000}
+	if bigBench() {
+		sizes = append(sizes, 100000)
+	}
+	for _, n := range sizes {
 		s := speedStore(b, n)
 		// Warm the derived indexes so the first query is not charged for them.
 		s.Retrieve(context.Background(), "warm", RetrieveParams{TopK: 10})
@@ -112,6 +122,9 @@ const speedQuery = "term00042 term01337 term09999"
 // cannot narrow the candidate set and has to score the whole corpus. It is the ceiling,
 // not the typical case, and it is here so the typical case is not mistaken for it.
 func BenchmarkSpeedSearchWorstCase(b *testing.B) {
+	if !bigBench() {
+		b.Skip("set TG_BENCH_BIG=1")
+	}
 	for _, n := range []int{10000, 100000} {
 		s := New(newKeywordEmbedder(768), Config{Seed: 1})
 		if err := s.Build(context.Background(), worstCaseCorpus(n)); err != nil {
@@ -129,6 +142,9 @@ func BenchmarkSpeedSearchWorstCase(b *testing.B) {
 // BenchmarkSpeedSearchGraph is the same, with the PageRank graph signal on. It is the
 // arm that has to justify its cost.
 func BenchmarkSpeedSearchGraph(b *testing.B) {
+	if !bigBench() {
+		b.Skip("set TG_BENCH_BIG=1")
+	}
 	s := speedStore(b, 10000)
 	s.Retrieve(context.Background(), "warm", RetrieveParams{TopK: 10, GraphMix: 0.2})
 	b.ReportAllocs()
@@ -143,7 +159,11 @@ func BenchmarkSpeedSearchGraph(b *testing.B) {
 
 // BenchmarkSpeedOpen is what every CLI invocation pays before it does anything.
 func BenchmarkSpeedOpen(b *testing.B) {
-	for _, n := range []int{10000, 100000} {
+	sizes := []int{10000}
+	if bigBench() {
+		sizes = append(sizes, 100000)
+	}
+	for _, n := range sizes {
 		blob, err := os.ReadFile(fmt.Sprintf("/tmp/tg-speed-%d.tg", n))
 		if err != nil {
 			speedStore(b, n)
@@ -231,6 +251,9 @@ func TestVectorsAreNotHeldTwice(t *testing.T) {
 // BenchmarkSpeedOpenAndSearch is what an agent's `turbograph search` actually costs:
 // open the store, build the index from what was saved, run one query.
 func BenchmarkSpeedOpenAndSearch(b *testing.B) {
+	if !bigBench() {
+		b.Skip("set TG_BENCH_BIG=1")
+	}
 	speedStore(b, 100000)
 	blob, err := os.ReadFile("/tmp/tg-speed-100000.tg")
 	if err != nil {
