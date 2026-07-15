@@ -79,6 +79,14 @@ type snapshot struct {
 	// EntVec persists the per-entity embeddings used for dense PPR seeding, so a
 	// reload does not have to re-embed the entities. Absent in older snapshots.
 	EntVec [][]float32 `json:"ent_vec,omitempty"`
+	// FactVec persists the query-to-fact index: one embedding per relation, with its two
+	// endpoints stored BY NAME (FactSrc/FactTgt) rather than by node index so it survives
+	// a reload even if the entity ordering shifts. Without it the first entity-linked query
+	// after every restart re-embeds every relation inside the request. Absent in older
+	// snapshots and until the entity graph is built.
+	FactVec [][]float32 `json:"fact_vec,omitempty"`
+	FactSrc []string    `json:"fact_src,omitempty"`
+	FactTgt []string    `json:"fact_tgt,omitempty"`
 	// Versions persists each document's content history. Absent in older
 	// snapshots, in which case a document has no recorded history until its next
 	// update.
@@ -149,6 +157,17 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 		snap.Relations = s.eg.Relations()
 		if len(s.entVec) == len(s.entList) {
 			snap.EntVec = s.entVec
+		}
+		// Persist the fact index by endpoint NAME, so it can be remapped to whatever node
+		// ordering a reload produces.
+		if n := len(s.factVec); n > 0 && n == len(s.factSrc) && n == len(s.factTgt) {
+			snap.FactVec = s.factVec
+			snap.FactSrc = make([]string, n)
+			snap.FactTgt = make([]string, n)
+			for i := 0; i < n; i++ {
+				snap.FactSrc[i] = s.entList[s.factSrc[i]].Name
+				snap.FactTgt[i] = s.entList[s.factTgt[i]].Name
+			}
 		}
 	}
 	return writeSnapshot(w, &snap)
@@ -357,6 +376,23 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 		s.rebuildEntityLocked()
 		if len(snap.EntVec) == len(s.entList) {
 			s.entVec = snap.EntVec
+		}
+		// Restore the fact index, remapping each relation's endpoints from names to the
+		// current node indices and dropping any whose endpoints no longer exist.
+		if n := len(snap.FactVec); n > 0 && n == len(snap.FactSrc) && n == len(snap.FactTgt) {
+			fv := make([][]float32, 0, n)
+			fs := make([]int, 0, n)
+			ft := make([]int, 0, n)
+			for i := 0; i < n; i++ {
+				si, ok1 := s.entIndex[snap.FactSrc[i]]
+				ti, ok2 := s.entIndex[snap.FactTgt[i]]
+				if ok1 && ok2 {
+					fv = append(fv, snap.FactVec[i])
+					fs = append(fs, si)
+					ft = append(ft, ti)
+				}
+			}
+			s.factVec, s.factSrc, s.factTgt = fv, fs, ft
 		}
 	}
 	return s, nil
