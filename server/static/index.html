@@ -90,10 +90,7 @@
   #controls{bottom:12px;right:12px;display:flex;flex-direction:column;gap:6px}
   #controls button{width:34px;height:30px;padding:0;font-size:15px;line-height:1}
   #legend{bottom:12px;left:12px;max-width:46%;display:flex;flex-wrap:wrap;gap:6px 10px;
-    color:var(--muted);font-size:10px;transition:bottom .18s var(--ease-out)}
-  /* When the live-build panel is open it shares the bottom-left corner with the
-     legend, so lift the legend clear of it (its measured height, set on #graphWrap). */
-  #graphWrap.ebopen #legend{bottom:var(--eb-lift,150px)}
+    color:var(--muted);font-size:10px}
   #legend span{display:flex;align-items:center;gap:5px}
   #legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
 
@@ -104,7 +101,16 @@
   #tip .s{color:var(--muted);line-height:1.45}
 
   #side{width:400px;min-width:400px;border-left:1px solid var(--border);background:var(--panel);
-    display:flex;flex-direction:column}
+    display:flex;flex-direction:column;position:relative}
+  /* Drag the chat wider or narrower; the graph takes the remaining space. The handle
+     sits on the existing panel border and only reveals its accent line on interaction,
+     so it stays quiet until you reach for it. Double-click resets to the default width. */
+  #sideResize{position:absolute;left:0;top:0;bottom:0;width:9px;transform:translateX(-50%);
+    cursor:col-resize;z-index:7;touch-action:none}
+  #sideResize::after{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;transform:translateX(-50%);
+    background:transparent;transition:background .14s var(--ease-out)}
+  #sideResize:hover::after,#sideResize.drag::after{background:var(--accent)}
+  body.col-resize,body.col-resize *{cursor:col-resize!important;user-select:none}
   .tabs{display:flex;border-bottom:1px solid var(--border)}
   .tabs button{flex:1;border:0;border-radius:0;background:transparent;color:var(--muted);
     padding:11px 0;border-bottom:2px solid transparent}
@@ -157,13 +163,27 @@
   @keyframes blink{50%{opacity:0}}
   /* Live entity extraction. The model is doing slow, expensive work, so show what it
      is finding as it finds it rather than a counter that ticks in silence. */
-  #entBuild{position:absolute;left:12px;bottom:12px;z-index:18;display:none;width:340px;
+  /* The legend keeps the bottom-left corner; the build panel floats just above it
+     (its bottom tracks the legend's height, set on #graphWrap), so the legend stays
+     put at the bottom instead of being lifted on top of the graph. */
+  #entBuild{position:absolute;left:12px;bottom:var(--eb-bottom,12px);z-index:18;display:none;width:340px;
     max-height:56%;background:var(--panel);border:1px solid var(--border);border-radius:10px;
-    padding:11px 12px;box-shadow:0 12px 34px rgba(0,0,0,.5);flex-direction:column;gap:8px}
+    padding:11px 12px;box-shadow:0 12px 34px rgba(0,0,0,.5);flex-direction:column;gap:8px;
+    transition:bottom .18s var(--ease-out)}
   #entBuild.open{display:flex;animation:pop .14s var(--ease-out)}
-  .eb-head{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;color:var(--muted)}
+  /* The whole header toggles the panel: collapsed, only this line shows, so a long
+     build can be tucked out of the way without losing the running count. */
+  .eb-head{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);
+    cursor:pointer;user-select:none}
+  .eb-head .eb-title{margin-right:auto}
   .eb-head b{color:var(--text);font-variant-numeric:tabular-nums}
   .eb-count{color:var(--accent);font-variant-numeric:tabular-nums}
+  .eb-toggle{border:0;background:transparent;color:var(--faint);cursor:pointer;padding:0;
+    font-size:10px;line-height:1;flex:none;transition:transform .18s var(--ease-out),color .12s var(--ease-out)}
+  .eb-head:hover .eb-toggle{color:var(--text)}
+  #entBuild.collapsed .eb-toggle{transform:rotate(-90deg)}
+  #entBuild.collapsed{gap:0}
+  #entBuild.collapsed .eb-bar,#entBuild.collapsed .eb-list,#entBuild.collapsed .eb-done{display:none}
   .eb-bar{display:block;height:3px;background:var(--panel2);border-radius:2px;overflow:hidden}
   .eb-list{display:flex;flex-wrap:wrap;gap:4px;overflow-y:auto;align-content:flex-start;min-height:0}
   .eb-cache{color:var(--faint)}
@@ -224,12 +244,25 @@
   .msg.bot.abstain .body{background:var(--warn-wash);border:1px solid var(--warn-edge);
     border-radius:8px;padding:8px 11px;color:var(--warn)}
   #srcPreview{position:absolute;left:12px;right:12px;bottom:calc(var(--composer-h,96px) + 10px);z-index:16;display:none;
-    background:var(--panel2);border:1px solid var(--accent);border-radius:9px;padding:13px 14px;
-    box-shadow:0 10px 30px rgba(0,0,0,.45);max-height:46%;overflow-y:auto}
-  #srcPreview.open{display:block;animation:pop .12s ease-out}
-  #srcPreview .sp-head{display:flex;justify-content:space-between;align-items:center;
-    font-size:11px;color:var(--muted);margin-bottom:8px}
+    background:var(--panel2);border:1px solid var(--border);border-radius:10px;
+    box-shadow:0 14px 38px rgba(0,0,0,.5);max-height:52%;overflow-y:auto;overscroll-behavior:contain}
+  #srcPreview.open{display:block;animation:pop .12s var(--ease-out)}
+  /* Sticky header so the title and close stay put while the source text scrolls. The
+     close is a real button with a hit area and a hover state, not a word floating in
+     the corner. */
+  #srcPreview .sp-head{position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:center;
+    gap:10px;padding:9px 9px 9px 13px;background:var(--panel2);border-bottom:1px solid var(--border);
+    font-size:11px;color:var(--muted)}
+  #srcPreview .sp-title{display:flex;align-items:baseline;gap:7px;min-width:0}
   #srcPreview .sp-head b{color:var(--accent);font-weight:600}
+  #srcPreview .sp-doc{color:var(--faint);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #srcPreview .sp-body{padding:12px 13px 14px}
+  .sp-close{border:1px solid transparent;background:transparent;color:var(--faint);cursor:pointer;flex:none;
+    width:24px;height:24px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;
+    font-size:17px;line-height:1;padding:0;
+    transition:color .12s var(--ease-out),background .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .sp-close:hover{color:var(--text);background:var(--panel);border-color:var(--border)}
+  .sp-close:active{transform:scale(.94)}
   #srcPreview .sp-text{font-size:12px;line-height:1.6;color:var(--text);white-space:pre-wrap}
   #srcPreview .sp-text mark.sp-main{background:rgba(90,209,200,.42);color:#fff;border-radius:2px;
     box-shadow:0 0 0 1px rgba(90,209,200,.6)}
@@ -240,8 +273,6 @@
   #srcPreview .sp-meta .mv{color:var(--text);background:var(--panel);border-radius:0 4px 4px 0;padding:1px 6px;font-size:10px;margin-right:5px}
   #srcPreview .sp-img{max-width:100%;max-height:30vh;border-radius:6px;border:1px solid var(--border);display:block;margin-bottom:8px}
   #srcPreview .sp-cap{font-size:11.5px;color:var(--muted);line-height:1.5}
-  #srcPreview .x{cursor:pointer;color:var(--faint)}
-  #srcPreview .x:hover{color:var(--accent)}
   /* score breakdown: a segmented bar showing why a chunk was retrieved */
   .sp-score{margin-bottom:9px;padding-bottom:9px;border-bottom:1px solid var(--border)}
   .sp-score:empty{display:none}
@@ -727,9 +758,10 @@
     </div>
     <div id="hint" class="hint">upload documents to build the graph</div>
     <div id="entBuild">
-      <div class="eb-head">
-        <span>extracting entities <b id="ebProg">0/0</b></span>
+      <div class="eb-head" id="ebHead">
+        <span class="eb-title">extracting entities <b id="ebProg">0/0</b></span>
         <span id="ebCount" class="eb-count"></span>
+        <button class="eb-toggle" id="ebToggle" type="button" aria-label="collapse" title="collapse">&#9662;</button>
       </div>
       <div class="bar eb-bar"><i id="ebBarFill"></i></div>
       <div id="ebList" class="eb-list"></div>
@@ -739,6 +771,7 @@
   </div>
 
   <div id="side">
+    <div id="sideResize" title="drag to resize, double-click to reset"></div>
     <div class="tabs">
       <button data-tab="chat" class="active">chat</button>
       <button data-tab="docs">docs</button>
@@ -803,9 +836,14 @@
         </div>
       </div>
       <div id="srcPreview">
-        <div class="sp-head"><span>source <b id="spNum"></b> <span id="spDoc"></span></span><span class="x" id="spClose">close</span></div>
-        <div class="sp-score" id="spScore"></div>
-        <div class="sp-text" id="spText"></div>
+        <div class="sp-head">
+          <span class="sp-title">source <b id="spNum"></b> <span id="spDoc" class="sp-doc"></span></span>
+          <button class="sp-close" id="spClose" type="button" aria-label="close" title="close">&#215;</button>
+        </div>
+        <div class="sp-body">
+          <div class="sp-score" id="spScore"></div>
+          <div class="sp-text" id="spText"></div>
+        </div>
       </div>
       <div id="composer">
         <div class="cw">
@@ -3893,19 +3931,58 @@ resize();syncComposerHeight();loadSettings();updateEmpty();loadModels();loadScri
   s.addEventListener("change",()=>localStorage.setItem("tg.entBatch",s.value));
 })();
 loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph();checkEntityBuild()});
-// Keep the community legend clear of the live-build panel: they share the bottom-left
-// corner, so lift the legend by the panel's measured height while it is open.
+// Keep the legend clear of the live-build panel: they share the bottom-left corner.
+// The legend stays pinned at the bottom and the panel floats above it, tracking the
+// legend's height so it never sits on top of it or covers it.
 (function(){
-  const box=$("#entBuild"),wrap=$("#graphWrap");
-  if(!box||!wrap||!window.ResizeObserver)return;
+  const legend=$("#legend"),wrap=$("#graphWrap");
+  if(!legend||!wrap||!window.ResizeObserver)return;
   new ResizeObserver(()=>{
-    if(box.classList.contains("open")&&box.offsetHeight>0){
-      wrap.style.setProperty("--eb-lift",(box.offsetHeight+24)+"px");
-      wrap.classList.add("ebopen");
-    }else{
-      wrap.classList.remove("ebopen");
-    }
-  }).observe(box);
+    const h=legend.offsetHeight;
+    wrap.style.setProperty("--eb-bottom",(h?h+20:12)+"px");
+  }).observe(legend);
+})();
+// The chat panel is resizable by dragging its left border; the graph takes the rest.
+// The width is remembered, clamped so neither side collapses, and a double-click on
+// the handle resets it.
+(function(){
+  const side=$("#side"),handle=$("#sideResize");
+  if(!side||!handle)return;
+  const MIN=340,cap=()=>Math.max(MIN,Math.min(760,window.innerWidth-360));
+  const setW=w=>{w=Math.max(MIN,Math.min(w,cap()));side.style.width=w+"px";side.style.minWidth=w+"px"};
+  const saved=+localStorage.getItem("tg.sideW");
+  if(saved)setW(saved);
+  let startX=0,startW=0,drag=false;
+  handle.addEventListener("pointerdown",e=>{
+    drag=true;startX=e.clientX;startW=side.offsetWidth;
+    handle.classList.add("drag");document.body.classList.add("col-resize");
+    handle.setPointerCapture(e.pointerId);e.preventDefault();
+  });
+  handle.addEventListener("pointermove",e=>{if(drag)setW(startW-(e.clientX-startX))});
+  const end=e=>{if(!drag)return;drag=false;handle.classList.remove("drag");
+    document.body.classList.remove("col-resize");
+    localStorage.setItem("tg.sideW",side.offsetWidth);
+    try{handle.releasePointerCapture(e.pointerId)}catch(_){}
+    syncComposerHeight();};
+  handle.addEventListener("pointerup",end);
+  handle.addEventListener("pointercancel",end);
+  handle.addEventListener("dblclick",()=>{
+    side.style.width="400px";side.style.minWidth="400px";localStorage.removeItem("tg.sideW");syncComposerHeight();
+  });
+  // A resize can push the clamp past a shrunken viewport; re-apply on window resize.
+  window.addEventListener("resize",()=>setW(side.offsetWidth));
+})();
+// The live-build panel collapses to just its header line, so a long extraction can be
+// tucked away without losing the running count. The state is remembered.
+(function(){
+  const box=$("#entBuild"),head=$("#ebHead");
+  if(!box||!head)return;
+  if(localStorage.getItem("tg.ebCollapsed")==="1")box.classList.add("collapsed");
+  head.addEventListener("click",()=>{
+    const c=box.classList.toggle("collapsed");
+    localStorage.setItem("tg.ebCollapsed",c?"1":"0");
+    $("#ebToggle").title=c?"expand":"collapse";
+  });
 })();
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);
