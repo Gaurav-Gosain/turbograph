@@ -90,7 +90,10 @@
   #controls{bottom:12px;right:12px;display:flex;flex-direction:column;gap:6px}
   #controls button{width:34px;height:30px;padding:0;font-size:15px;line-height:1}
   #legend{bottom:12px;left:12px;max-width:46%;display:flex;flex-wrap:wrap;gap:6px 10px;
-    color:var(--muted);font-size:10px}
+    color:var(--muted);font-size:10px;transition:bottom .18s var(--ease-out)}
+  /* When the live-build panel is open it shares the bottom-left corner with the
+     legend, so lift the legend clear of it (its measured height, set on #graphWrap). */
+  #graphWrap.ebopen #legend{bottom:var(--eb-lift,150px)}
   #legend span{display:flex;align-items:center;gap:5px}
   #legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
 
@@ -1524,6 +1527,7 @@ async function switchBucket(){
   G.highlight=new Set();G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;G.pos=[];
   clearMessages();G.docs=new Map();renderDocList();
   await loadDocuments();await loadStats();await loadGraph();
+  checkEntityBuild();
 }
 // loadDocuments fetches the document list from the server so a store loaded from
 // disk shows its files, not just what was uploaded in this browser session.
@@ -3684,9 +3688,13 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
   // nodes for the newly shown graph once it loads.
   loadGraph().then(()=>{if(G.activeMsg)applyHighlight(G.activeMsg)});
 });
-async function buildEntities(onProg,refresh){
-  if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
-  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2)+(refresh?"&refresh=1":""),{method:"POST"});
+// streamBuild reads a build's server-sent events off a response and drives onProg
+// until the terminal event. It returns the "done" payload, or null when there was
+// nothing to stream (a 204 from a reconnect with no build in flight). The build runs
+// server-side and outlives this connection, so replaying its events on a fresh
+// connection rebuilds the graph-so-far.
+async function streamBuild(resp,onProg){
+  if(resp.status===204)return null;
   if(!resp.ok){let m="entity build failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
   const reader=resp.body.getReader(),dec=new TextDecoder();let buf="";
   while(true){
@@ -3699,6 +3707,17 @@ async function buildEntities(onProg,refresh){
       else if(ev.event==="done")return ev.data;
     }
   }
+  return null;
+}
+async function buildEntities(onProg,refresh){
+  if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
+  const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2)+(refresh?"&refresh=1":""),{method:"POST"});
+  return streamBuild(resp,onProg);
+}
+// attachEntityBuild reconnects to a build already running on the server, after a
+// reload or a bucket switch, and streams its progress without starting a new one.
+async function attachEntityBuild(onProg){
+  return streamBuild(await fetch(bk("/api/build-entities"),{method:"GET"}),onProg);
 }
 // liveGraphReset clears the canvas and puts it in entity mode, so the graph that is
 // about to be extracted has somewhere to appear.
@@ -3706,9 +3725,35 @@ function liveGraphReset(){
   G.graphMode="entities";
   document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
   G.nodes=[];G.edges=[];G.pos=[];G.adj=[];G.idIndex=new Map();
+  G.liveTypes=new Map();
   G.highlight.clear();G.selected=-1;G.hover=-1;G.hoverEdge=-1;G.selEdge=-1;G.pulse=-1;
   $("#hint").style.display="none";
   dirty=true;
+}
+// liveComm assigns a stable palette slot per entity type, so nodes are coloured by
+// type as they stream in during a build. Communities are computed only after the
+// build finishes; until then, type is the meaningful grouping to show, and it means
+// the graph is never a field of grey dots while it assembles.
+function liveComm(t){
+  t=(t||"").trim().toLowerCase()||"·";
+  if(!G.liveTypes)G.liveTypes=new Map();
+  let c=G.liveTypes.get(t);
+  if(c==null){c=G.liveTypes.size;G.liveTypes.set(t,c)}
+  return c;
+}
+// liveLegend mirrors the live node colours: one swatch per entity type seen so far,
+// labelled by the type, so the legend agrees with the graph during a build. The
+// community legend takes over once the finished graph loads.
+function liveLegend(){
+  const seen=new Map();
+  for(const n of G.nodes){
+    const s=n.community; if(s<0)continue;
+    let e=seen.get(s); if(!e){e={ty:n.doc_id||"other",n:0};seen.set(s,e)}
+    e.n++;
+  }
+  const top=[...seen.entries()].sort((a,b)=>b[1].n-a[1].n).slice(0,8);
+  $("#legend").innerHTML=top.map(([s,e])=>
+    '<span><i style="background:'+PALETTE[s%PALETTE.length]+'"></i>'+esc(e.ty)+' ('+e.n+')</span>').join("");
 }
 // liveGraphAdd draws what a chunk just surfaced. The nodes and edges are the model's
 // raw output, not the finished graph: canonicalization merges surface variants and
@@ -3721,7 +3766,7 @@ function liveGraphAdd(ents,rels){
     const k=key(e.name);
     if(!k||G.idIndex.has(k))continue;
     const i=G.nodes.length;
-    G.nodes.push({index:i,id:e.name,doc_id:e.type||"",community:-1,degree:0,snippet:""});
+    G.nodes.push({index:i,id:e.name,doc_id:e.type||"",community:liveComm(e.type),degree:0,snippet:""});
     G.idIndex.set(k,i);
     G.adj.push([]);
     // Drop it in near the middle with a little scatter; the simulation does the rest.
@@ -3741,10 +3786,52 @@ function liveGraphAdd(ents,rels){
   if(!added)return;
   $("#sEnt").textContent=G.nodes.length;
   $("#sEdges").textContent=G.edges.length;
+  liveLegend();
   reheat(0.5);
   dirty=true;
 }
-async function runBuildEntities(refresh){
+// entProgress draws a build into the panel and the live graph. The graph assembling
+// itself is the point: you watch it being discovered instead of waiting on a counter
+// and then being handed a finished picture. Shared by a fresh build and a reconnect,
+// so both render identically.
+function entProgress(list){
+  return p=>{
+    $("#ebProg").textContent=p.done+"/"+p.total+(p.cached?" · "+p.cached+" cached":"");
+    $("#ebCount").textContent=p.entities+" entities · "+p.relations+" links";
+    $("#ebBarFill").style.setProperty("--p",p.total?p.done/p.total:0);
+    liveGraphAdd(p.new,p.edges);
+    for(const e of (p.new||[])){
+      const el=document.createElement("span");el.className="eb-ent";
+      el.innerHTML=esc(e.name)+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
+      list.appendChild(el);
+    }
+    list.scrollTop=list.scrollHeight;
+  };
+}
+// entFinish reconciles the streamed counts with the finished graph and loads it.
+// Canonicalization merges surface variants and prunes noise, so fewer entities survive
+// than were extracted. Say so plainly rather than letting the number quietly shrink.
+async function entFinish(res,done,box){
+  const kept=res.entities||0,raw=res.extracted||kept,links=res.relations||0;
+  done.innerHTML=raw>kept
+    ? '<b>'+raw+'</b> extracted &rarr; <b>'+kept+'</b> after merging duplicates &middot; <b>'+links+'</b> relationships'
+    : '<b>'+kept+'</b> entities &middot; <b>'+links+'</b> relationships';
+  if(res.cached)done.innerHTML+='<br><span class="eb-cache">'+res.cached+
+    ' chunk'+(res.cached===1?"":"s")+' answered from cache, not re-read by the model</span>';
+  if(!links&&kept)done.innerHTML+='<br>no relationships were found; the model may not be following the extraction format';
+  toast("entity graph built");
+  G.graphMode="entities";
+  document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
+  G.pos=[];await loadStats();await loadGraph();
+  if(+$("#pEnt").value===0){$("#pEnt").value=0.5;syncReadouts();saveSettings()}
+  setTimeout(()=>box.classList.remove("open"),6000);
+}
+// runEntityBuild opens the panel and drives a build to completion, whether it is a
+// fresh one or a reconnect to one already running on the server. G.building guards
+// against two drivers racing on the same panel (e.g. a reconnect firing mid-build).
+async function runEntityBuild(stream){
+  if(G.building)return;
+  G.building=true;
   const box=$("#entBuild"),list=$("#ebList"),done=$("#ebDone");
   list.innerHTML="";done.textContent="";
   $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
@@ -3752,41 +3839,27 @@ async function runBuildEntities(refresh){
   box.classList.add("open");
   liveGraphReset();
   try{
-    const res=await buildEntities(p=>{
-      $("#ebProg").textContent=p.done+"/"+p.total+(p.cached?" · "+p.cached+" cached":"");
-      $("#ebCount").textContent=p.entities+" entities · "+p.relations+" links";
-      $("#ebBarFill").style.setProperty("--p",p.total?p.done/p.total:0);
-      // Draw what this chunk surfaced, in the graph and in the list. The graph
-      // assembling itself is the point: you watch it being discovered instead of
-      // waiting on a counter and then being handed a finished picture.
-      liveGraphAdd(p.new,p.edges);
-      for(const e of (p.new||[])){
-        const el=document.createElement("span");el.className="eb-ent";
-        el.innerHTML=esc(e.name)+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
-        list.appendChild(el);
-      }
-      list.scrollTop=list.scrollHeight;
-    },refresh);
-    // Canonicalization merges surface variants and prunes noise, so fewer entities
-    // survive than were extracted. Say so plainly rather than letting the number
-    // quietly shrink.
-    const kept=res.entities||0,raw=res.extracted||kept,links=res.relations||0;
-    done.innerHTML=raw>kept
-      ? '<b>'+raw+'</b> extracted &rarr; <b>'+kept+'</b> after merging duplicates &middot; <b>'+links+'</b> relationships'
-      : '<b>'+kept+'</b> entities &middot; <b>'+links+'</b> relationships';
-    if(res.cached)done.innerHTML+='<br><span class="eb-cache">'+res.cached+
-      ' chunk'+(res.cached===1?"":"s")+' answered from cache, not re-read by the model</span>';
-    if(!links&&kept)done.innerHTML+='<br>no relationships were found; the model may not be following the extraction format';
-    toast("entity graph built");
-    G.graphMode="entities";
-    document.querySelectorAll("#graphMode button").forEach(x=>x.classList.toggle("on",x.dataset.m==="entities"));
-    G.pos=[];await loadStats();await loadGraph();
-    if(+$("#pEnt").value===0){$("#pEnt").value=0.5;syncReadouts();saveSettings()}
-    setTimeout(()=>box.classList.remove("open"),6000);
+    const res=await stream(entProgress(list));
+    if(res)await entFinish(res,done,box);
+    else box.classList.remove("open"); // nothing to attach to
   }catch(e){
     toast(e.message,true);
     done.innerHTML='<span style="color:var(--danger)">extraction failed: '+esc(e.message)+'</span>';
+  }finally{
+    G.building=false;
   }
+}
+async function runBuildEntities(refresh){
+  return runEntityBuild(onProg=>buildEntities(onProg,refresh));
+}
+// checkEntityBuild reattaches the UI to a build still running on the server, so the
+// progress bar and the graph assembling itself survive a reload or navigating away.
+async function checkEntityBuild(){
+  if(G.building)return;
+  try{
+    const st=await api(bk("/api/build-status"));
+    if(st&&st.running)runEntityBuild(attachEntityBuild);
+  }catch(e){}
 }
 // ---------- global / community summaries ----------
 $("#globalBtn").onclick=()=>{G.global=!G.global;$("#globalBtn").classList.toggle("on",G.global);
@@ -3819,7 +3892,21 @@ resize();syncComposerHeight();loadSettings();updateEmpty();loadModels();loadScri
   s.value=localStorage.getItem("tg.entBatch")||"2";
   s.addEventListener("change",()=>localStorage.setItem("tg.entBatch",s.value));
 })();
-loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph()});
+loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph();checkEntityBuild()});
+// Keep the community legend clear of the live-build panel: they share the bottom-left
+// corner, so lift the legend by the panel's measured height while it is open.
+(function(){
+  const box=$("#entBuild"),wrap=$("#graphWrap");
+  if(!box||!wrap||!window.ResizeObserver)return;
+  new ResizeObserver(()=>{
+    if(box.classList.contains("open")&&box.offsetHeight>0){
+      wrap.style.setProperty("--eb-lift",(box.offsetHeight+24)+"px");
+      wrap.classList.add("ebopen");
+    }else{
+      wrap.classList.remove("ebopen");
+    }
+  }).observe(box);
+})();
 // Deep links: #pipeline / #free open the editor, #config opens settings.
 function applyHash(){const h=location.hash.slice(1);
   if(h==="pipeline"||h==="free"){openFlow();setMode(h==="free"?"free":"pipeline")}

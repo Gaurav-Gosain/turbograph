@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"sync"
 	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/extract"
@@ -58,6 +59,12 @@ type Server struct {
 
 	// assets stores ingested image bytes for the multimodal path; nil disables it.
 	assets *assetStore
+
+	// entJobs tracks in-flight (and just-finished) entity-graph builds per bucket.
+	// A build runs in its own goroutine, detached from the request that started it,
+	// so it survives a page reload and a reconnecting client can stream its progress.
+	entJobsMu sync.Mutex
+	entJobs   map[string]*entBuildJob
 }
 
 // New returns a server backed by a single store, exposed as the "default" bucket.
@@ -157,6 +164,8 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("POST /api/pull", s.handlePull)
 	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
 	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
+	mux.HandleFunc("GET /api/build-entities", s.handleEntityBuildStream)
+	mux.HandleFunc("GET /api/build-status", s.handleBuildStatus)
 	mux.HandleFunc("GET /api/communities", s.handleCommunities)
 	mux.HandleFunc("POST /api/build-communities", s.handleBuildCommunities)
 
