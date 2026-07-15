@@ -257,6 +257,9 @@ func cmdSearch(args []string) error {
 	maxBytes := fs.Int("max-bytes", 0, "truncate each passage to this many bytes (0 = full text)")
 	text := fs.Bool("text", true, "include the passage text")
 	human := fs.Bool("human", false, "print a readable summary instead of JSON")
+	// search prints JSON by default; --json is accepted so the flag works the
+	// same way it does on every other command, and wins if both are given.
+	asJSON := fs.Bool("json", false, "force JSON output (the default)")
 	eo := embedFlags(fs)
 	fs.Parse(args)
 
@@ -290,7 +293,7 @@ func cmdSearch(args []string) error {
 		}
 		hits[i] = h
 	}
-	emit(!*human, map[string]any{"query": *q, "hits": hits}, func() {
+	emit(*asJSON || !*human, map[string]any{"query": *q, "hits": hits}, func() {
 		if len(hits) == 0 {
 			fmt.Println("no matches")
 			return

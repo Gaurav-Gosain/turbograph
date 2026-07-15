@@ -155,8 +155,9 @@ other; the second waits for the first. So you can fan out.
 
 ## Notes
 
-- Every command takes `--json` (and `search` emits JSON by default) — parse it, do
-  not scrape the human output.
+- Every command takes `--json`, so you can always get machine output. `search`
+  already defaults to JSON and takes `-human` to opt out; the others default to
+  human text. Parse the JSON, do not scrape the human output.
 - `turbograph docs --json` is the cheapest way to see whether the store knows about a
   topic at all before you spend a retrieval on it.
 - Writes are atomic. An interrupted `add` leaves the previous store intact.
