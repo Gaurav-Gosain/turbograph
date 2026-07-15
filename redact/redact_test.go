@@ -141,3 +141,23 @@ func TestSummary(t *testing.T) {
 		t.Errorf("summary should count both: %q", s)
 	}
 }
+
+// TestRedactsDefaultCredentialURLs pins the audit finding: when the password equals the
+// scheme or username (postgres/postgres, admin/admin), a first-occurrence replace
+// redacted the scheme and left the password in the clear.
+func TestRedactsDefaultCredentialURLs(t *testing.T) {
+	cases := []struct{ in, leakedPassword string }{
+		{"postgres://postgres:postgres@db:5432/app", "postgres"},
+		{"mysql://admin:admin@prod:3306/x", "admin"},
+		{"redis://root:root@cache:6379", "root"},
+	}
+	for _, c := range cases {
+		got, found := Text(c.in)
+		if strings.Contains(got, c.leakedPassword+"@") {
+			t.Errorf("password survived: %q -> %q", c.in, got)
+		}
+		if len(found) == 0 {
+			t.Errorf("no credential reported for %q", c.in)
+		}
+	}
+}

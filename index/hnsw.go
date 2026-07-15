@@ -92,8 +92,6 @@ func (h *HNSW) Vector(ord int) []float32 {
 	return h.data[ord*h.dim : ord*h.dim+h.dim]
 }
 
-// Code returns the TurboQuant code for an ordinal.
-
 func normalize(dst, src []float32) {
 	var n float64
 	for _, v := range src {

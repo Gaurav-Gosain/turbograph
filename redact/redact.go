@@ -82,18 +82,24 @@ func Text(s string) (string, []Finding) {
 				counts[r.kind]++
 				return "[redacted:" + r.kind + "]"
 			}
-			// Redact only the captured group, keeping the surrounding context.
-			sub := r.re.FindStringSubmatch(m)
-			if len(sub) <= r.group || sub[r.group] == "" {
+			// Redact only the captured group, keeping the surrounding context. Splice by
+			// the group's byte offsets rather than replacing the first occurrence of its
+			// text: with default credentials like postgres://postgres:postgres@host the
+			// password equals the scheme or the username, and a first-occurrence replace
+			// redacts the scheme and leaves the password in the clear.
+			loc := r.re.FindStringSubmatchIndex(m)
+			gs, ge := loc[2*r.group], loc[2*r.group+1]
+			if gs < 0 || ge <= gs {
 				return m
 			}
+			val := m[gs:ge]
 			// A placeholder is not a secret. Ingesting documentation that says
 			// `api_key = YOUR_API_KEY_HERE` should not report a leak.
-			if isPlaceholder(sub[r.group]) {
+			if isPlaceholder(val) {
 				return m
 			}
 			counts[r.kind]++
-			return strings.Replace(m, sub[r.group], "[redacted:"+r.kind+"]", 1)
+			return m[:gs] + "[redacted:" + r.kind + "]" + m[ge:]
 		})
 	}
 	if len(counts) == 0 {

@@ -666,6 +666,7 @@ func (s *Store) ensureFactIndex(ctx context.Context) {
 	}
 
 	s.mu.RLock()
+	gen := s.entGen
 	rels := s.eg.Relations()
 	texts := make([]string, 0, len(rels))
 	src := make([]int, 0, len(rels))
@@ -698,8 +699,10 @@ func (s *Store) ensureFactIndex(ctx context.Context) {
 		return
 	}
 	s.mu.Lock()
-	// Guard against a rebuild having changed the graph while we embedded off the lock.
-	if s.factVec == nil && len(vecs) == len(src) {
+	// Reject the result if the graph was rebuilt while we embedded off the lock: src/tgt
+	// index the entity list as it was then, and a rebuild reorders it. Checking factVec ==
+	// nil is not enough, because a rebuild sets it nil, which would let stale indices in.
+	if s.entGen == gen && s.factVec == nil && len(vecs) == len(src) {
 		s.factVec, s.factSrc, s.factTgt = vecs, src, tgt
 	}
 	s.mu.Unlock()

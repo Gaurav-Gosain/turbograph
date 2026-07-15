@@ -194,6 +194,11 @@ type Store struct {
 	// loaded from disk has the relations but not their embeddings.
 	factVec          [][]float32
 	factSrc, factTgt []int
+	// entGen counts entity-graph rebuilds. ensureFactIndex embeds off the lock and then
+	// installs node indices computed against the entity list as it was BEFORE embedding;
+	// if a rebuild reorders that list in between, the indices are stale. Comparing the
+	// generation before installing rejects that.
+	entGen uint64
 	// extractCache remembers what the model said about a chunk, keyed by the chunk's
 	// text together with the model and prompt that produced it. Extraction is by far
 	// the most expensive thing turbograph does, and a rebuild would otherwise re-ask
@@ -618,6 +623,13 @@ func (s *Store) shareVectorsLocked() {
 func (s *Store) restoreHNSWLocked() bool {
 	g := s.savedHNSW
 	s.savedHNSW = nil // one shot: after any mutation it is stale
+	// The flat block is consumed on adopt and superseded on rebuild, so drop the store's
+	// reference to it now either way. A rebuild still reads the per-chunk views, which
+	// keep its backing array alive until shareVectorsLocked re-points them; leaving s.flat
+	// set kept the whole ~300 MB block alive for the store's lifetime whenever restore
+	// fell through to a rebuild (e.g. a delete before the first search shrank the corpus).
+	flat := s.flat
+	s.flat = nil
 	if g == nil || len(s.chunks) == 0 || len(g.Levels) != len(s.chunks) {
 		return false
 	}
@@ -628,9 +640,7 @@ func (s *Store) restoreHNSWLocked() bool {
 	// When the vectors came off disk as one contiguous block, hand that block straight to
 	// the index. It is already the layout the index wants, so this copies nothing and
 	// halves the peak memory of opening a store.
-	if len(s.flat) == len(s.chunks)*s.dim {
-		flat := s.flat
-		s.flat = nil
+	if len(flat) == len(s.chunks)*s.dim {
 		if h, ok := index.AdoptFlat(s.dim, s.cfg.HNSW, ids, flat, *g); ok {
 			s.hnsw = h
 			return true
@@ -687,11 +697,17 @@ func (s *Store) ensureGraph() {
 }
 
 func (s *Store) reindexLocked() {
-	// Nothing is built while a build is deferred: ingest calls reindex on every batch, and
-	// doing the work here would defeat the deferral entirely.
-	if s.deferIndex || s.deferGraph {
+	// Nothing is built yet while the search index is deferred: ingest calls reindex on
+	// every batch, and building here would defeat the deferral. ensureSearchLocked builds
+	// it on the first query.
+	if s.deferIndex {
 		return
 	}
+	// A mutation (a delete, or an in-place update) may have set needsRebuild AFTER the
+	// search index was already built. That must be honored even when the similarity graph
+	// is still deferred: otherwise the vector and lexical indexes keep pointing at chunk
+	// ordinals that no longer exist, and the next search reads past the end of the arrays
+	// or returns the wrong chunk. This was the bug the two-tier deferral introduced.
 	if s.needsRebuild {
 		s.rebuildIndexesLocked()
 		// A rebuild creates a new index with a new buffer; the store's views point into the
@@ -700,6 +716,10 @@ func (s *Store) reindexLocked() {
 		s.needsRebuild = false
 		s.edges = s.edges[:0]
 		s.indexedUpTo = 0
+	}
+	// The graph is built on demand; a mutation just invalidated it, so leave it deferred.
+	if s.deferGraph {
+		return
 	}
 	if s.indexedUpTo >= len(s.chunks) {
 		if s.g == nil || s.indexedUpTo == 0 {
@@ -866,6 +886,17 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	if p.EntityMix > 0 && p.EntityLink != "node" {
 		s.ensureFactIndex(ctx)
 	}
+
+	// Embed the query BEFORE taking the read lock. It is a network call to the embedding
+	// model (about 100 ms to a second against a local Ollama), and Go's RWMutex prefers
+	// writers, so holding the read lock across it meant one in-flight query plus one
+	// pending AddDocuments blocked every new retrieval for the whole embed. The embedder
+	// is fixed for the store's lifetime, so embedding needs no lock.
+	qv, err := embedQuery(ctx, s.embedder, []string{query})
+	if err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.hnsw == nil || len(s.chunks) == 0 {
@@ -886,11 +917,6 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	}
 	if p.PPR.Damping == 0 {
 		p.PPR = graph.DefaultPPR()
-	}
-
-	qv, err := embedQuery(ctx, s.embedder, []string{query})
-	if err != nil {
-		return nil, err
 	}
 
 	// Pseudo-relevance feedback: expand the query vector toward the centroid of
@@ -1024,7 +1050,17 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 			}
 		}
 	}
-	sort.Slice(scored, func(a, b int) bool { return scored[a].val > scored[b].val })
+	// Total order: score, then ordinal. The fast path collects candidates by iterating a
+	// map, whose order Go randomizes per run, so a score-only comparison let the map decide
+	// which chunk survived a tie at the top-k boundary and the same query returned
+	// different results between calls. This is the same defect the lexical index's topK
+	// fixed; it must not be reintroduced one level up.
+	sort.Slice(scored, func(a, b int) bool {
+		if scored[a].val != scored[b].val {
+			return scored[a].val > scored[b].val
+		}
+		return scored[a].ord < scored[b].ord
+	})
 
 	// Optional MMR diversification over a candidate pool a few times TopK.
 	if p.MMRLambda > 0 && p.MMRLambda < 1 && len(scored) > p.TopK {

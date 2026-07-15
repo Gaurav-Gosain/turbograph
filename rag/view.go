@@ -1,6 +1,9 @@
 package rag
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // GraphNode is a chunk as seen by a visualization: its identity, the community it
 // belongs to, its degree in the similarity graph, and a short text preview.
@@ -69,10 +72,16 @@ func snippet(text string, n int) string {
 	if len(text) <= n {
 		return text
 	}
-	// Trim to the last word boundary within the budget for a cleaner preview.
-	cut := text[:n]
-	if sp := strings.LastIndexByte(cut, ' '); sp > n/2 {
-		cut = cut[:sp]
+	// Trim to the last word boundary within the budget for a cleaner preview. n is a byte
+	// budget, so back it up to a rune boundary first, or a multibyte character split by
+	// the cut would render as U+FFFD in the JSON graph view.
+	cut := n
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
 	}
-	return cut + "..."
+	prev := text[:cut]
+	if sp := strings.LastIndexByte(prev, ' '); sp > n/2 {
+		prev = prev[:sp]
+	}
+	return prev + "..."
 }

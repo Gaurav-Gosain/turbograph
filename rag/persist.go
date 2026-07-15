@@ -332,9 +332,12 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	// them here was two thirds of the cost of opening a store, paid by every command
 	// whether or not it ever searched. ensureIndex builds them on first use.
 	s.appendToArraysLocked(snap.Chunks, embeds)
+	// deferIndex already means "not built yet"; needsRebuild means "built but stale". They
+	// are distinct, and conflating them (setting needsRebuild here) both hid the persisted
+	// links from a re-save and was simply redundant, since ensureSearchLocked builds the
+	// index from the arrays either way.
 	s.deferIndex = true
 	s.deferGraph = true
-	s.needsRebuild = true
 	s.savedHNSW = snap.HNSW
 	for id, h := range snap.Hashes {
 		s.recordHashLocked(id, h)
@@ -377,11 +380,20 @@ func flattenCache(m map[[32]byte]cachedExtraction) []cacheEntry {
 // or absent graph is simply not written: it is a cache, and a cache miss costs a
 // rebuild, while a wrong graph would silently return the wrong neighbours forever.
 func (s *Store) hnswSnapshot() *index.Graph {
-	if s.deferIndex || s.needsRebuild || s.hnsw == nil || s.hnsw.Len() != len(s.chunks) {
-		return nil
+	// The index is built and current: snapshot it.
+	if !s.deferIndex && !s.needsRebuild && s.hnsw != nil && s.hnsw.Len() == len(s.chunks) {
+		g := s.hnsw.Snapshot()
+		return &g
 	}
-	g := s.hnsw.Snapshot()
-	return &g
+	// The index was never built this session -- the store was loaded and saved again
+	// without a search, which is what `turbograph add` of an unchanged document does, and
+	// what any no-op save after server startup does. The links read from disk still
+	// describe the current chunks, so persist them again rather than dropping them and
+	// forcing the next open to reconstruct the whole graph.
+	if s.deferIndex && !s.needsRebuild && s.savedHNSW != nil && len(s.savedHNSW.Levels) == len(s.chunks) {
+		return s.savedHNSW
+	}
+	return nil
 }
 
 // viewFlat hands back per-chunk views into one contiguous block, and keeps the block so

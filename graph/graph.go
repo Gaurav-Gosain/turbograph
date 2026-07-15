@@ -5,7 +5,10 @@
 // relevant by association rather than by direct similarity alone.
 package graph
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 // Builder accumulates weighted undirected edges before they are frozen into the
 // immutable CSR form used for traversal.
@@ -47,10 +50,23 @@ func (b *Builder) Build() *Graph {
 	wts := make([]float32, total)
 	outSum := make([]float32, b.n)
 	pos := 0
+	row := make([]int, 0, 16)
 	for i := 0; i < b.n; i++ {
 		rowPtr[i] = pos
+		// Emit each row's neighbours in ascending column order. Iterating the adjacency
+		// map directly took them in Go's randomized map order, so the CSR layout differed
+		// run to run, and since float addition is not associative, PageRank's per-node sum
+		// and community label propagation then differed at the ulp level and could flip a
+		// near-tied rank or community assignment between processes -- contradicting the
+		// "same seed, identical labels" guarantee and making a benchmark unreproducible.
+		row = row[:0]
+		for j := range b.adj[i] {
+			row = append(row, j)
+		}
+		sort.Ints(row)
 		var s float32
-		for j, w := range b.adj[i] {
+		for _, j := range row {
+			w := b.adj[i][j]
 			cols[pos] = int32(j)
 			wts[pos] = w
 			s += w

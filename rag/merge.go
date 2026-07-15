@@ -88,13 +88,19 @@ func Merge(dst, src *Store) (MergeStats, error) {
 		take[id] = true
 	}
 	// A store written before content hashing has no idHash entries; fall back to the
-	// document ids present in its chunks so it can still be merged.
+	// document ids present in its chunks so it can still be merged. Count a skip once per
+	// document, not once per chunk: MergeStats.Skipped is documented as a document count.
 	if len(srcHash) == 0 {
+		seenDoc := map[string]bool{}
 		for _, c := range srcChunks {
-			if _, known := dst.docSet[c.DocID]; !known {
-				take[c.DocID] = true
-			} else {
+			if seenDoc[c.DocID] {
+				continue
+			}
+			seenDoc[c.DocID] = true
+			if _, known := dst.docSet[c.DocID]; known {
 				skipped++
+			} else {
+				take[c.DocID] = true
 			}
 		}
 	}
