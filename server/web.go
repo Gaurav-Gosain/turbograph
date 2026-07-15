@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
@@ -206,18 +205,6 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errEmpty("model"))
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	send := func(event string, v any) {
-		b, _ := json.Marshal(v)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-		flusher.Flush()
-	}
 	// Chunks per model call. Batching cuts round trips, but it degrades a small local
 	// model's extraction badly: measured on a 4-document corpus with qwen3.5:4b, a
 	// batch of 4 yielded 6 entities and 4 relationships, against 17 and 8 at a batch
@@ -232,36 +219,42 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 	// refresh=1 ignores the extraction cache and re-asks the model about every chunk.
 	refresh := r.URL.Query().Get("refresh") == "1"
 
-	var extracted, cached int // raw entity count before canonicalization merges duplicates
-	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
-	err = st.BuildEntityGraph(r.Context(), ex, rag.EntityBuildOptions{
-		BatchSize: batch,
-		Model:     model,
-		Refresh:   refresh,
-		OnProgress: func(p rag.EntityProgress) {
-			extracted = p.Entities // raw count, before canonicalization prunes and merges
-			cached = p.Cached
-			// "new" and "edges" carry the entities and relationships this chunk surfaced,
-			// so the UI can draw the graph as it is discovered instead of showing a
-			// counter and then a finished picture.
-			send("progress", map[string]any{
-				"done": p.Done, "total": p.Total, "cached": p.Cached,
-				"entities": p.Entities, "relations": p.Relations,
-				"new": p.New, "edges": p.NewRelations,
-			})
-		},
-	})
-	if err != nil {
-		send("error", map[string]string{"error": err.Error()})
+	// The build runs in its own goroutine so it survives this client disconnecting;
+	// this request just streams its progress. A reconnecting client uses GET on the
+	// same path (handleEntityBuildStream) to reattach.
+	job := s.startEntBuild(bucketOf(r), st, model, batch, refresh)
+	job.stream(w, r)
+}
+
+// handleEntityBuildStream reattaches to an in-flight (or just-finished) entity build
+// and streams its progress, so a client that reloaded or navigated away can pick the
+// build back up. It returns 204 when there is nothing to attach to.
+func (s *Server) handleEntityBuildStream(w http.ResponseWriter, r *http.Request) {
+	job := s.entJob(bucketOf(r))
+	if job == nil {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.persist(bucketOf(r))
-	// extracted is the raw count before canonicalization and pruning; entities is what
-	// survived. Reporting both makes the merge visible rather than looking like loss.
-	// cached says how many chunks never reached the model, which is the difference
-	// between a rebuild that costs minutes and one that costs nothing.
-	send("done", map[string]int{"entities": st.EntityCount(), "extracted": extracted,
-		"relations": st.RelationCount(), "cached": cached})
+	job.stream(w, r)
+}
+
+// handleBuildStatus is a cheap poll a freshly loaded page uses to decide whether a
+// build is running for its bucket, and therefore whether to show the progress panel
+// and reconnect to the stream.
+func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
+	job := s.entJob(bucketOf(r))
+	if job == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"running": false})
+		return
+	}
+	job.mu.Lock()
+	resp := map[string]any{
+		"running": job.running, "finished": job.finished,
+		"done": job.nDone, "total": job.total,
+		"entities": job.entities, "relations": job.relations,
+	}
+	job.mu.Unlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
