@@ -1974,6 +1974,22 @@ async function ensureEntityMode(){
   G.pos=[];G.selected=-1;G.pulse=-1;G.hoverEdge=-1;G.selEdge=-1;
   await loadGraph();
 }
+// revealEntities shows the answer's activated entities in the graph. The graph only
+// exists in the power workbench, so if the simple dashboard is showing, switch to it
+// first; otherwise "show in graph" would highlight nodes on a hidden canvas and look
+// like it did nothing.
+async function revealEntities(msgEl){
+  if(G.layout==="simple"){setLayout("power");toast("switched to the graph view")}
+  await ensureEntityMode();
+  applyHighlight(msgEl);
+}
+// showGraphView selects the chunk or entity graph, switching to the power workbench
+// first if the graph-less simple dashboard is showing.
+function showGraphView(m){
+  if(G.layout==="simple")setLayout("power");
+  const b=document.querySelector('#graphMode [data-m='+m+']');
+  if(b)b.click();
+}
 // renderEntityRow shows that the entity graph contributed to this answer, and which
 // entities it activated. The row appears only when the graph actually fired, so its
 // presence is the honest signal that the graph was used; its absence means it was not.
@@ -1994,10 +2010,10 @@ function renderEntityRow(msgEl,entities,link){
     c.innerHTML='<span class="nm">'+esc(e.name)+'</span>'+(e.type?'<span class="ty">'+esc(e.type)+'</span>':"");
     c.onmouseenter=()=>{if(G.graphMode==="entities"){const i=G.idIndex.get(e.name);if(i!=null){G.pulse=i;dirty=true}}};
     c.onmouseleave=()=>{G.pulse=-1;dirty=true};
-    c.onclick=async()=>{await ensureEntityMode();applyHighlight(msgEl);const i=G.idIndex.get(e.name);if(i!=null){G.selected=i;fit(new Set([i]));dirty=true}};
+    c.onclick=async()=>{await revealEntities(msgEl);const i=G.idIndex.get(e.name);if(i!=null){G.selected=i;fit(new Set([i]));dirty=true}};
     chips.appendChild(c);
   });
-  box.querySelector(".eu-view").onclick=async()=>{await ensureEntityMode();applyHighlight(msgEl)};
+  box.querySelector(".eu-view").onclick=()=>revealEntities(msgEl);
   msgEl.appendChild(box);
 }
 
@@ -2505,11 +2521,11 @@ function commands(){
     {label:"Retrieval settings",run:()=>settingsEl.classList.add("open")},
     {label:"A/B retrieval compare",hint:"benchmark two configs",run:openAB},
     {label:"Settings & configuration",hint:"backends, chunking, S3",run:openConfig},
-    {label:"Build entity graph",hint:"llm",run:runBuildEntities},
+    {label:"Build entity graph",hint:"llm",run:triggerBuild},
     {label:"Build community summaries",hint:"global queries",run:runBuildCommunities},
-    {label:"View entity graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=entities]').click()},
-    {label:"View chunk graph",hint:"graph",run:()=>document.querySelector('#graphMode [data-m=chunks]').click()},
-    {label:"Fit graph to view",run:()=>fit(G.highlight.size?G.highlight:null)},
+    {label:"View entity graph",hint:"graph",run:()=>showGraphView("entities")},
+    {label:"View chunk graph",hint:"graph",run:()=>showGraphView("chunks")},
+    {label:"Fit graph to view",run:()=>{if(G.layout==="simple")setLayout("power");fit(G.highlight.size?G.highlight:null)}},
     {label:"Clear graph highlight",run:()=>{G.highlight=new Set();dirty=true}},
     {label:"Clear chat",run:()=>$("#clearChat").click()},
     {label:"Save store",hint:"persist",run:()=>$("#saveBtn").click()},
