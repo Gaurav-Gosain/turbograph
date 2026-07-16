@@ -737,20 +737,30 @@
   #buildGraphBtn:hover{border-color:var(--accent);color:var(--accent)}
   #buildGraphBtn .bg-ic{color:var(--accent);font-size:13px;line-height:1}
   #buildGraphBtn.busy{opacity:.6;pointer-events:none}
-  .bg-caret{border:0;background:transparent;color:var(--faint);font-size:9px;padding:0 2px;line-height:1;cursor:pointer}
-  .bg-caret:hover{color:var(--text)}
-  /* build-options popover (power mode "more knobs") */
-  #buildOpts{position:absolute;top:46px;right:12px;z-index:14;display:none;width:236px;
-    background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:12px 13px;
-    box-shadow:0 14px 38px rgba(0,0,0,.5)}
-  #buildOpts.open{display:block;animation:pop .12s var(--ease-out)}
-  #buildOpts .bo-h{font-size:10.5px;color:var(--muted);margin-bottom:11px;letter-spacing:.3px}
-  #buildOpts .bo-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
-  #buildOpts .bo-row:last-child{margin-bottom:0}
-  #buildOpts .bo-row label{font-size:11px;color:var(--text)}
-  #buildOpts .bo-row .bo-hint{font-size:10px;color:var(--faint);display:block;margin-top:2px}
-  #buildOpts select{font-size:11px;padding:3px 7px;flex:none}
-  #buildOpts input[type=checkbox]{accent-color:var(--accent)}
+
+  /* build confirmation dialog: asks before extracting, and when a graph already
+     exists offers reuse-cache (fast, incremental) vs re-extract (ignore cache). */
+  #buildDialog{align-items:center;padding:3vh 0;z-index:32}
+  .bd-card{width:min(460px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;animation:bdIn .16s var(--ease-out)}
+  @keyframes bdIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.bd-card{animation:none}}
+  .bd-top{padding:17px 18px 3px}
+  .bd-title{font-size:14px;color:var(--text);font-weight:600;margin-bottom:8px}
+  .bd-desc{font-size:12px;color:var(--muted);line-height:1.6}
+  .bd-desc b{color:var(--text);font-weight:500}
+  .bd-opts{display:flex;flex-direction:column;gap:11px;padding:14px 18px;margin-top:13px;
+    border-top:1px solid var(--border);background:var(--panel2)}
+  .bd-opt{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11.5px;color:var(--text)}
+  .bd-opt .bd-hint{display:block;color:var(--faint);font-size:10px;margin-top:2px}
+  .bd-opt select{font-size:11px;padding:3px 7px;flex:none}
+  .bd-opt input[type=checkbox]{accent-color:var(--accent);flex:none}
+  .bd-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;padding:13px 18px}
+  .bd-actions button{font-size:12px;padding:7px 14px;border-radius:7px;line-height:1}
+  .bd-actions .bd-go{background:var(--accent);color:var(--bg);border:1px solid var(--accent);font-weight:500}
+  .bd-actions .bd-go:hover{filter:brightness(1.08)}
+  .bd-actions .bd-alt{background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+  .bd-actions .bd-alt:hover{border-color:var(--accent);color:var(--accent)}
 
   /* simple / dashboard shell: reflow #side to full width and reveal the dashboard hero */
   #dashHero{display:none}
@@ -839,26 +849,10 @@
     <div class="gtoolbar">
       <button id="buildGraphBtn" type="button" title="build the entity knowledge graph from your documents">
         <span class="bg-ic">&#9648;</span><span class="bg-t">build graph</span>
-        <span class="bg-caret" id="buildOptsBtn" title="build options">&#9662;</span>
       </button>
       <div id="graphMode" class="seg">
         <button data-m="chunks" class="on">chunks</button>
         <button data-m="entities" title="entity-relationship knowledge graph">entities</button>
-      </div>
-    </div>
-    <div id="buildOpts">
-      <div class="bo-h">entity graph build options</div>
-      <div class="bo-row">
-        <label for="boBatch">chunks per model call</label>
-        <select id="boBatch"><option>1</option><option>2</option><option>3</option><option>4</option></select>
-      </div>
-      <div class="bo-row">
-        <label for="boRefresh">ignore cache<span class="bo-hint">re-ask the model about every chunk</span></label>
-        <input type="checkbox" id="boRefresh">
-      </div>
-      <div class="bo-row">
-        <label for="boComm">then build communities<span class="bo-hint">cluster the graph, no model call</span></label>
-        <input type="checkbox" id="boComm">
       </div>
     </div>
     <div id="legend" class="overlay"></div>
@@ -1037,6 +1031,21 @@
 </main>
 <div id="dropOverlay">
   <div class="do-box">drop files to add to <b id="dropBucket">default</b><div class="do-sub">text, pdf, markdown, and images</div></div>
+</div>
+<div id="buildDialog" class="cmdk-overlay">
+  <div class="bd-card">
+    <div class="bd-top">
+      <div class="bd-title" id="bdTitle">Build knowledge graph</div>
+      <div class="bd-desc" id="bdDesc"></div>
+    </div>
+    <div class="bd-opts">
+      <label class="bd-opt">chunks per model call
+        <select id="bdBatch"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+      <label class="bd-opt"><span>then cluster into communities<span class="bd-hint">groups the graph, no model call</span></span>
+        <input type="checkbox" id="bdComm"></label>
+    </div>
+    <div class="bd-actions" id="bdActions"></div>
+  </div>
 </div>
 <div id="toast"></div>
 <div id="cmdk" class="cmdk-overlay">
@@ -4170,20 +4179,56 @@ function syncDash(){
 // triggerBuild is the one action behind every "build knowledge graph" affordance (the
 // dashboard card and the graph toolbar). It honours the build options and optionally
 // clusters communities afterwards.
-async function triggerBuild(){
+// triggerBuild is the entry behind every build/rebuild affordance. It never starts a
+// build straight away: it opens a confirmation first, because extraction runs a model
+// over the whole corpus and is not something to fire by accident.
+function triggerBuild(){
   if(G.building)return;
   if(!G.model){toast("select a model (top right) first; extraction needs one",true);return}
-  await runBuildEntities(!!G.buildRefresh);
+  openBuildDialog();
+}
+// openBuildDialog explains what the build will do and, when a graph already exists,
+// offers the cache choice: reuse it for a fast incremental rebuild, or ignore it and
+// re-read every chunk. A first build has no cache, so it is a single confirm.
+function openBuildDialog(){
+  const chunks=+(($("#sChunks")||{}).textContent)||0;
+  if(!chunks){toast("add some documents first",true);return}
+  const nE=+(($("#sEnt")||{}).textContent)||0, rebuild=nE>0, model=G.model||"the model";
+  $("#bdTitle").textContent=rebuild?"Rebuild knowledge graph":"Build knowledge graph";
+  $("#bdDesc").innerHTML=rebuild
+    ? 'This corpus already has a graph of <b>'+nE+'</b> entit'+(nE===1?"y":"ies")+'. Reuse the cached extraction to rebuild fast, re-reading only new or changed chunks, or re-extract every one of the <b>'+chunks+'</b> chunks with <b>'+esc(model)+'</b> to pick up a model or prompt change.'
+    : 'Runs <b>'+esc(model)+'</b> over <b>'+chunks+'</b> chunk'+(chunks===1?"":"s")+' to extract entities and relationships. This can take a while on a large corpus.';
+  $("#bdBatch").value=localStorage.getItem("tg.entBatch")||"2";
+  $("#bdComm").checked=!!G.buildComm;
+  const act=$("#bdActions");act.innerHTML="";
+  const mk=(label,cls,fn)=>{const b=document.createElement("button");b.type="button";b.className=cls;b.textContent=label;b.onclick=fn;return b};
+  act.appendChild(mk("cancel","bd-alt",closeBuildDialog));
+  if(rebuild){
+    act.appendChild(mk("re-extract all","bd-alt",()=>doBuild(true)));
+    const reuse=mk("reuse cache","bd-go",()=>doBuild(false));act.appendChild(reuse);
+    requestAnimationFrame(()=>reuse.focus());
+  }else{
+    const go=mk("build","bd-go",()=>doBuild(false));act.appendChild(go);
+    requestAnimationFrame(()=>go.focus());
+  }
+  $("#buildDialog").classList.add("open");
+}
+function closeBuildDialog(){$("#buildDialog").classList.remove("open")}
+async function doBuild(refresh){
+  closeBuildDialog();
+  const bb=$("#bdBatch");if(bb){localStorage.setItem("tg.entBatch",bb.value);const cb=$("#cfgEntBatch");if(cb)cb.value=bb.value}
+  G.buildComm=$("#bdComm").checked;
+  await runBuildEntities(refresh);
   if(G.buildComm)await runBuildCommunities();
 }
 // setLayout switches shells and remembers the choice.
-function setLayout(m){
+function setLayout(m,focus){
   G.layout=m;
   document.body.classList.toggle("mode-simple",m==="simple");
   document.body.classList.toggle("mode-power",m!=="simple");
   document.querySelectorAll("#modeToggle button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   localStorage.setItem("tg.layout",m);
-  if(m==="simple"){showTab("chat");syncDash()}
+  if(m==="simple"){showTab("chat");syncDash();if(focus){const i=$("#input");if(i)i.focus()}}
   else{
     // The graph may have loaded while hidden (canvas was zero-size), so its view never
     // framed. Re-size and re-fit once it is visible again.
@@ -4191,19 +4236,16 @@ function setLayout(m){
   }
 }
 (function(){
-  document.querySelectorAll("#modeToggle button").forEach(b=>b.onclick=()=>setLayout(b.dataset.mode));
-  setLayout(localStorage.getItem("tg.layout")||"simple");
+  document.querySelectorAll("#modeToggle button").forEach(b=>b.onclick=()=>setLayout(b.dataset.mode,true));
+  setLayout(localStorage.getItem("tg.layout")||"power");
   const kb=$("#dashKGBtn");if(kb)kb.onclick=triggerBuild;
   const dz=$("#dashDrop");if(dz)dz.onclick=()=>{const f=$("#file");if(f)f.click()};
-  const pb=$("#buildGraphBtn");if(pb)pb.onclick=e=>{if(e.target.closest("#buildOptsBtn"))return;triggerBuild()};
-  const bo=$("#buildOpts"),bob=$("#buildOptsBtn");
-  if(bo&&bob){
-    bob.onclick=e=>{e.stopPropagation();bo.classList.toggle("open")};
-    document.addEventListener("click",e=>{if(!bo.contains(e.target)&&!bob.contains(e.target))bo.classList.remove("open")});
-    const batch=$("#boBatch");if(batch){batch.value=localStorage.getItem("tg.entBatch")||"2";
-      batch.onchange=()=>{localStorage.setItem("tg.entBatch",batch.value);const cb=$("#cfgEntBatch");if(cb)cb.value=batch.value}}
-    const rf=$("#boRefresh");if(rf)rf.onchange=()=>G.buildRefresh=rf.checked;
-    const cm=$("#boComm");if(cm)cm.onchange=()=>G.buildComm=cm.checked;
+  const pb=$("#buildGraphBtn");if(pb)pb.onclick=triggerBuild;
+  // dismiss the build dialog on backdrop click or Escape
+  const bd=$("#buildDialog");
+  if(bd){
+    bd.addEventListener("click",e=>{if(e.target===bd)closeBuildDialog()});
+    document.addEventListener("keydown",e=>{if(e.key==="Escape"&&bd.classList.contains("open"))closeBuildDialog()});
   }
 })();
 // Drag files anywhere onto the simple dashboard to ingest them; a full-view overlay
