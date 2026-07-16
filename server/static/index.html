@@ -78,7 +78,7 @@
   .overlay{position:absolute;z-index:5}
   #searchBar{top:12px;left:12px;display:flex;gap:6px;align-items:center}
   #searchBar input{width:240px;background:rgba(21,24,30,.92);backdrop-filter:blur(4px)}
-  #graphMode{top:12px;right:12px;border:1px solid var(--border);border-radius:6px;overflow:hidden;
+  #graphMode{border:1px solid var(--border);border-radius:6px;overflow:hidden;
     display:flex;background:rgba(21,24,30,.9);backdrop-filter:blur(4px)}
   .seg button{border:0;border-radius:0;background:transparent;color:var(--muted);padding:6px 11px;font-size:11px}
   .seg button.on{background:var(--panel2);color:var(--accent)}
@@ -719,12 +719,112 @@
     background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:9px 14px;
     font-size:12px;display:none;box-shadow:0 6px 22px rgba(0,0,0,.5)}
   #toast.err{border-color:var(--danger);color:var(--danger)}
+  /* ===================== layout modes ===================== */
+  /* Two shells over one engine. "power" is the two-pane graph + chat workbench (the
+     default for tuning retrieval). "simple" is a centred dashboard: no canvas, a
+     corpus overview, drag-and-drop ingest, a one-click knowledge-graph build, and the
+     ask front and centre. A header toggle switches them and the choice is remembered. */
+  #modeToggle{border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;background:var(--panel2);flex:none}
+  #modeToggle button{border:0;border-radius:0;background:transparent;color:var(--muted);
+    padding:5px 12px;font-size:11px;letter-spacing:.2px;transition:color .12s var(--ease-out),background .12s var(--ease-out)}
+  #modeToggle button.on{background:var(--panel);color:var(--accent)}
+  #modeToggle button:hover:not(.on){color:var(--text)}
+
+  /* graph top-right toolbar: build/rebuild the entity graph next to the chunks/entities switch */
+  .gtoolbar{position:absolute;top:12px;right:12px;z-index:5;display:flex;gap:8px;align-items:flex-start}
+  #buildGraphBtn{display:inline-flex;align-items:center;gap:6px;background:rgba(21,24,30,.9);backdrop-filter:blur(4px);
+    border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:6px 10px;line-height:1}
+  #buildGraphBtn:hover{border-color:var(--accent);color:var(--accent)}
+  #buildGraphBtn .bg-ic{color:var(--accent);font-size:13px;line-height:1}
+  #buildGraphBtn.busy{opacity:.6;pointer-events:none}
+
+  /* build confirmation dialog: asks before extracting, and when a graph already
+     exists offers reuse-cache (fast, incremental) vs re-extract (ignore cache). */
+  #buildDialog{align-items:center;padding:3vh 0;z-index:32}
+  .bd-card{width:min(460px,92vw);background:var(--panel);border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;animation:bdIn .16s var(--ease-out)}
+  @keyframes bdIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.bd-card{animation:none}}
+  .bd-top{padding:17px 18px 3px}
+  .bd-title{font-size:14px;color:var(--text);font-weight:600;margin-bottom:8px}
+  .bd-desc{font-size:12px;color:var(--muted);line-height:1.6}
+  .bd-desc b{color:var(--text);font-weight:500}
+  .bd-opts{display:flex;flex-direction:column;gap:11px;padding:14px 18px;margin-top:13px;
+    border-top:1px solid var(--border);background:var(--panel2)}
+  .bd-opt{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11.5px;color:var(--text)}
+  .bd-opt .bd-hint{display:block;color:var(--faint);font-size:10px;margin-top:2px}
+  .bd-opt select{font-size:11px;padding:3px 7px;flex:none}
+  .bd-opt input[type=checkbox]{accent-color:var(--accent);flex:none}
+  .bd-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;padding:13px 18px}
+  .bd-actions button{font-size:12px;padding:7px 14px;border-radius:7px;line-height:1}
+  .bd-actions .bd-go{background:var(--accent);color:var(--bg);border:1px solid var(--accent);font-weight:500}
+  .bd-actions .bd-go:hover{filter:brightness(1.08)}
+  .bd-actions .bd-alt{background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+  .bd-actions .bd-alt:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* simple / dashboard shell: reflow #side to full width and reveal the dashboard hero */
+  #dashHero{display:none}
+  body.mode-simple #graphWrap{display:none}
+  body.mode-simple #sideResize{display:none}
+  body.mode-simple #side{flex:1;width:auto;min-width:0;border-left:0;background:var(--bg)}
+  body.mode-simple .tabs{display:none}
+  body.mode-simple #panel-docs,body.mode-simple #panel-node{display:none!important}
+  body.mode-simple header .stat{display:none}
+  body.mode-simple #flowBtn{display:none}
+  body.mode-simple #panel-chat{max-width:940px;width:100%;margin:0 auto}
+  body.mode-simple #dashHero{display:block}
+  #panel-chat{position:relative}
+
+  #dashHero{max-width:940px;width:100%;margin:0 auto;padding:24px 22px 6px;flex:none}
+  .dash-over{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .dash-over .dash-h{font-size:13px;color:var(--text);font-weight:500}
+  .dash-over .dash-sub{color:var(--faint);font-size:11px}
+  .dash-stats{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto}
+  .dash-stat{display:inline-flex;align-items:baseline;gap:5px;background:var(--panel2);
+    border:1px solid var(--border);border-radius:7px;padding:5px 10px;font-size:11px;color:var(--muted)}
+  .dash-stat b{color:var(--text);font-size:13px;font-variant-numeric:tabular-nums}
+  .dash-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:680px){.dash-cards{grid-template-columns:1fr}}
+  .dash-card{border:1px solid var(--border);border-radius:10px;background:var(--panel2);padding:14px 15px;
+    display:flex;flex-direction:column;gap:11px;min-width:0}
+  .dash-card .dc-h{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted)}
+  .dash-card .dc-h b{color:var(--text);font-weight:500}
+  #dashDrop{border:1px dashed var(--border);border-radius:8px;padding:17px 12px;text-align:center;cursor:pointer;
+    color:var(--muted);font-size:11.5px;line-height:1.5;transition:border-color .14s var(--ease-out),background .14s var(--ease-out),color .14s var(--ease-out)}
+  #dashDrop:hover,#dashDrop.over{border-color:var(--accent);background:rgba(90,209,200,.05);color:var(--text)}
+  #dashDrop b{color:var(--accent);font-weight:500}
+  .dc-docs{font-size:10.5px;color:var(--faint)}
+  .dc-status{font-size:11.5px;color:var(--text);line-height:1.5}
+  .dc-status .muted{color:var(--muted)}
+  #dashKGBtn{align-self:flex-start;background:var(--accent);color:var(--bg);border:1px solid var(--accent);
+    border-radius:7px;padding:7px 13px;font-size:11.5px;font-weight:500}
+  #dashKGBtn:hover{filter:brightness(1.08)}
+  #dashKGBtn:disabled{opacity:.5;cursor:default}
+  .dc-prog{display:none;flex-direction:column;gap:6px}
+  .dash-card.building .dc-prog{display:flex}
+  .dash-card.building #dashKGBtn{display:none}
+  .dc-bar{height:4px;border-radius:2px;background:var(--panel);overflow:hidden}
+  .dc-bar i{display:block;height:100%;width:var(--p,0%);background:var(--accent);transition:width .2s var(--ease-out)}
+  .dc-pt{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+  /* drag-anywhere ingest overlay (simple mode) */
+  #dropOverlay{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;
+    background:rgba(10,11,13,.74)}
+  body.mode-simple.dragfiles #dropOverlay{display:flex}
+  #dropOverlay .do-box{border:2px dashed var(--accent);border-radius:14px;padding:32px 46px;text-align:center;
+    background:var(--panel);color:var(--text);font-size:14px;box-shadow:0 20px 60px rgba(0,0,0,.5);pointer-events:none}
+  #dropOverlay .do-box b{color:var(--accent)}
+  #dropOverlay .do-sub{color:var(--muted);font-size:11.5px;margin-top:6px}
 </style>
 </head>
 <body>
 <header>
   <div class="brand">turbo<b>graph</b></div>
   <button id="cmdkBtn" class="cmdkBtn" title="command palette"><kbd>Ctrl K</kbd> commands</button>
+  <div id="modeToggle" title="switch layout">
+    <button data-mode="simple" type="button">simple</button>
+    <button data-mode="power" type="button">power</button>
+  </div>
   <div class="stat">chunks <b id="sChunks">0</b></div>
   <div class="stat">entities <b id="sEnt">0</b></div>
   <div class="stat">communities <b id="sComm">0</b></div>
@@ -746,9 +846,14 @@
       <input id="search" placeholder="search the graph" autocomplete="off">
       <button id="searchClear" title="clear">clear</button>
     </div>
-    <div id="graphMode" class="overlay seg">
-      <button data-m="chunks" class="on">chunks</button>
-      <button data-m="entities" title="entity-relationship knowledge graph">entities</button>
+    <div class="gtoolbar">
+      <button id="buildGraphBtn" type="button" title="build the entity knowledge graph from your documents">
+        <span class="bg-ic">&#9648;</span><span class="bg-t">build graph</span>
+      </button>
+      <div id="graphMode" class="seg">
+        <button data-m="chunks" class="on">chunks</button>
+        <button data-m="entities" title="entity-relationship knowledge graph">entities</button>
+      </div>
     </div>
     <div id="legend" class="overlay"></div>
     <div id="controls" class="overlay">
@@ -772,6 +877,35 @@
 
   <div id="side">
     <div id="sideResize" title="drag to resize, double-click to reset"></div>
+    <div id="dashHero">
+      <div class="dash-over">
+        <div>
+          <div class="dash-h">your corpus</div>
+          <div class="dash-sub" id="dashBucketSub">bucket default</div>
+        </div>
+        <div class="dash-stats">
+          <span class="dash-stat">documents <b id="dsDocs">0</b></span>
+          <span class="dash-stat">chunks <b id="dsChunks">0</b></span>
+          <span class="dash-stat">entities <b id="dsEnt">0</b></span>
+          <span class="dash-stat">communities <b id="dsComm">0</b></span>
+        </div>
+      </div>
+      <div class="dash-cards">
+        <div class="dash-card">
+          <div class="dc-h"><b>documents</b><span class="dc-docs" id="dashDocN">0 documents</span></div>
+          <div id="dashDrop">drag files here or <b>browse</b><br>text, pdf, markdown, images</div>
+        </div>
+        <div class="dash-card" id="dashKGCard">
+          <div class="dc-h"><b>knowledge graph</b><span class="dc-docs" id="dashKGModel"></span></div>
+          <div class="dc-status" id="dashKGStatus"><span class="muted">no knowledge graph yet</span></div>
+          <button id="dashKGBtn" type="button">build knowledge graph</button>
+          <div class="dc-prog">
+            <div class="dc-bar"><i id="dashKGBar"></i></div>
+            <div class="dc-pt" id="dashKGProg">0/0</div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="tabs">
       <button data-tab="chat" class="active">chat</button>
       <button data-tab="docs">docs</button>
@@ -895,6 +1029,24 @@
     </div>
   </div>
 </main>
+<div id="dropOverlay">
+  <div class="do-box">drop files to add to <b id="dropBucket">default</b><div class="do-sub">text, pdf, markdown, and images</div></div>
+</div>
+<div id="buildDialog" class="cmdk-overlay">
+  <div class="bd-card">
+    <div class="bd-top">
+      <div class="bd-title" id="bdTitle">Build knowledge graph</div>
+      <div class="bd-desc" id="bdDesc"></div>
+    </div>
+    <div class="bd-opts">
+      <label class="bd-opt">chunks per model call
+        <select id="bdBatch"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+      <label class="bd-opt"><span>then cluster into communities<span class="bd-hint">groups the graph, no model call</span></span>
+        <input type="checkbox" id="bdComm"></label>
+    </div>
+    <div class="bd-actions" id="bdActions"></div>
+  </div>
+</div>
 <div id="toast"></div>
 <div id="cmdk" class="cmdk-overlay">
   <div class="cmdk">
@@ -1500,6 +1652,7 @@ async function loadStats(){
   // Offer the demo corpus only on an empty bucket, so a fresh install is not a
   // dead end but the prompt disappears once there is anything to explore.
   const dr=$("#demoRow");if(dr)dr.style.display=(s.chunks||0)===0?"flex":"none";
+  syncDash();
 }
 async function loadModels(){
   try{
@@ -1516,10 +1669,11 @@ async function loadModels(){
     if(!G.model||!m.models.includes(G.model))G.model=m.default&&m.models.includes(m.default)?m.default:m.models[0];
     sel.value=G.model;
     if(cmdkOpen())renderCmdk(cmdkInput.value); // keep the palette's model count and list live
+    syncDash();
   }catch(e){}
 }
 function syncEntModel(){const el=$("#cfgEntModel");if(el)el.textContent=G.model||"none"}
-$("#model").onchange=e=>{G.model=e.target.value;saveSettings();syncEntModel()};
+$("#model").onchange=e=>{G.model=e.target.value;saveSettings();syncEntModel();syncDash()};
 
 // ---------- model pulling ----------
 async function pullModel(name,onProg){
@@ -2620,6 +2774,7 @@ function toB64(buf){
 }
 function renderDocList(){
   const items=[...G.docs.entries()];
+  syncDash();
   if(!items.length){$("#doclist").innerHTML='<div class="empty" style="padding:14px 4px">no documents in this bucket yet</div>';return}
   $("#doclist").innerHTML=items.map(([n,d])=>
     '<div class="doc'+(d.fail?" fail":"")+'" title="'+esc(n)+' — click for version history"><span class="n">'+esc(n)+'</span>'+
@@ -3837,6 +3992,10 @@ function entProgress(list){
     $("#ebProg").textContent=p.done+"/"+p.total+(p.cached?" · "+p.cached+" cached":"");
     $("#ebCount").textContent=p.entities+" entities · "+p.relations+" links";
     $("#ebBarFill").style.setProperty("--p",p.total?p.done/p.total:0);
+    // Simple mode has no live canvas, so mirror progress onto the dashboard card.
+    const dbar=$("#dashKGBar"),dpt=$("#dashKGProg");
+    if(dbar)dbar.style.setProperty("--p",(p.total?Math.round(p.done/p.total*100):0)+"%");
+    if(dpt)dpt.textContent=p.done+"/"+p.total+" · "+p.entities+" entities";
     liveGraphAdd(p.new,p.edges);
     for(const e of (p.new||[])){
       const el=document.createElement("span");el.className="eb-ent";
@@ -3875,6 +4034,7 @@ async function runEntityBuild(stream){
   $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
   $("#ebBarFill").style.setProperty("--p",0);
   box.classList.add("open");
+  setBuilding(true);
   liveGraphReset();
   try{
     const res=await stream(entProgress(list));
@@ -3885,7 +4045,16 @@ async function runEntityBuild(stream){
     done.innerHTML='<span style="color:var(--danger)">extraction failed: '+esc(e.message)+'</span>';
   }finally{
     G.building=false;
+    setBuilding(false);
   }
+}
+// setBuilding reflects an in-flight build on the dashboard card and the power toolbar
+// button, so both entry points show progress and cannot be double-clicked.
+function setBuilding(on){
+  $("#dashKGCard")?.classList.toggle("building",on);
+  const pb=$("#buildGraphBtn");if(pb)pb.classList.toggle("busy",on);
+  if(on){const dbar=$("#dashKGBar");if(dbar)dbar.style.setProperty("--p","0%");
+    const dpt=$("#dashKGProg");if(dpt)dpt.textContent="starting…";}
 }
 async function runBuildEntities(refresh){
   return runEntityBuild(onProg=>buildEntities(onProg,refresh));
@@ -3982,6 +4151,117 @@ loadBuckets().then(()=>{loadDocuments();loadStats();loadGraph();checkEntityBuild
     const c=box.classList.toggle("collapsed");
     localStorage.setItem("tg.ebCollapsed",c?"1":"0");
     $("#ebToggle").title=c?"expand":"collapse";
+  });
+})();
+// ---------- layout modes: simple dashboard vs power workbench ----------
+// syncDash mirrors the corpus state onto the simple-mode dashboard (stat pills, the
+// document count, and the knowledge-graph card's status and build/rebuild label). It
+// reads the numbers the header already tracks, so there is one source of truth.
+function syncDash(){
+  const set=(id,v)=>{const e=$(id);if(e)e.textContent=v};
+  const docs=G.docs?G.docs.size:0;
+  const ch=($("#sChunks")||{}).textContent||"0";
+  const en=($("#sEnt")||{}).textContent||"0";
+  const co=($("#sComm")||{}).textContent||"0";
+  set("#dsDocs",docs);set("#dsChunks",ch);set("#dsEnt",en);set("#dsComm",co);
+  set("#dashDocN",docs+" document"+(docs===1?"":"s"));
+  set("#dashBucketSub","bucket "+(G.bucket||"default"));
+  set("#dropBucket",G.bucket||"default");
+  const nE=+en||0;
+  const st=$("#dashKGStatus");
+  if(st)st.innerHTML=nE>0
+    ? '<b>'+en+'</b> entities across <b>'+co+'</b> communit'+(+co===1?"y":"ies")
+    : '<span class="muted">no knowledge graph yet, build one from your documents</span>';
+  const kb=$("#dashKGBtn");if(kb){kb.textContent=nE>0?"rebuild knowledge graph":"build knowledge graph";kb.disabled=(+ch||0)===0}
+  set("#dashKGModel",G.model?("uses "+G.model):"select a model first");
+  const pb=$("#buildGraphBtn");if(pb){const t=pb.querySelector(".bg-t");if(t)t.textContent=nE>0?"rebuild":"build graph"}
+}
+// triggerBuild is the one action behind every "build knowledge graph" affordance (the
+// dashboard card and the graph toolbar). It honours the build options and optionally
+// clusters communities afterwards.
+// triggerBuild is the entry behind every build/rebuild affordance. It never starts a
+// build straight away: it opens a confirmation first, because extraction runs a model
+// over the whole corpus and is not something to fire by accident.
+function triggerBuild(){
+  if(G.building)return;
+  if(!G.model){toast("select a model (top right) first; extraction needs one",true);return}
+  openBuildDialog();
+}
+// openBuildDialog explains what the build will do and, when a graph already exists,
+// offers the cache choice: reuse it for a fast incremental rebuild, or ignore it and
+// re-read every chunk. A first build has no cache, so it is a single confirm.
+function openBuildDialog(){
+  const chunks=+(($("#sChunks")||{}).textContent)||0;
+  if(!chunks){toast("add some documents first",true);return}
+  const nE=+(($("#sEnt")||{}).textContent)||0, rebuild=nE>0, model=G.model||"the model";
+  $("#bdTitle").textContent=rebuild?"Rebuild knowledge graph":"Build knowledge graph";
+  $("#bdDesc").innerHTML=rebuild
+    ? 'This corpus already has a graph of <b>'+nE+'</b> entit'+(nE===1?"y":"ies")+'. Reuse the cached extraction to rebuild fast, re-reading only new or changed chunks, or re-extract every one of the <b>'+chunks+'</b> chunks with <b>'+esc(model)+'</b> to pick up a model or prompt change.'
+    : 'Runs <b>'+esc(model)+'</b> over <b>'+chunks+'</b> chunk'+(chunks===1?"":"s")+' to extract entities and relationships. This can take a while on a large corpus.';
+  $("#bdBatch").value=localStorage.getItem("tg.entBatch")||"2";
+  $("#bdComm").checked=!!G.buildComm;
+  const act=$("#bdActions");act.innerHTML="";
+  const mk=(label,cls,fn)=>{const b=document.createElement("button");b.type="button";b.className=cls;b.textContent=label;b.onclick=fn;return b};
+  act.appendChild(mk("cancel","bd-alt",closeBuildDialog));
+  if(rebuild){
+    act.appendChild(mk("re-extract all","bd-alt",()=>doBuild(true)));
+    const reuse=mk("reuse cache","bd-go",()=>doBuild(false));act.appendChild(reuse);
+    requestAnimationFrame(()=>reuse.focus());
+  }else{
+    const go=mk("build","bd-go",()=>doBuild(false));act.appendChild(go);
+    requestAnimationFrame(()=>go.focus());
+  }
+  $("#buildDialog").classList.add("open");
+}
+function closeBuildDialog(){$("#buildDialog").classList.remove("open")}
+async function doBuild(refresh){
+  closeBuildDialog();
+  const bb=$("#bdBatch");if(bb){localStorage.setItem("tg.entBatch",bb.value);const cb=$("#cfgEntBatch");if(cb)cb.value=bb.value}
+  G.buildComm=$("#bdComm").checked;
+  await runBuildEntities(refresh);
+  if(G.buildComm)await runBuildCommunities();
+}
+// setLayout switches shells and remembers the choice.
+function setLayout(m,focus){
+  G.layout=m;
+  document.body.classList.toggle("mode-simple",m==="simple");
+  document.body.classList.toggle("mode-power",m!=="simple");
+  document.querySelectorAll("#modeToggle button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
+  localStorage.setItem("tg.layout",m);
+  if(m==="simple"){showTab("chat");syncDash();if(focus){const i=$("#input");if(i)i.focus()}}
+  else{
+    // The graph may have loaded while hidden (canvas was zero-size), so its view never
+    // framed. Re-size and re-fit once it is visible again.
+    requestAnimationFrame(()=>{resize();if(G.nodes&&G.nodes.length)fit(null);dirty=true});
+  }
+}
+(function(){
+  document.querySelectorAll("#modeToggle button").forEach(b=>b.onclick=()=>setLayout(b.dataset.mode,true));
+  setLayout(localStorage.getItem("tg.layout")||"power");
+  const kb=$("#dashKGBtn");if(kb)kb.onclick=triggerBuild;
+  const dz=$("#dashDrop");if(dz)dz.onclick=()=>{const f=$("#file");if(f)f.click()};
+  const pb=$("#buildGraphBtn");if(pb)pb.onclick=triggerBuild;
+  // dismiss the build dialog on backdrop click or Escape
+  const bd=$("#buildDialog");
+  if(bd){
+    bd.addEventListener("click",e=>{if(e.target===bd)closeBuildDialog()});
+    document.addEventListener("keydown",e=>{if(e.key==="Escape"&&bd.classList.contains("open"))closeBuildDialog()});
+  }
+})();
+// Drag files anywhere onto the simple dashboard to ingest them; a full-view overlay
+// invites the drop, and ingest funnels through handleFiles, the same path the docs
+// panel uses. Simple mode only, so the power workbench keeps its own drop zone.
+(function(){
+  let depth=0;
+  const hasFiles=e=>{const t=e.dataTransfer&&e.dataTransfer.types;return t&&Array.prototype.indexOf.call(t,"Files")>=0};
+  const active=()=>G.layout==="simple";
+  window.addEventListener("dragenter",e=>{if(!active()||!hasFiles(e))return;depth++;document.body.classList.add("dragfiles")});
+  window.addEventListener("dragover",e=>{if(active()&&hasFiles(e))e.preventDefault()});
+  window.addEventListener("dragleave",e=>{if(!active()||!hasFiles(e))return;depth=Math.max(0,depth-1);if(!depth)document.body.classList.remove("dragfiles")});
+  window.addEventListener("drop",e=>{
+    if(!active()||!hasFiles(e))return;
+    e.preventDefault();depth=0;document.body.classList.remove("dragfiles");
+    if(e.dataTransfer.files&&e.dataTransfer.files.length)handleFiles(e.dataTransfer.files);
   });
 })();
 // Deep links: #pipeline / #free open the editor, #config opens settings.
