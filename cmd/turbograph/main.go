@@ -462,7 +462,7 @@ func cmdIngest(args []string) error {
 	} else {
 		store = rag.New(emb, rag.Config{
 			Bits: *bits, ResidualDims: *residual, GraphKNN: *knn,
-			MinSimilarity: float32(*minSim),
+			MinSimilarity:  float32(*minSim),
 			EmbedBatchSize: *batch,
 			Chunk:          rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
 		})
