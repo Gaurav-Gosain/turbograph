@@ -215,6 +215,7 @@ func cmdServe(args []string) error {
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk for new buckets")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy for new buckets: recursive, word, markdown, or sentence")
+	embedBatch := fs.Int("embed-batch", 64, "embedding request batch size: max chunks sent to the embedder per call (1 = one chunk per call; applies to a freshly built store, a resumed store keeps its saved setting)")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for the input path (default: pdftotext if present)")
 	ocrCmd := fs.String("ocr-cmd", "", "extraction command for scanned PDFs/images via OCR, e.g. a PaddleOCR PP-OCRv6 wrapper")
 	s3Bucket := fs.String("s3-bucket", "", "store buckets in an S3-compatible bucket instead of --data")
@@ -262,7 +263,7 @@ func cmdServe(args []string) error {
 	embedder := buildEmbedder(rc.EmbedEndpoint(), rc.EmbedModel, rc.EmbedDim)
 	backend := buildBackend(rc.GenEndpoint())
 
-	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, Chunk: rag.ChunkConfig{
+	cfg := rag.Config{Bits: *bits, GraphKNN: *knn, EmbedBatchSize: *embedBatch, Chunk: rag.ChunkConfig{
 		Strategy: rc.ChunkStrategy, TargetWords: rc.ChunkWords, OverlapWords: rc.ChunkOverlap,
 	}}
 	var mgr *rag.Manager
@@ -383,40 +384,6 @@ func uiURL(a string) string {
 	return a
 }
 
-// batchingEmbedder splits large embed requests into bounded batches so a big
-// corpus does not become one oversized request.
-type batchingEmbedder struct {
-	inner rag.Embedder // an ollama.Client or oai.Client
-	batch int
-}
-
-func (b *batchingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	return b.batched(ctx, texts, b.inner.Embed)
-}
-
-// EmbedQuery forwards to the inner query path (when the embedder distinguishes
-// queries) so a store created or queried through this wrapper keeps asymmetric
-// embedding.
-func (b *batchingEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
-	if qe, ok := b.inner.(rag.QueryEmbedder); ok {
-		return b.batched(ctx, texts, qe.EmbedQuery)
-	}
-	return b.batched(ctx, texts, b.inner.Embed)
-}
-
-func (b *batchingEmbedder) batched(ctx context.Context, texts []string, embed func(context.Context, []string) ([][]float32, error)) ([][]float32, error) {
-	out := make([][]float32, 0, len(texts))
-	for i := 0; i < len(texts); i += b.batch {
-		end := min(i+b.batch, len(texts))
-		vecs, err := embed(ctx, texts[i:end])
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, vecs...)
-	}
-	return out, nil
-}
-
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	src := fs.String("src", "", "source file or directory to ingest")
@@ -434,7 +401,7 @@ func cmdIngest(args []string) error {
 	overlap := fs.Int("chunk-overlap", 24, "chunk overlap in words")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy: recursive, word, markdown, or sentence")
 	minSim := fs.Float64("min-sim", 0.5, "minimum cosine similarity for a graph edge")
-	batch := fs.Int("batch", 64, "embedding request batch size per document")
+	batch := fs.Int("batch", 64, "embedding request batch size: max chunks sent to the backend per call (1 = one chunk per call; applies to a freshly built store, a resumed store keeps its saved setting)")
 	workers := fs.Int("workers", 0, "documents embedded concurrently (0 = number of CPUs)")
 	checkpoint := fs.Int("checkpoint", 200, "save the store every N documents for crash recovery (0 = only at end)")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for input path")
@@ -458,7 +425,7 @@ func cmdIngest(args []string) error {
 		embedBase = *embedURL
 	}
 	embedder := buildEmbedder(cliEndpoint(*embedAPI, embedBase, *embedKey), *embedModel, *embedDim)
-	emb := &batchingEmbedder{inner: embedder, batch: *batch}
+	emb := embedder
 
 	// Cancel on the first interrupt so ingestion stops cleanly after checkpointing.
 	// A second interrupt aborts immediately.
@@ -496,7 +463,8 @@ func cmdIngest(args []string) error {
 		store = rag.New(emb, rag.Config{
 			Bits: *bits, ResidualDims: *residual, GraphKNN: *knn,
 			MinSimilarity: float32(*minSim),
-			Chunk:         rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
+			EmbedBatchSize: *batch,
+			Chunk:          rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
 		})
 	}
 

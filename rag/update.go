@@ -69,7 +69,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 		}
 	}
 	if len(missText) > 0 {
-		embedded, err := s.embedder.Embed(ctx, missText)
+		embedded, err := s.embedBatched(ctx, missText)
 		if err != nil {
 			return prepared{}, err
 		}

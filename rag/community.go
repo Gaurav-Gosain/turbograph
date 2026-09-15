@@ -213,7 +213,7 @@ func (s *Store) RelevantCommunities(ctx context.Context, query string, k int) ([
 	if err != nil {
 		return nil, err
 	}
-	sv, err := s.embedder.Embed(ctx, texts)
+	sv, err := s.embedBatched(ctx, texts)
 	if err != nil {
 		return nil, err
 	}

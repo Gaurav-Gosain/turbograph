@@ -268,7 +268,7 @@ func (s *Store) loadVectors(snap *snapshot) ([][]float32, error) {
 		for i, c := range snap.Chunks {
 			texts[i] = c.IndexText()
 		}
-		out, err := s.embedder.Embed(context.Background(), texts)
+		out, err := s.embedBatched(context.Background(), texts)
 		if err != nil {
 			return nil, fmt.Errorf("rag: recompute embeddings on load: %w", err)
 		}

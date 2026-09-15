@@ -71,6 +71,10 @@ func TestConfigPostPersistsAndApplies(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
+	// The manager's new-bucket config carries a non-default embed batch (as a
+	// --embed-batch 16 server would); the hot swap must not reset it.
+	s.mgr.SetConfig(rag.Config{Chunk: rag.DefaultChunkConfig(), EmbedBatchSize: 16})
+
 	body := `{"gen_api":"ollama","gen_model":"m2","embed_model":"e2","chunk_strategy":"markdown","chunk_words":200}`
 	resp, err := http.Post(ts.URL+"/api/config", "application/json", bytes.NewBufferString(body))
 	if err != nil {
@@ -82,6 +86,9 @@ func TestConfigPostPersistsAndApplies(t *testing.T) {
 	// Applied live: the manager's new-bucket chunking changed.
 	if got := s.mgr.Config().Chunk.Strategy; got != "markdown" {
 		t.Errorf("chunk strategy not applied to manager: %q", got)
+	}
+	if got := s.mgr.Config().EmbedBatchSize; got != 16 {
+		t.Errorf("EmbedBatchSize not preserved by config swap: %d", got)
 	}
 	if s.genModel != "m2" {
 		t.Errorf("gen model not applied: %q", s.genModel)

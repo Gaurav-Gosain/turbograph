@@ -78,6 +78,12 @@ type Config struct {
 	// again to ingest further documents with a custom chunker.
 	Chunker Chunker
 
+	// EmbedBatchSize bounds the number of texts sent to the embedder in a single
+	// call, so a large document or corpus never becomes one oversized request
+	// (some backends' tokenizers choke on it). 1 embeds each text in its own
+	// call; 0 picks the default (64).
+	EmbedBatchSize int
+
 	// Quantization.
 	Bits         int
 	ResidualDims int
@@ -101,6 +107,9 @@ type Config struct {
 func (c *Config) withDefaults() {
 	if c.Bits == 0 {
 		c.Bits = 4
+	}
+	if c.EmbedBatchSize == 0 {
+		c.EmbedBatchSize = 64
 	}
 	if c.ResidualDims == 0 {
 		c.ResidualDims = 32
@@ -279,7 +288,7 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	for i, c := range chunks {
 		texts[i] = c.IndexText()
 	}
-	vecs, err := s.embedder.Embed(ctx, texts)
+	vecs, err := s.embedBatched(ctx, texts)
 	if err != nil {
 		return err
 	}

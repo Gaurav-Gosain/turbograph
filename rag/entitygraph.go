@@ -372,7 +372,7 @@ func (s *Store) embedEntities(ctx context.Context) {
 	if len(texts) == 0 {
 		return
 	}
-	vecs, err := s.embedder.Embed(ctx, texts)
+	vecs, err := s.embedBatched(ctx, texts)
 	if err != nil || len(vecs) != len(texts) {
 		return
 	}
@@ -743,7 +743,7 @@ func (s *Store) ensureFactIndex(ctx context.Context) {
 	if len(texts) == 0 {
 		return
 	}
-	vecs, err := s.embedder.Embed(ctx, texts)
+	vecs, err := s.embedBatched(ctx, texts)
 	if err != nil || len(vecs) != len(texts) {
 		return
 	}
