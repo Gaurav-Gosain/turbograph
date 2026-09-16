@@ -88,6 +88,13 @@ Returns `{ "results": [ QueryResult ] }`, where each `QueryResult` is:
 `start`/`end` are rune offsets of the chunk in its document; `kind`/`image_ref`
 are present only for image chunks.
 
+`meta_filter` is an array of `"key=value"` pairs, ANDed, that restrict retrieval
+to chunks whose document metadata matches; a pair without `=` or with an empty
+key is rejected with `400`:
+```json
+{ "query": "a query", "top_k": 6, "meta_filter": ["author=ada", "repo=core"] }
+```
+
 ### `POST /api/chat`  (SSE)
 Retrieve and stream a grounded answer.
 ```json
@@ -159,7 +166,10 @@ Remove a document, its chunks, metadata, and history. Returns
 
 - `GET /api/buckets`, `POST /api/buckets`, `DELETE /api/buckets` manage corpora.
 - `GET /api/config` and `POST /api/config` read and update runtime configuration
-  (backends, chunking, S3); secrets are write-only.
+  (backends, chunking, stemming, S3); secrets are write-only. `stem` and non-empty
+  `stem_langs` (registered languages; an empty list selects all) re-tokenize the
+  live buckets' lexical indexes, so indexing and querying never drift, and
+  `GET` includes `languages` so the UI can offer only what the server registered.
 - `GET /api/models` lists available models and embedding readiness;
   `POST /api/pull?model=<m>` (SSE) pulls an Ollama model.
 - `POST /api/save` persists the bucket to disk.

@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+
+	"github.com/Gaurav-Gosain/turbograph/stemmer"
 )
 
 // Result is a scored document, returned ranked best-first by Search and RRF.
@@ -22,11 +24,16 @@ type Config struct {
 	// B controls document-length normalization, in [0,1]. At 1 the penalty for
 	// long documents is full; at 0 length is ignored.
 	B float64
-	// Stem enables morphological stemming (English Porter + Russian Snowball)
-	// and Russian stopword filtering in the tokenizer. The zero value (false)
-	// keeps the classic tokenization, so indexes built with and without it are
-	// different; pick one per corpus and stick to it.
+	// Stem enables morphological stemming and language stopword filtering in the
+	// tokenizer. The zero value (false) keeps the classic tokenization, so
+	// indexes built with and without it are different; pick one per corpus and
+	// stick to it.
 	Stem bool
+	// StemLangs names the languages whose stemmers are active when Stem is on:
+	// for example {"en"} stems only English, {"en","ru"} both. An empty list
+	// selects every registered language (auto by writing system). Names are not
+	// per-document choices — index and query must agree, exactly like Stem.
+	StemLangs []string
 }
 
 // DefaultConfig returns the canonical Okapi BM25 parameters.
@@ -47,6 +54,11 @@ type posting struct {
 // with itself or with Search.
 type Index struct {
 	cfg Config
+
+	// stemToken stems a lowercase word-like token when stemming is on, nil when
+	// off. It is compiled once in New from cfg.Stem + cfg.StemLangs, so every
+	// Add/Search tokenizes identically without re-resolving the registry.
+	stemToken func(string) string
 
 	ids      []string // ordinal -> document ID
 	docLen   []uint32 // ordinal -> token count
@@ -77,10 +89,22 @@ func New(cfg Config) *Index {
 	} else if cfg.B > 1 {
 		cfg.B = 1
 	}
+	var stemToken func(string) string
+	if cfg.Stem {
+		if f, err := stemmer.Select(cfg.StemLangs); err == nil {
+			stemToken = f
+		} else {
+			// Unknown language names are caught and rejected up the stack (the
+			// store's SetStem, CLI arg validation); treat them here as "all
+			// languages" rather than silently disabling stemming.
+			stemToken = stemmer.StemToken
+		}
+	}
 	return &Index{
-		cfg:      cfg,
-		postings: make(map[string][]posting),
-		idf:      make(map[string]float64),
+		cfg:       cfg,
+		stemToken: stemToken,
+		postings:  make(map[string][]posting),
+		idf:       make(map[string]float64),
 		tfPool: sync.Pool{
 			New: func() any {
 				return make(map[string]uint32)
@@ -99,7 +123,7 @@ func (ix *Index) Add(id, text string) {
 	ord := uint32(len(ix.ids))
 	ix.ids = append(ix.ids, id)
 
-	toks := tokenize(text, ix.cfg.Stem)
+	toks := tokenize(text, ix.stemToken)
 	ix.docLen = append(ix.docLen, uint32(len(toks)))
 	ix.totalLen += uint64(len(toks))
 
@@ -180,7 +204,7 @@ func (ix *Index) SearchFiltered(query string, k int, accept func(id string) bool
 		ix.finalize()
 	}
 
-	qterms := tokenize(query, ix.cfg.Stem)
+	qterms := tokenize(query, ix.stemToken)
 	if len(qterms) == 0 {
 		return nil
 	}
@@ -366,7 +390,7 @@ func (ix *Index) AddBatch(ids, texts []string) {
 				tf := ix.tfPool.Get().(map[string]uint32)
 				clear(tf)
 				total := 0
-				tokenizeFunc(texts[i], ix.cfg.Stem, func(tok string) {
+				tokenizeFunc(texts[i], ix.stemToken, func(tok string) {
 					tf[tok]++
 					total++
 				})

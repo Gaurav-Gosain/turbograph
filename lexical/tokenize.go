@@ -27,9 +27,10 @@ var stopwords = map[string]struct{}{
 // tokenize lowercases text, splits on any non-alphanumeric rune, and drops
 // short tokens and stopwords. It is deterministic and allocation-conscious: the
 // result slice is preallocated from a rune-count heuristic.
-// tokenizeFunc calls fn once per token, allocating nothing. When stem is true,
-// tokens are routed through the stemmer package (morphological stemming plus
-// language stopwords), so inflected forms collapse into one posting list.
+// tokenizeFunc calls fn once per token, allocating nothing. A non-nil `stem`
+// filter routes word-like tokens through the stemmer package (morphological
+// stemming plus language stopwords), so inflected forms collapse into one
+// posting list; nil keeps the classic exact-token behavior.
 //
 // The slice-returning tokenizer builds two []string per document: one from FieldsFunc
 // holding every field including the stopwords it is about to discard, and one for the
@@ -37,7 +38,7 @@ var stopwords = map[string]struct{}{
 // as they are made, and at 100,000 chunks they were gigabytes of it and the single
 // largest CPU cost of opening a store. The tokens are substrings of the input, so the
 // scan itself allocates nothing at all.
-func tokenizeFunc(text string, stem bool, fn func(tok string)) {
+func tokenizeFunc(text string, stem func(string) string, fn func(tok string)) {
 	start := -1
 	for i, r := range text {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -57,11 +58,11 @@ func tokenizeFunc(text string, stem bool, fn func(tok string)) {
 }
 
 // emitToken applies the same filters the slice tokenizer applies: fold case, drop the
-// too-short, drop the English stopwords. With stem enabled it additionally drops the
-// language stopwords and stems every "word-like" token through stemmer.StemToken;
-// exact tokens (containing digits, or look like code or an acronym) are kept verbatim
-// so identifiers keep matching identifiers.
-func emitToken(field string, stem bool, fn func(tok string)) {
+// too-short, drop the English stopwords. With a stem filter it additionally drops the
+// language stopwords and stems every "word-like" token; exact tokens (containing
+// digits, or look like code or an acronym) are kept verbatim so identifiers keep
+// matching identifiers.
+func emitToken(field string, stem func(string) string, fn func(tok string)) {
 	tok := strings.ToLower(field) // returns field unchanged when it is already lower ASCII
 	if len(tok) < minTokenLen {
 		return
@@ -69,8 +70,8 @@ func emitToken(field string, stem bool, fn func(tok string)) {
 	if _, stop := stopwords[tok]; stop {
 		return
 	}
-	if stem && !isExactToken(field) {
-		tok = stemmer.StemToken(tok)
+	if stem != nil && !isExactToken(field) {
+		tok = stem(tok)
 		if tok == "" {
 			return
 		}
@@ -98,7 +99,7 @@ func isExactToken(field string) bool {
 	return letters >= 3 && upper == letters && !stemmer.HasCyrillic(field)
 }
 
-func tokenize(text string, stem bool) []string {
+func tokenize(text string, stem func(string) string) []string {
 	if text == "" {
 		return nil
 	}

@@ -120,6 +120,7 @@ func cmdMCP(args []string) error {
 		MMR        *float64 `json:"mmr"`
 		MinSim     *float64 `json:"min_sim"`
 		Rerank     *bool    `json:"rerank"`
+		MetaFilter []string `json:"meta_filter"`
 	}
 	f64 := func(p *float64, def float64) float32 {
 		if p != nil {
@@ -147,12 +148,17 @@ func cmdMCP(args []string) error {
 				candK = 20
 			}
 		}
+		metaFilter, mfErr := rag.CompileMetaFilter(a.MetaFilter)
+		if mfErr != nil {
+			return nil, mfErr
+		}
 		res, err := getStore().Retrieve(ctx, a.Query, rag.RetrieveParams{
 			TopK:       candK,
 			GraphMix:   f64(a.GraphMix, *graphMix),
 			EntityMix:  f64(a.EntityMix, *entityMix),
 			EntityLink: link,
 			MMRLambda:  f64(a.MMR, *mmr),
+			MetaFilter: metaFilter,
 		})
 		if err != nil {
 			return nil, err
@@ -179,7 +185,8 @@ func cmdMCP(args []string) error {
     "entity_link": {"type": "string", "enum": ["fact", "node"], "description": "how the query links to the entity graph: fact (default, seed from matched relationships) or node (seed from matched entity names)"},
     "mmr": {"type": "number", "description": "MMR diversity in (0,1); 0 is off. Trades some relevance for less redundant results"},
     "min_sim": {"type": "number", "description": "grounding floor: return nothing when the best hit's cosine is below this, rather than surfacing weak matches"},
-    "rerank": {"type": "boolean", "description": "re-score the candidates with the model for sharper ordering, at one extra model call"}
+    "rerank": {"type": "boolean", "description": "re-score the candidates with the model for sharper ordering, at one extra model call"},
+    "meta_filter": {"type": "array", "items": {"type": "string"}, "description": "document metadata predicates \"key=value\", AND-composed; only chunks whose whole document matches are returned"}
   },
   "required": ["query"]
 }`)

@@ -30,6 +30,9 @@ type Communities struct {
 // NumCommunities returns the number of distinct communities.
 func (c *Communities) NumCommunities() int { return c.num }
 
+// NodeCount returns the number of nodes the partition covers.
+func (c *Communities) NodeCount() int { return len(c.labels) }
+
 // Label returns the community id of a node, or -1 if the node is out of range.
 func (c *Communities) Label(node int) int {
 	if node < 0 || node >= len(c.labels) {
@@ -164,6 +167,132 @@ func compact(labels []int) *Communities {
 			members = append(members, nil)
 		}
 		out[node] = c
+		members[c] = append(members[c], node)
+	}
+	return &Communities{labels: out, members: members, num: len(members)}
+}
+
+// UpdateCommunities extends a previous partition to a graph that has only grown
+// by appends. Existing assignments and community ids are kept stable: only the
+// region touched by the new nodes re-runs label propagation, so a community's
+// identity — its id and its member set — survives a batch of adds. In the RAG
+// pipeline this is what keeps per-community summaries attached to the same
+// community across incremental indexing instead of the whole partition being
+// reshuffled on every ingest.
+//
+// prev must be a partition of the graph induced by the first NodeCount(prev)
+// nodes of g; anything else (shrunk or reordered graphs) is not incremental and
+// the caller should recompute with DetectCommunities, which also remains the
+// correct entry point for a from-scratch build.
+//
+// The run is a pure function of (prev, g, opts): nodes are visited in ascending
+// order, the affected region starts at the appended nodes and ripples to their
+// neighbors whenever a label changes, and ties are broken toward the smallest
+// label exactly like DetectCommunities. Repeat calls with the same inputs are
+// bit-for-bit identical.
+func UpdateCommunities(prev *Communities, g *Graph, opts CommunityOpts) *Communities {
+	if opts.MaxIter <= 0 {
+		opts.MaxIter = 20
+	}
+	from := prev.NodeCount()
+	n := g.N()
+	if from < 0 || from > n {
+		return nil
+	}
+
+	// Seed the previous labels verbatim and give each appended node its own
+	// singleton label, exactly as DetectCommunities would on a fresh run.
+	labels := make([]int, n)
+	copy(labels, prev.labels)
+	for i := from; i < n; i++ {
+		labels[i] = i
+	}
+
+	// The frontier carries the nodes whose label is not yet settled. It starts
+	// with the new nodes; a node that changes joins its neighbors to the next
+	// sweep, so propagation stops at the boundary of the affected region.
+	inFrontier := make([]bool, n)
+	nextFrontier := make([]bool, n)
+	for i := from; i < n; i++ {
+		inFrontier[i] = true
+	}
+
+	weightByLabel := make(map[int]float32)
+	for iter := 0; iter < opts.MaxIter; iter++ {
+		changed := false
+		for i := range nextFrontier {
+			nextFrontier[i] = false
+		}
+
+		for node := 0; node < n; node++ {
+			if !inFrontier[node] {
+				continue
+			}
+			if g.Degree(node) == 0 {
+				// Isolated nodes adopt no label and keep climbing their own
+				// singleton, mirroring DetectCommunities.
+				continue
+			}
+
+			for k := range weightByLabel {
+				delete(weightByLabel, k)
+			}
+			g.Neighbors(node, func(j int, w float32) {
+				weightByLabel[labels[j]] += w
+			})
+
+			best := labels[node]
+			var bestW float32 = -1
+			for lab, w := range weightByLabel {
+				if w > bestW || (w == bestW && lab < best) {
+					best = lab
+					bestW = w
+				}
+			}
+
+			if best != labels[node] {
+				labels[node] = best
+				changed = true
+				g.Neighbors(node, func(j int, _ float32) {
+					nextFrontier[j] = true
+				})
+			}
+		}
+
+		if !changed {
+			break
+		}
+		inFrontier, nextFrontier = nextFrontier, inFrontier
+	}
+
+	return compactPreserving(labels, prev.NumCommunities())
+}
+
+// compactPreserving renumbers arbitrary labels into the dense range [0, C) like
+// compact, except that the first `preserved` community ids are kept as-is even
+// when they end up empty. Communities that appear only among the appended nodes
+// receive fresh ids after the preserved range, assigned in ascending node order
+// for determinism.
+func compactPreserving(labels []int, preserved int) *Communities {
+	out := make([]int, len(labels))
+	remap := make(map[int]int)
+	members := make([][]int, preserved)
+	nextID := preserved
+	for node, lab := range labels {
+		c, ok := remap[lab]
+		if !ok {
+			if lab < preserved {
+				c = lab
+			} else {
+				c = nextID
+				nextID++
+			}
+			remap[lab] = c
+		}
+		out[node] = c
+		for len(members) <= c {
+			members = append(members, nil)
+		}
 		members[c] = append(members[c], node)
 	}
 	return &Communities{labels: out, members: members, num: len(members)}

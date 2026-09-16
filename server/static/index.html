@@ -628,6 +628,8 @@
     border-bottom:1px dashed var(--border);margin-bottom:10px;text-align:center}
 
   .cfg-status{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px}
+  .cfg-stemlangs{display:flex;flex-wrap:wrap;gap:6px}
+  .cfg-stemlang{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:2px 8px;cursor:pointer;user-select:none}
   .cfg-status .k{color:var(--faint)} .cfg-status .v{color:var(--text)}
   .cfg-status .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
   .cfg-status .dot.up{background:#9ece6a} .cfg-status .dot.down{background:var(--danger)}
@@ -1262,6 +1264,18 @@
         <div class="cfg-row"><label>strategy</label><select id="cfgChunk"></select></div>
         <div class="cfg-row"><label>target words</label><input id="cfgChunkWords" type="number" placeholder="120"></div>
         <div class="cfg-row"><label>overlap words</label><input id="cfgChunkOverlap" type="number" placeholder="24"></div>
+      </div>
+      <div class="cfg-sec">
+        <h4>lexical search <span class="cfg-tag">applies live</span></h4>
+        <small>morphological stemming for the BM25 keyword index. every bucket re-tokenizes in the
+          background when you change this; pick the languages of your corpus, or none for all registered.</small>
+        <div class="cfg-row"><label>stem</label>
+          <select id="cfgStem">
+            <option value="false">off &middot; exact keywords only</option>
+            <option value="true">on &middot; inflections fold to roots</option>
+          </select>
+        </div>
+        <div class="cfg-row"><label>languages</label><div id="cfgStemLangs" class="cfg-stemlangs"></div></div>
       </div>
       <div class="cfg-sec">
         <h4>entity extraction <span class="cfg-tag">knowledge graph</span></h4>
@@ -2410,6 +2424,15 @@ async function openConfig(){
     $("#cfgEmbUrl").value=c.embed_url||"";$("#cfgEmbModel").value=c.embed_model||"";
     $("#cfgEmbDim").value=c.embed_dim||"";$("#cfgEmbKey").value="";$("#cfgEmbKey").placeholder=c.embed_key_set?"set · leave blank to keep":"leave blank for none";
     sel.value=c.chunk_strategy||"recursive";$("#cfgChunkWords").value=c.chunk_words||"";$("#cfgChunkOverlap").value=c.chunk_overlap||"";
+    // stemming: toggle plus a language picker from what the server registered
+    $("#cfgStem").value=c.stem?"true":"false";
+    const langsEl=$("#cfgStemLangs");langsEl.innerHTML="";
+    const chosen=c.stem_langs||[];
+    (c.languages||[]).forEach(l=>{
+      const lab=document.createElement("label");lab.className="cfg-stemlang";
+      const cb=document.createElement("input");cb.type="checkbox";cb.value=l;cb.checked=chosen.includes(l);
+      lab.appendChild(cb);lab.appendChild(document.createTextNode(" "+l));langsEl.appendChild(lab);
+    });
     $("#cfgS3Endpoint").value=c.s3_endpoint||"";$("#cfgS3Bucket").value=c.s3_bucket||"";$("#cfgS3Region").value=c.s3_region||"";$("#cfgS3Prefix").value=c.s3_prefix||"";
     renderProvs();cfgToggleOA();renderPipeline();syncEntModel();cfgEl.classList.add("open");renderStatus();
   }catch(e){toast("could not load config: "+e.message,true)}
@@ -2492,6 +2515,8 @@ $("#cfgSave").onclick=async()=>{
     gen_api:$("#cfgGenApi").value,gen_url:$("#cfgGenUrl").value.trim(),gen_model:$("#cfgGenModel").value.trim(),
     embed_api:$("#cfgEmbApi").value,embed_url:$("#cfgEmbUrl").value.trim(),embed_model:$("#cfgEmbModel").value.trim(),embed_dim:num($("#cfgEmbDim").value),
     chunk_strategy:$("#cfgChunk").value,chunk_words:num($("#cfgChunkWords").value),chunk_overlap:num($("#cfgChunkOverlap").value),
+    stem:$("#cfgStem").value==="true",
+    stem_langs:[...$$("#cfgStemLangs input:checked")].map(i=>i.value),
     s3_endpoint:$("#cfgS3Endpoint").value.trim(),s3_bucket:$("#cfgS3Bucket").value.trim(),s3_region:$("#cfgS3Region").value.trim(),s3_prefix:$("#cfgS3Prefix").value.trim(),
   };
   if($("#cfgGenKey").value)body.gen_key=$("#cfgGenKey").value;

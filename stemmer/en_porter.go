@@ -6,7 +6,7 @@ package stemmer
 // увидит.
 type porterStemmer struct{}
 
-func init() { Register(porterStemmer{}) }
+func init() { Register("en", porterStemmer{}) }
 
 // Claims сообщает, что токен написан чистыми строчными латинскими буквами.
 func (porterStemmer) Claims(token string) bool {

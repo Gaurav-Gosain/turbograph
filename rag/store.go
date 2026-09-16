@@ -126,11 +126,16 @@ type Config struct {
 	// default) preserves old behavior (GOMAXPROCS).
 	IngestWorkers int
 	// LexicalStem enables morphological stemming (English Porter + Russian
-	// Snowball) and Russian stopword filtering in the BM25 index. 0 (the
+	// Snowball) and per-language stopword filtering in the BM25 index. 0 (the
 	// default) preserves old behavior (no stemming). The flag must be set
 	// consistently for a corpus: index and query tokens are stemmed by the same
 	// flag, and reloaded stores rebuild the lexical index from the current flag.
 	LexicalStem bool
+	// LexicalStemLangs names the languages whose stemmers are active when
+	// LexicalStem is on: {"en"} stems only English, {"en","ru"} both. An empty
+	// list selects every registered language (auto by writing system). Unknown
+	// names are rejected by Store.SetStem and the CLI/server validation.
+	LexicalStemLangs []string
 }
 
 func (c *Config) withDefaults() {
@@ -596,11 +601,12 @@ func (s *Store) initIndexes() {
 }
 
 // lexicalConfig returns the BM25 config for the store, carrying the stem knob
-// through. Every rebuild of the lexical index uses it, so index and query
-// always agree on tokenization.
+// and its language selection through. Every rebuild of the lexical index uses
+// it, so index and query always agree on tokenization.
 func (s *Store) lexicalConfig() lexical.Config {
 	c := lexical.DefaultConfig()
 	c.Stem = s.cfg.LexicalStem
+	c.StemLangs = s.cfg.LexicalStemLangs
 	return c
 }
 
@@ -780,13 +786,14 @@ func (s *Store) reindexLocked() {
 	}
 	if s.indexedUpTo >= len(s.chunks) {
 		if s.g == nil || s.indexedUpTo == 0 {
-			s.rebuildGraph()
+			s.rebuildGraph(0)
 		}
 		return
 	}
 	s.discoverEdges(s.indexedUpTo)
+	from := s.indexedUpTo
 	s.indexedUpTo = len(s.chunks)
-	s.rebuildGraph()
+	s.rebuildGraph(from)
 }
 
 // discoverEdges finds similarity neighbors for every chunk from ordinal `from`
@@ -840,7 +847,13 @@ func (s *Store) discoverEdges(from int) {
 
 // rebuildGraph reconstructs the CSR graph and community structure from the
 // recorded edges plus structural document-order edges.
-func (s *Store) rebuildGraph() {
+//
+// `from` is the number of nodes that existed before the current batch (0 for a
+// from-scratch build). When a partition for exactly those nodes is still around,
+// communities are extended incrementally so their ids and summaries survive the
+// append instead of the whole partition being recomputed; otherwise — a first
+// build, a delete/reorder, or a deferred graph — detection starts fresh.
+func (s *Store) rebuildGraph(from int) {
 	n := len(s.chunks)
 	b := graph.NewBuilder(n)
 	for _, e := range s.edges {
@@ -852,7 +865,14 @@ func (s *Store) rebuildGraph() {
 		}
 	}
 	s.g = b.Build()
-	s.comm = graph.DetectCommunities(s.g, graph.CommunityOpts{Seed: s.cfg.Seed})
+	opts := graph.CommunityOpts{Seed: s.cfg.Seed}
+	if from > 0 && s.comm != nil && s.comm.NodeCount() == from {
+		if next := graph.UpdateCommunities(s.comm, s.g, opts); next != nil {
+			s.comm = next
+			return
+		}
+	}
+	s.comm = graph.DetectCommunities(s.g, opts)
 }
 
 // DefaultLexicalWeight is the BM25 weight used when RetrieveParams.LexicalWeight
@@ -903,8 +923,13 @@ type RetrieveParams struct {
 	// (Rocchio beta). The original query is always kept at full weight so feedback
 	// refines rather than replaces it. Defaults to 0.5 when PRF is set.
 	PRFWeight float32
-	Filter    func(Chunk) bool // optional metadata filter
-	PPR       graph.PPRParams
+	Filter    func(Chunk) bool // optional chunk-level filter
+	// MetaFilter, when non-nil, additionally rejects chunks whose source
+	// document does not satisfy the predicate. It receives the document's raw
+	// JSON metadata (nil when the document has none). Unlike Filter it is
+	// evaluated per document, so a chunk is dropped when its document fails.
+	MetaFilter func(meta json.RawMessage) bool // optional document metadata filter
+	PPR        graph.PPRParams
 	// EarlyExit, when > 0 and the store's EarlyExitThreshold is also > 0, lets a
 	// query whose dense top hit is already at or above the threshold AND agrees with
 	// the BM25 top hit skip the expensive graph/entity stages. It is OFF by default
@@ -1011,7 +1036,19 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	// lexical match lift a chunk. It is independent of the graph, so lexical
 	// matching contributes even with the graph off. seeds (RRF) is used only to
 	// seed PageRank; sim is also the Similarity field and abstention signal.
-	seeds, sim, bm25 := s.seedScores(query, qv[0], p.SeedK, p.Filter)
+	// The metadata filter, when set, is folded into the same candidate predicate
+	// so both filters apply at seed gathering and at final scoring.
+	accept := p.Filter
+	if p.MetaFilter != nil {
+		base := accept
+		accept = func(c Chunk) bool {
+			if base != nil && !base(c) {
+				return false
+			}
+			return p.MetaFilter(s.docMeta[c.DocID])
+		}
+	}
+	seeds, sim, bm25 := s.seedScores(query, qv[0], p.SeedK, accept)
 	// Lexical fusion is on by default when the store indexes BM25: an unset (zero)
 	// LexicalWeight uses DefaultLexicalWeight, a modest value that helps keyword and
 	// entity-heavy corpora and is near-neutral where dense already dominates. A
@@ -1141,6 +1178,9 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 			if p.Filter != nil && !p.Filter(s.chunks[ord]) {
 				continue
 			}
+			if p.MetaFilter != nil && !p.MetaFilter(s.docMeta[s.chunks[ord].DocID]) {
+				continue
+			}
 			if v := rel(ord); v > 0 {
 				scored = append(scored, sc{ord, v})
 			}
@@ -1151,6 +1191,9 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		scored = make([]sc, 0, len(s.chunks))
 		for i := range s.chunks {
 			if p.Filter != nil && !p.Filter(s.chunks[i]) {
+				continue
+			}
+			if p.MetaFilter != nil && !p.MetaFilter(s.docMeta[s.chunks[i].DocID]) {
 				continue
 			}
 			var g float32

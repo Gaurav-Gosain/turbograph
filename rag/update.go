@@ -3,8 +3,10 @@ package rag
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/Gaurav-Gosain/turbograph/lexical"
+	"github.com/Gaurav-Gosain/turbograph/stemmer"
 )
 
 // prepared is a document that has been chunked and embedded off the write lock,
@@ -202,6 +204,28 @@ func (s *Store) rebuildLexicalLocked() {
 	// per-document and independent, so it runs across all cores.
 	s.bm25.AddBatch(ids, texts)
 	s.bm25.Finalize()
+}
+
+// SetStem switches the BM25 stemmer live and re-tokenizes the whole corpus, so
+// retrieval after the call reflects the new tokenization immediately. langs
+// names the active stemmers (empty = all registered, the classic auto-by-script
+// behavior); unknown names are rejected and the store is left untouched. Index
+// and query always agree: both are rebuilt together.
+func (s *Store) SetStem(stem bool, langs []string) error {
+	if _, err := stemmer.Select(langs); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.LexicalStem == stem && reflect.DeepEqual(s.cfg.LexicalStemLangs, langs) {
+		return nil
+	}
+	s.cfg.LexicalStem = stem
+	s.cfg.LexicalStemLangs = append([]string(nil), langs...)
+	if s.bm25 != nil {
+		s.rebuildLexicalLocked()
+	}
+	return nil
 }
 
 // applyPreparedLocked installs a prepared document, treating it as an update when

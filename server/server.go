@@ -363,11 +363,12 @@ func (s *Server) persist(bucket string) (bool, string) {
 }
 
 type queryRequest struct {
-	Query     string  `json:"query"`
-	TopK      int     `json:"top_k"`
-	GraphMix  float32 `json:"graph_mix"`
-	MMRLambda float32 `json:"mmr_lambda"`
-	EntityMix float32 `json:"entity_mix"`
+	Query      string   `json:"query"`
+	TopK       int      `json:"top_k"`
+	GraphMix   float32  `json:"graph_mix"`
+	MMRLambda  float32  `json:"mmr_lambda"`
+	EntityMix  float32  `json:"entity_mix"`
+	MetaFilter []string `json:"meta_filter"` // document metadata predicates "key=value", AND-composed
 }
 
 type queryResult struct {
@@ -400,11 +401,17 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
+	metaFilter, err := rag.CompileMetaFilter(req.MetaFilter)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	res, err := st.Retrieve(r.Context(), req.Query, rag.RetrieveParams{
-		TopK:      req.TopK,
-		GraphMix:  req.GraphMix,
-		MMRLambda: req.MMRLambda,
-		EntityMix: req.EntityMix,
+		TopK:       req.TopK,
+		GraphMix:   req.GraphMix,
+		MMRLambda:  req.MMRLambda,
+		EntityMix:  req.EntityMix,
+		MetaFilter: metaFilter,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

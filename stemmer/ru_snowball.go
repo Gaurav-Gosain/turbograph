@@ -8,7 +8,7 @@ import "strings"
 // дистрибутиве, стоп-слова проверяются с той же нормализацией.
 type snowballRU struct{}
 
-func init() { Register(snowballRU{}) }
+func init() { Register("ru", snowballRU{}) }
 
 // Claims сообщает, что в токене есть кириллические буквы.
 func (snowballRU) Claims(token string) bool { return HasCyrillic(token) }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Gaurav-Gosain/turbograph/stemmer"
 	"github.com/Gaurav-Gosain/turbograph/storage"
 )
 
@@ -62,6 +63,27 @@ func (m *Manager) SetEmbedder(e Embedder) {
 	m.mu.Lock()
 	m.embedder = e
 	m.mu.Unlock()
+}
+
+// SetStem enables or disables morphological stemming for every bucket, including
+// existing ones (their lexical indexes are rebuilt live in the background), and
+// records the setting so brand-new buckets are created with it. langs restricts
+// stemming to the named languages; an empty list means all registered ones.
+// An unknown language name is an error, and nothing is changed.
+func (m *Manager) SetStem(stem bool, langs []string) error {
+	if _, err := stemmer.Select(langs); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.LexicalStem = stem
+	m.cfg.LexicalStemLangs = langs
+	for _, st := range m.stores {
+		if err := st.SetStem(stem, langs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const storeExt = ".tg"

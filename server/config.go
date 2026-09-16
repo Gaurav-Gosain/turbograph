@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/rag"
+	"github.com/Gaurav-Gosain/turbograph/stemmer"
 )
 
 // RuntimeConfig is the subset of settings the web UI can view and edit and that
@@ -46,6 +47,11 @@ type RuntimeConfig struct {
 	ChunkStrategy string `json:"chunk_strategy"`
 	ChunkWords    int    `json:"chunk_words"`
 	ChunkOverlap  int    `json:"chunk_overlap"`
+
+	// Morphological stemming for the lexical index. Applies live to every bucket
+	// (indexes are rebuilt); langs empties mean all registered languages.
+	Stem      bool     `json:"stem"`
+	StemLangs []string `json:"stem_langs"`
 
 	// Storage (restart to apply; keys come from the environment, never stored).
 	S3Endpoint string `json:"s3_endpoint"`
@@ -221,8 +227,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"embed_key_set":  c.EmbedKey != "",
 		"ollama_url":     c.OllamaURL,
 		"chunk_strategy": c.ChunkStrategy, "chunk_words": c.ChunkWords, "chunk_overlap": c.ChunkOverlap,
+		"stem": c.Stem, "stem_langs": c.StemLangs,
 		"s3_endpoint": c.S3Endpoint, "s3_bucket": c.S3Bucket, "s3_region": c.S3Region, "s3_prefix": c.S3Prefix,
 		"strategies": []string{rag.StrategyRecursive, rag.StrategyWord, rag.StrategyMarkdown, rag.StrategySentence},
+		"languages":  stemmer.Names(),
 		"editable":   s.cfgPath != "",
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -294,6 +302,11 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 	mgrCfg := s.mgr.Config()
 	mgrCfg.Chunk = rag.ChunkConfig{Strategy: in.ChunkStrategy, TargetWords: in.ChunkWords, OverlapWords: in.ChunkOverlap}
 	s.mgr.SetConfig(mgrCfg)
+	// Apply stemming live to every bucket; it also updates the new-bucket config.
+	if err := s.mgr.SetStem(in.Stem, in.StemLangs); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	if s.factories.Embedder != nil {
 		s.mgr.SetEmbedder(s.factories.Embedder(in.EmbedEndpoint(), in.EmbedModel, in.EmbedDim))
 	}
@@ -398,6 +411,9 @@ func validateConfig(c RuntimeConfig) error {
 	case "", rag.StrategyRecursive, rag.StrategyWord, rag.StrategyMarkdown, rag.StrategySentence:
 	default:
 		return fmt.Errorf("unknown chunk strategy %q", c.ChunkStrategy)
+	}
+	if _, err := stemmer.Select(c.StemLangs); err != nil {
+		return err
 	}
 	return nil
 }

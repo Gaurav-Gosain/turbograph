@@ -41,7 +41,7 @@ func TestEmptyRegistryPassesTokensThrough(t *testing.T) {
 func TestFirstRegisteredStemmerClaimsWin(t *testing.T) {
 	// Регистрация до русской перехватывает кириллицу: порядок в реестре —
 	// это и есть приоритет при пересечении Claims.
-	withRegistry(t, upperCyrillic{})
+	withRegistry(t, namedStemmer{name: "shout", s: upperCyrillic{}})
 	if got := StemToken("машины"); got != "МАШИНЫ" {
 		t.Errorf("StemToken = %q, want %q", got, "МАШИНЫ")
 	}
@@ -57,12 +57,73 @@ func (upperCyrillic) Stem(token string) string { return strings.ToUpper(token) }
 
 // withRegistry подменяет реестр на время теста и восстанавливает прежний
 // набор (включая регистрации из init) по завершении.
-func withRegistry(t *testing.T, extra ...Stemmer) {
+func withRegistry(t *testing.T, extra ...namedStemmer) {
 	t.Helper()
-	old := append([]Stemmer(nil), registered...)
+	old := append([]namedStemmer(nil), registered...)
 	registered = nil
-	for _, s := range extra {
-		Register(s)
+	for _, e := range extra {
+		Register(e.name, e.s)
 	}
 	t.Cleanup(func() { registered = old })
+}
+
+func TestNamesListsRegisteredLanguages(t *testing.T) {
+	names := Names()
+	has := func(want string) bool {
+		for _, n := range names {
+			if n == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("en") || !has("ru") {
+		t.Errorf("Names() = %v, want the built-in en and ru", names)
+	}
+}
+
+func TestSelectEmptyMeansAllLanguages(t *testing.T) {
+	f, err := Select(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{"running": "run", "машины": "машин", "и": ""}
+	for tok, want := range cases {
+		if got := f(tok); got != want {
+			t.Errorf("Select(nil)(%q) = %q, want %q", tok, got, want)
+		}
+	}
+}
+
+func TestSelectRestrictsToNamedLanguages(t *testing.T) {
+	f, err := Select([]string{"en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f("running"); got != "run" {
+		t.Errorf("english token not stemmed: %q", got)
+	}
+	// Russian is not selected: its tokens (and stopwords) pass through untouched.
+	for _, tok := range []string{"машины", "и"} {
+		if got := f(tok); got != tok {
+			t.Errorf("non-selected language token %q changed to %q", tok, got)
+		}
+	}
+	// Case and whitespace in the config are not allowed to break selection.
+	f2, err := Select([]string{" EN", "ru "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f2("running"); got != "run" {
+		t.Errorf("upper-cased language name not honored: %q", got)
+	}
+	if got := f2("машины"); got != "машин" {
+		t.Errorf("ru not selected: %q", got)
+	}
+}
+
+func TestSelectRejectsUnknownLanguage(t *testing.T) {
+	if _, err := Select([]string{"en", "zz"}); err == nil {
+		t.Fatal("expected an error for an unknown language")
+	}
 }

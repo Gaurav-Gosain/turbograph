@@ -448,11 +448,12 @@ type chatRequest struct {
 	Rerank     bool       `json:"rerank"`                // pointwise LLM reranking of candidates
 	History    []chatTurn `json:"history"`               // recent turns, for query rewriting
 	Model      string     `json:"model"`
-	MetaKeys   []string   `json:"meta_keys"` // document metadata keys to include in each passage
-	Global     bool       `json:"global"`    // answer from community summaries (corpus-wide questions)
-	Decompose  bool       `json:"decompose"` // split a multi-hop question into subqueries before retrieving
-	Window     int        `json:"window"`    // expand each cited chunk with this many neighbor chunks for context
-	Verify     bool       `json:"verify"`    // after answering, audit each claim's support in the evidence
+	MetaKeys   []string   `json:"meta_keys"`   // document metadata keys to include in each passage
+	MetaFilter []string   `json:"meta_filter"` // "key=value" document metadata predicates, AND-composed
+	Global     bool       `json:"global"`      // answer from community summaries (corpus-wide questions)
+	Decompose  bool       `json:"decompose"`   // split a multi-hop question into subqueries before retrieving
+	Window     int        `json:"window"`      // expand each cited chunk with this many neighbor chunks for context
+	Verify     bool       `json:"verify"`      // after answering, audit each claim's support in the evidence
 }
 
 // handleChat retrieves context and streams a generated answer over server-sent
@@ -588,6 +589,11 @@ func (s *Server) retrieveForChat(ctx context.Context, st *rag.Store, req chatReq
 		MMRLambda:  req.MMRLambda,
 		EntityMix:  req.EntityMix,
 		EntityLink: req.EntityLink,
+	}
+	if metaFilter, err := rag.CompileMetaFilter(req.MetaFilter); err != nil {
+		return nil, false, err
+	} else {
+		params.MetaFilter = metaFilter
 	}
 	var res []rag.Retrieved
 	var err error

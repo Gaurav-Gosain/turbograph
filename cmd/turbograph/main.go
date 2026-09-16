@@ -26,6 +26,7 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/rag"
 	"github.com/Gaurav-Gosain/turbograph/script"
 	"github.com/Gaurav-Gosain/turbograph/server"
+	"github.com/Gaurav-Gosain/turbograph/stemmer"
 	"github.com/Gaurav-Gosain/turbograph/storage"
 )
 
@@ -229,6 +230,8 @@ func cmdServe(args []string) error {
 	bits := fs.Int("bits", 4, "quantization bits per coordinate for new buckets")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk for new buckets")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy for new buckets: recursive, word, markdown, or sentence")
+	stem := fs.Bool("stem", false, "enable BM25 morphological stemming (English Porter, Russian Snowball) and language stopwords; must stay consistent between indexing and querying")
+	stemLangs := fs.String("stem-langs", "", "languages to stem with --stem, comma-separated (e.g. en,ru); empty = all registered languages")
 	embedBatch := fs.Int("embed-batch", 64, "embedding request batch size: max chunks sent to the embedder per call (1 = one chunk per call; applies to a freshly built store, a resumed store keeps its saved setting)")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for the input path (default: pdftotext if present)")
 	ocrCmd := fs.String("ocr-cmd", "", "extraction command for scanned PDFs/images via OCR, e.g. a PaddleOCR PP-OCRv6 wrapper")
@@ -259,7 +262,8 @@ func cmdServe(args []string) error {
 		EmbedAPI: *embedAPI, EmbedURL: *embedURL, EmbedKey: orEnv(*embedKey, "OPENAI_API_KEY"), EmbedModel: *embedModel, EmbedDim: *embedDim,
 		OllamaURL:     *ollamaURL,
 		ChunkStrategy: *chunkStrategy,
-		S3Endpoint:    *s3Endpoint, S3Bucket: *s3Bucket, S3Region: *s3Region, S3Prefix: *s3Prefix,
+		Stem:          *stem, StemLangs: splitCSV(*stemLangs),
+		S3Endpoint: *s3Endpoint, S3Bucket: *s3Bucket, S3Region: *s3Region, S3Prefix: *s3Prefix,
 	}
 	cfgFile := *configPath
 	if cfgFile == "" && *data != "" {
@@ -300,6 +304,10 @@ func cmdServe(args []string) error {
 		mgr, err = rag.NewManager(*data, embedder, cfg)
 	}
 	if err != nil {
+		return err
+	}
+	// Stemming applies live to every bucket, new or existing, and to future ones.
+	if err := mgr.SetStem(rc.Stem, rc.StemLangs); err != nil {
 		return err
 	}
 	if *lean != "exact" {
@@ -414,6 +422,7 @@ func cmdIngest(args []string) error {
 	ef := fs.Int("ef", 0, "query-time HNSW search width (0 = store default 64)")
 	efGather := fs.Int("ef-gather", 0, "seed-gather HNSW width for PageRank seeds (0 = gather at max(ef,3*topk); off until recall evidence)")
 	stem := fs.Bool("stem", false, "enable BM25 morphological stemming (English Porter, Russian Snowball) and language stopwords; must stay consistent between indexing and querying")
+	stemLangs := fs.String("stem-langs", "", "languages to stem with --stem, comma-separated (e.g. en,ru); empty = all registered languages")
 	target := fs.Int("chunk-words", 120, "target chunk size in words")
 	overlap := fs.Int("chunk-overlap", 24, "chunk overlap in words")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy: recursive, word, markdown, or sentence")
@@ -436,6 +445,9 @@ func cmdIngest(args []string) error {
 	vmode, verr := parseVectorMode(*lean)
 	if verr != nil {
 		return verr
+	}
+	if _, serr := stemmer.Select(splitCSV(*stemLangs)); serr != nil {
+		return serr
 	}
 
 	embedBase := *ollamaURL
@@ -480,12 +492,13 @@ func cmdIngest(args []string) error {
 	} else {
 		store = rag.New(emb, rag.Config{
 			Bits: *bits, ResidualDims: *residual, GraphKNN: *knn,
-			MinSimilarity:  float32(*minSim),
-			EmbedBatchSize: *batch,
-			EfSearch:       *ef,
-			EfGather:       *efGather,
-			LexicalStem:    *stem,
-			Chunk:          rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
+			MinSimilarity:    float32(*minSim),
+			EmbedBatchSize:   *batch,
+			EfSearch:         *ef,
+			EfGather:         *efGather,
+			LexicalStem:      *stem,
+			LexicalStemLangs: splitCSV(*stemLangs),
+			Chunk:            rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
 		})
 	}
 
@@ -719,6 +732,7 @@ func cmdQuery(args []string) error {
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
 	prf := fs.Int("prf", 0, "pseudo-relevance feedback documents to expand the query with (0 disables)")
 	prfWeight := fs.Float64("prf-weight", 0.5, "how strongly PRF feedback is mixed into the query")
+	metaFilter := fs.String("meta-filter", "", "comma-separated document metadata predicates 'key=value', AND-composed")
 	embedModel := fs.String("embed-model", ollama.DefaultEmbedModel, "ollama embedding model")
 	embedDim := fs.Int("embed-dim", 0, "Matryoshka dimension the store was built with (must match ingest; 0 = full)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: $OLLAMA_HOST or http://127.0.0.1:11434)")
@@ -748,10 +762,15 @@ func cmdQuery(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	metaF, err := rag.CompileMetaFilter(splitCSV(*metaFilter))
+	if err != nil {
+		return err
+	}
 	start := time.Now()
 	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{
 		TopK: *topk, GraphMix: float32(*mix), MMRLambda: float32(*mmr),
 		PRF: *prf, PRFWeight: float32(*prfWeight), LexicalWeight: float32(*lexWeight),
+		MetaFilter: metaF,
 	})
 	if err != nil {
 		return err
@@ -997,6 +1016,21 @@ func cmdBench(args []string) error {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// splitCSV splits a comma-separated string into trimmed, non-empty parts. An
+// empty input yields a nil slice, so callers can treat the result as "no flags".
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 const ragSystemPrompt = "You are a precise assistant. Answer the question using only the provided context. " +
 	"If the context does not contain the answer, say so. Cite the chunk ids you used."

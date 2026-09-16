@@ -254,6 +254,7 @@ func cmdSearch(args []string) error {
 	mix := fs.Float64("graph", 0, "graph boost in [0,1]; 0 is off")
 	entityMix := fs.Float64("entity", 0, "entity-graph blend in [0,1]; 0 is off")
 	mmr := fs.Float64("mmr", 0, "MMR diversity lambda in (0,1); 0 disables")
+	metaFilter := fs.String("meta-filter", "", "comma-separated document metadata predicates 'key=value', AND-composed")
 	maxBytes := fs.Int("max-bytes", 0, "truncate each passage to this many bytes (0 = full text)")
 	text := fs.Bool("text", true, "include the passage text")
 	human := fs.Bool("human", false, "print a readable summary instead of JSON")
@@ -270,10 +271,15 @@ func cmdSearch(args []string) error {
 	if err != nil {
 		return err
 	}
+	metaF, err := rag.CompileMetaFilter(splitCSV(*metaFilter))
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{
 		TopK: *topk, GraphMix: float32(*mix), EntityMix: float32(*entityMix), MMRLambda: float32(*mmr),
+		MetaFilter: metaF,
 	})
 	if err != nil {
 		return err
@@ -314,6 +320,7 @@ func cmdAsk(args []string) error {
 	topk := fs.Int("topk", 6, "passages to ground the answer in")
 	mix := fs.Float64("graph", 0, "graph boost in [0,1]; 0 is off")
 	entityMix := fs.Float64("entity", 0, "entity-graph blend in [0,1]; 0 is off")
+	metaFilter := fs.String("meta-filter", "", "comma-separated document metadata predicates 'key=value', AND-composed")
 	genModel := fs.String("gen-model", envOr("TURBOGRAPH_MODEL", ""), "model for the answer (default $TURBOGRAPH_MODEL)")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL")
 	asJSON := fs.Bool("json", false, "print the answer and its sources as JSON")
@@ -330,6 +337,10 @@ func cmdAsk(args []string) error {
 	if err != nil {
 		return err
 	}
+	metaF, err := rag.CompileMetaFilter(splitCSV(*metaFilter))
+	if err != nil {
+		return err
+	}
 	client := ollama.New()
 	if *ollamaURL != "" {
 		client.BaseURL = *ollamaURL
@@ -338,6 +349,7 @@ func cmdAsk(args []string) error {
 	defer cancel()
 	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{
 		TopK: *topk, GraphMix: float32(*mix), EntityMix: float32(*entityMix),
+		MetaFilter: metaF,
 	})
 	if err != nil {
 		return err
