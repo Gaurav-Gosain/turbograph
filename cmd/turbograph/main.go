@@ -76,6 +76,20 @@ func cliEndpoint(api, baseURL, key string) server.Endpoint {
 	return server.Endpoint{API: "ollama", BaseURL: baseURL}
 }
 
+// ollamaBackend adapts *ollama.Client to server.Backend and server.Puller. The
+// Puller port speaks the server's own progress shape rather than the client's so
+// the server package stays provider-agnostic; this adapter converts the fields
+// the UI streams.
+type ollamaBackend struct {
+	*ollama.Client
+}
+
+func (b ollamaBackend) Pull(ctx context.Context, model string, onProgress func(server.PullProgress) error) error {
+	return b.Client.Pull(ctx, model, func(p ollama.PullProgress) error {
+		return onProgress(server.PullProgress{Status: p.Status, Total: p.Total, Completed: p.Completed})
+	})
+}
+
 // buildBackend builds the generation backend for a resolved endpoint.
 func buildBackend(ep server.Endpoint) server.Backend {
 	if ep.API == "openai" {
@@ -87,7 +101,7 @@ func buildBackend(ep server.Endpoint) server.Backend {
 	if ep.BaseURL != "" {
 		c.BaseURL = ep.BaseURL
 	}
-	return c
+	return ollamaBackend{c}
 }
 
 // splitCmd splits a command string into argv on whitespace. Templates use {in}

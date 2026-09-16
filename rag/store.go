@@ -180,7 +180,7 @@ type Store struct {
 	// WHICH 768 dimensions, so a dimension check alone lets two stores built with
 	// different models merge into one incoherent space, silently and permanently.
 	encoder string
-	hnsw    *index.HNSW
+	hnsw    AnnIndex
 	bm25    *lexical.Index
 	chunks  []Chunk
 	embeds  [][]float32         // raw embeddings, the source of truth for rebuilds and MMR

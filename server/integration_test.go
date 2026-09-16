@@ -13,6 +13,18 @@ import (
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
 
+// pullClient adapts *ollama.Client to the server's Puller port (which uses the
+// server's own PullProgress) for tests that exercise /api/pull.
+type pullClient struct {
+	*ollama.Client
+}
+
+func (p pullClient) Pull(ctx context.Context, model string, onProgress func(PullProgress) error) error {
+	return p.Client.Pull(ctx, model, func(pp ollama.PullProgress) error {
+		return onProgress(PullProgress{Status: pp.Status, Total: pp.Total, Completed: pp.Completed})
+	})
+}
+
 // fakeOllamaServer is a minimal Ollama API stand-in for exercising the server's
 // model-backed handlers (chat streaming, model listing, pull) without a real
 // model server.
@@ -48,7 +60,7 @@ func newGenServer(t *testing.T) (*httptest.Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	s := New(store)
-	s.SetGenerator(client, "qwen3.5:2b", "embeddinggemma")
+	s.SetGenerator(pullClient{client}, "qwen3.5:2b", "embeddinggemma")
 	return httptest.NewServer(s.Handler()), oll
 }
 

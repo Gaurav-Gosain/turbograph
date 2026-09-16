@@ -15,7 +15,6 @@ package redact
 
 import (
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -25,19 +24,10 @@ type Finding struct {
 	Count int    // how many times
 }
 
-// rule is one credential pattern.
-type rule struct {
-	kind string
-	re   *regexp.Regexp
-	// group is the submatch index to blank out; 0 means the whole match. It exists so a
-	// rule can match "password: hunter2" and redact only "hunter2", keeping the key
-	// visible so the redaction is legible to whoever reads the chunk later.
-	group int
-}
-
-// rules are matched in order. Longer, more specific formats come first so that a
-// generic assignment rule cannot claim a token a precise rule would have named.
-var rules = []rule{
+// builtinRules are the credential patterns NewRegistry pre-registers, matched in
+// order. Longer, more specific formats come first so that a generic assignment
+// rule cannot claim a token a precise rule would have named.
+var builtinRules = []Rule{
 	// Private keys: the whole PEM block, which is multi-line.
 	{"private-key", regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), 0},
 
@@ -68,50 +58,15 @@ var rules = []rule{
 		`(?i)\b(?:api[_\-]?key|secret[_\-]?key|access[_\-]?token|auth[_\-]?token|client[_\-]?secret|private[_\-]?key|passwd|password|secret)\b["']?\s*[:=]\s*["']?([^\s"',;]{8,})["']?`), 1},
 }
 
-// Text removes credentials from s, returning the cleaned text and what was found.
-// Each secret becomes a [redacted:<kind>] marker, so the passage stays readable and
-// a reader can see that something was taken out rather than silently losing a line.
-func Text(s string) (string, []Finding) {
-	if s == "" {
-		return s, nil
-	}
-	counts := map[string]int{}
-	for _, r := range rules {
-		s = r.re.ReplaceAllStringFunc(s, func(m string) string {
-			if r.group == 0 {
-				counts[r.kind]++
-				return "[redacted:" + r.kind + "]"
-			}
-			// Redact only the captured group, keeping the surrounding context. Splice by
-			// the group's byte offsets rather than replacing the first occurrence of its
-			// text: with default credentials like postgres://postgres:postgres@host the
-			// password equals the scheme or the username, and a first-occurrence replace
-			// redacts the scheme and leaves the password in the clear.
-			loc := r.re.FindStringSubmatchIndex(m)
-			gs, ge := loc[2*r.group], loc[2*r.group+1]
-			if gs < 0 || ge <= gs {
-				return m
-			}
-			val := m[gs:ge]
-			// A placeholder is not a secret. Ingesting documentation that says
-			// `api_key = YOUR_API_KEY_HERE` should not report a leak.
-			if isPlaceholder(val) {
-				return m
-			}
-			counts[r.kind]++
-			return m[:gs] + "[redacted:" + r.kind + "]" + m[ge:]
-		})
-	}
-	if len(counts) == 0 {
-		return s, nil
-	}
-	out := make([]Finding, 0, len(counts))
-	for k, n := range counts {
-		out = append(out, Finding{Kind: k, Count: n})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
-	return s, out
-}
+// defaultRegistry is the single immutable set the package-level Text uses. The
+// patterns are compile-time constants, so it is built once at init.
+var defaultRegistry = NewRegistry()
+
+// Text removes credentials from s using the default registry, returning the
+// cleaned text and what was found. Each secret becomes a [redacted:<kind>] marker,
+// so the passage stays readable and a reader can see that something was taken out
+// rather than silently losing a line. For custom rule sets, build a Registry.
+func Text(s string) (string, []Finding) { return defaultRegistry.Text(s) }
 
 // placeholders are the values documentation uses where a secret would go. Reporting
 // them as leaks would train people to ignore the warning, which is worse than not

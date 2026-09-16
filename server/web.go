@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 )
 
@@ -325,7 +324,7 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
-	err := puller.Pull(r.Context(), model, func(p ollama.PullProgress) error {
+	err := puller.Pull(r.Context(), model, func(p PullProgress) error {
 		send("progress", map[string]any{"status": p.Status, "completed": p.Completed, "total": p.Total})
 		return nil
 	})

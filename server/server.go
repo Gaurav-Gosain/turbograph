@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/extract"
-	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
 	"github.com/Gaurav-Gosain/turbograph/script"
 )
@@ -34,10 +33,19 @@ type Backend interface {
 	Ping(ctx context.Context) error
 }
 
+// PullProgress is one progress update from a model download stream. It is the
+// server's own shape for the Puller port so the port does not depend on any
+// concrete provider package; the adapter on the wire converts between them.
+type PullProgress struct {
+	Status    string `json:"status"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+}
+
 // Puller is the optional model-download surface; only the Ollama backend provides
 // it, so pull-related UI is offered only when the backend implements this.
 type Puller interface {
-	Pull(ctx context.Context, model string, onProgress func(ollama.PullProgress) error) error
+	Pull(ctx context.Context, model string, onProgress func(PullProgress) error) error
 }
 
 // Server serves a set of buckets managed by a rag.Manager.
