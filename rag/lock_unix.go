@@ -9,11 +9,15 @@ import (
 )
 
 // lockFD takes an advisory lock on fd, blocking until it is available. Shared when
-// read is set, exclusive otherwise.
-func lockFD(f *os.File, read bool) error {
+// read is set, exclusive otherwise. With try set, it fails immediately instead of
+// blocking when the lock is held elsewhere.
+func lockFD(f *os.File, read, try bool) error {
 	how := unix.LOCK_EX
 	if read {
 		how = unix.LOCK_SH
+	}
+	if try {
+		how |= unix.LOCK_NB
 	}
 	return unix.Flock(int(f.Fd()), how)
 }

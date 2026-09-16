@@ -20,9 +20,9 @@ func TestTokenizeFuncMatchesTokenize(t *testing.T) {
 		"digits 123 4567 mixed42tokens",
 	}
 	for _, c := range cases {
-		want := tokenize(c)
+		want := tokenize(c, false)
 		var got []string
-		tokenizeFunc(c, func(tok string) { got = append(got, tok) })
+		tokenizeFunc(c, false, func(tok string) { got = append(got, tok) })
 		if len(want) != len(got) {
 			t.Fatalf("%q: got %d tokens %v, want %d %v", c, len(got), got, len(want), want)
 		}

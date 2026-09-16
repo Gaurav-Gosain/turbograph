@@ -92,6 +92,17 @@ type Config struct {
 	// Vector index (HNSW).
 	HNSW     index.HNSWConfig
 	EfSearch int // query-time search width (default 64)
+	// EfGather widens the candidate-gathering search width used to seed PageRank
+	// (the two-stage gather: search once with a larger ef, then seed from the exact
+	// top-k scores). 0 (the default) keeps old behavior (seedK gathered at
+	// max(EfSearch, seedK)). Do not turn it on until recall evidence shows it is
+	// free: it widens the PPR frontier at a small per-query cost.
+	EfGather int
+
+	// EarlyExitThreshold is the store-wide default for the query-level early-exit
+	// knob (see RetrieveParams.EarlyExit). 0 (the default) keeps early exit OFF;
+	// it must stay that way until the R0 report clears changing ranking behavior.
+	EarlyExitThreshold float32
 
 	// Graph construction.
 	GraphKNN         int
@@ -102,6 +113,24 @@ type Config struct {
 	// improves recall on exact and rare terms; set DisableLexical to turn it off.
 	DisableLexical bool
 	RRFK           int // reciprocal rank fusion constant (default 60)
+
+	// ExtractCacheEntries/Bytes cap the extract cache size. 0 (the default)
+	// preserves old behavior (unlimited). Set to non-zero to limit entries/bytes.
+	ExtractCacheEntries int
+	ExtractCacheBytes   int
+	// MaxVersions caps the number of content history versions per document. 0
+	// (the default) preserves old behavior (unlimited).
+	MaxVersions int
+	// IngestWorkers is the fixed size of the document-embedding worker pool used
+	// by Ingest when the caller does not pass IngestOptions.Workers. 0 (the
+	// default) preserves old behavior (GOMAXPROCS).
+	IngestWorkers int
+	// LexicalStem enables morphological stemming (English Porter + Russian
+	// Snowball) and Russian stopword filtering in the BM25 index. 0 (the
+	// default) preserves old behavior (no stemming). The flag must be set
+	// consistently for a corpus: index and query tokens are stemmed by the same
+	// flag, and reloaded stores rebuild the lexical index from the current flag.
+	LexicalStem bool
 }
 
 func (c *Config) withDefaults() {
@@ -162,6 +191,13 @@ type Store struct {
 	versions    map[string][]docVersion    // doc id -> content history, oldest first
 	docMeta     map[string]json.RawMessage // doc id -> arbitrary user metadata (raw JSON)
 	commSummary map[int]string             // community label -> generated summary (global queries)
+	// commVec caches one embedding per community summary so a RelevantCommunities
+	// query does not re-embed the summaries on every call. It is built (and replaced)
+	// exactly when the summaries are generated, cleared wherever the summaries are
+	// invalidated, and persisted beside them.
+	commVec map[int][]float32 // community label -> embedding of its summary
+
+	qcache *queryCache // process-local LRU cache for query embeddings
 
 	edges       []edgeRec
 	indexedUpTo int // chunks for which similarity edges have been discovered
@@ -213,8 +249,7 @@ type Store struct {
 	// the most expensive thing turbograph does, and a rebuild would otherwise re-ask
 	// the model about every chunk it has already seen: adding one document to a large
 	// corpus cost a model call for every chunk in it. Persisted with the store.
-	extractCache map[[32]byte]cachedExtraction
-
+	extractCache *extractionCache
 	// redact strips credentials from documents at ingest. On by default: see
 	// SetRedaction. lastRedactions records what the most recent ingest removed.
 	redact         bool
@@ -248,7 +283,7 @@ func New(embedder Embedder, cfg Config) *Store {
 	// Redaction defaults ON. The safe default matters more than the convenient one: a
 	// store is shared, and the cost of a false negative (a key in a file you gave away)
 	// is not comparable to the cost of a false positive (a [redacted:...] marker).
-	return &Store{cfg: cfg, embedder: embedder, redact: true}
+	return &Store{cfg: cfg, embedder: embedder, qcache: NewQueryCache(0, 0, ""), redact: true}
 }
 
 // Len returns the number of indexed chunks.
@@ -312,6 +347,8 @@ func (s *Store) Build(ctx context.Context, docs []Document) error {
 	s.versions = make(map[string][]docVersion)
 	s.docMeta = make(map[string]json.RawMessage)
 	s.commSummary = nil // a fresh build invalidates any community summaries
+	s.commVec = nil     // ... and their cached embeddings with them
+	s.extractCache = NewExtractionCache(s.cfg.ExtractCacheEntries, s.cfg.ExtractCacheBytes)
 	if err := s.appendChunksLocked(chunks, vecs); err != nil {
 		return err
 	}
@@ -344,7 +381,7 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 	}
 	preps := make([]prepared, 0, len(docs))
 	for _, d := range docs {
-		p, err := s.prepareDoc(ctx, d)
+		p, err := s.prepareDoc(ctx, d, false)
 		if err != nil {
 			return err
 		}
@@ -376,6 +413,7 @@ func (s *Store) AddDocuments(ctx context.Context, docs []Document) error {
 		// store's views pointing at the old array and keeping it alive. Re-point them.
 		s.shareVectorsLocked()
 		s.commSummary = nil // graph changed; community summaries are now stale
+		s.commVec = nil
 		// An update replaced a document's text. Its old chunks are gone, so the model's
 		// answers about them are answers about text that is no longer in the corpus: drop
 		// them, or they persist into the .tg and would be reused if that exact text ever
@@ -516,6 +554,7 @@ func (s *Store) AddEmbedded(chunks []Chunk, vecs [][]float32) error {
 	}
 	if s.encoder == "" {
 		s.encoder = encoderOf(s.embedder)
+		s.qcache.SetEncoder(s.encoder)
 	}
 	if len(vecs[0]) != s.dim {
 		return fmt.Errorf("rag: embedding dim %d does not match store dim %d", len(vecs[0]), s.dim)
@@ -553,7 +592,16 @@ func (s *Store) quantizer() *quant.Quantizer {
 
 func (s *Store) initIndexes() {
 	s.hnsw = index.NewHNSW(s.dim, s.cfg.HNSW)
-	s.bm25 = lexical.New(lexical.DefaultConfig())
+	s.bm25 = lexical.New(s.lexicalConfig())
+}
+
+// lexicalConfig returns the BM25 config for the store, carrying the stem knob
+// through. Every rebuild of the lexical index uses it, so index and query
+// always agree on tokenization.
+func (s *Store) lexicalConfig() lexical.Config {
+	c := lexical.DefaultConfig()
+	c.Stem = s.cfg.LexicalStem
+	return c
 }
 
 // appendChunksLocked adds chunks and their embeddings to every index and records
@@ -857,6 +905,12 @@ type RetrieveParams struct {
 	PRFWeight float32
 	Filter    func(Chunk) bool // optional metadata filter
 	PPR       graph.PPRParams
+	// EarlyExit, when > 0 and the store's EarlyExitThreshold is also > 0, lets a
+	// query whose dense top hit is already at or above the threshold AND agrees with
+	// the BM25 top hit skip the expensive graph/entity stages. It is OFF by default
+	// (0): it changes ranking, and the R0 report is the blocker for ever turning it
+	// on by default. A query-level value of 0 falls back to the store config.
+	EarlyExit float32
 }
 
 // RetrieveTrace records how a query was retrieved, for callers that want to show it.
@@ -866,6 +920,12 @@ type RetrieveTrace struct {
 	// with no match leaves it false, which is honest -- the graph was available but did
 	// not fire for this query.
 	EntityLinked bool
+	// UsedPPR is true when the similarity-graph PageRank signal was actually computed
+	// and added to the ranking this query (GraphMix > 0 and the graph exists).
+	UsedPPR bool
+	// EarlyExit is true when the query short-circuited the graph/entity stages because
+	// its dense top hit cleared the early-exit threshold and agreed with BM25.
+	EarlyExit bool
 	// Entities are the entities the query activated most strongly, for display and for
 	// highlighting in the entity-graph view.
 	Entities []EntityHit
@@ -900,26 +960,20 @@ type ScoreComponents struct {
 // Retrieve runs hybrid graph retrieval for the query.
 func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([]Retrieved, error) {
 	s.ensureSearch()
-	// The similarity graph costs a k-NN search per chunk to build. Only pay for it when
-	// the query actually asks for the graph signal.
-	if p.GraphMix > 0 {
-		s.ensureGraph()
-	}
-	// The fact index is built the first time a fact-linked query asks for it. It takes
-	// the write lock, so it must run before the read lock below, like the other builds.
-	// Fact-linking is the default; only an explicit "node" opts out of it.
-	if p.EntityMix > 0 && p.EntityLink != "node" {
-		s.ensureFactIndex(ctx)
-	}
 
-	// Embed the query BEFORE taking the read lock. It is a network call to the embedding
-	// model (about 100 ms to a second against a local Ollama), and Go's RWMutex prefers
-	// writers, so holding the read lock across it meant one in-flight query plus one
-	// pending AddDocuments blocked every new retrieval for the whole embed. The embedder
-	// is fixed for the store's lifetime, so embedding needs no lock.
-	qv, err := embedQuery(ctx, s.embedder, []string{query})
-	if err != nil {
-		return nil, err
+	var qv [][]float32
+	var err error
+	// Try to retrieve the query embedding from the process-local LRU cache.
+	if v, ok := s.qcache.EmbedIfCached(query); ok {
+		qv = [][]float32{v}
+	} else {
+		qv, err = embedQuery(ctx, s.embedder, []string{query})
+		if err != nil {
+			return nil, err
+		}
+		if len(qv) > 0 {
+			s.qcache.Put(query, qv[0])
+		}
 	}
 
 	s.mu.RLock()
@@ -957,7 +1011,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	// lexical match lift a chunk. It is independent of the graph, so lexical
 	// matching contributes even with the graph off. seeds (RRF) is used only to
 	// seed PageRank; sim is also the Similarity field and abstention signal.
-	seeds, sim, bm25 := s.seedScores(query, qv[0], p.SeedK)
+	seeds, sim, bm25 := s.seedScores(query, qv[0], p.SeedK, p.Filter)
 	// Lexical fusion is on by default when the store indexes BM25: an unset (zero)
 	// LexicalWeight uses DefaultLexicalWeight, a modest value that helps keyword and
 	// entity-heavy corpora and is near-neutral where dense already dominates. A
@@ -981,17 +1035,54 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 		}
 	}
 
+	// Early exit: when the query is already confident (the dense top hit clears the
+	// threshold) and the dense and BM25 top hits agree, the graph and entity stages can
+	// only add noise at a real latency cost, so they are skipped. OFF by default; only a
+	// positive threshold (query-level or store config) arms it.
+	earlyThreshold := p.EarlyExit
+	if earlyThreshold <= 0 {
+		earlyThreshold = s.cfg.EarlyExitThreshold
+	}
+	if earlyThreshold > 0 && simMax >= earlyThreshold {
+		var dTop, bTop = -1, -1
+		var dMax, bMax float32
+		for ord, v := range sim {
+			if v > dMax {
+				dMax, dTop = v, ord
+			}
+		}
+		for ord, v := range bm25 {
+			if v > bMax {
+				bMax, bTop = v, ord
+			}
+		}
+		if dTop >= 0 && dTop == bTop {
+			p.GraphMix = 0
+			p.EntityMix = 0
+			if p.Trace != nil {
+				p.Trace.EarlyExit = true
+			}
+		}
+	}
+
 	// The graph boost is computed only when asked for: PageRank over the whole
 	// graph is the expensive part of retrieval, and the default path does not use
 	// it. The entity signal is likewise optional.
 	var ppr []float32
 	var pprMax float32
 	if p.GraphMix > 0 {
+		s.ensureGraph()
 		ppr = s.g.PersonalizedPageRank(seeds, p.PPR)
 		pprMax = maxF(ppr)
+		if p.Trace != nil {
+			p.Trace.UsedPPR = true
+		}
 	}
 	var escore map[int]float32
 	if p.EntityMix > 0 && s.entCSR != nil {
+		if p.EntityLink != "node" {
+			s.ensureFactIndex(ctx)
+		}
 		var hits []EntityHit
 		escore, hits = s.entityChunkScores(query, qv[0], p.EntityLink)
 		if p.Trace != nil {
@@ -1123,12 +1214,30 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 	if len(scored) > p.TopK {
 		scored = scored[:p.TopK]
 	}
-	out := make([]Retrieved, len(scored))
-	for i, e := range scored {
+	out := make([]Retrieved, 0, len(scored))
+	for _, e := range scored {
 		c := s.chunks[e.ord]
-		out[i] = Retrieved{Chunk: c, Score: e.val, Similarity: sim[e.ord], Meta: s.docMeta[c.DocID], Components: comps(e.ord)}
+		out = append(out, Retrieved{
+			Chunk:      c,
+			Score:      e.val,
+			Similarity: sim[e.ord],
+			Meta:       s.docMeta[c.DocID],
+			Components: comps(e.ord),
+		})
 	}
 	return out, nil
+}
+
+// seedGatherEF returns the HNSW ef used to gather the dense candidate frontier for
+// PageRank seeding. The two-stage gather widens that frontier (Config.EfGather)
+// without changing how many candidates seed the graph, so a larger ef costs only the
+// widen; ef 0 selects the old single-width behavior.
+func (s *Store) seedGatherEF(seedK int) int {
+	ef := maxInt(s.cfg.EfSearch, seedK)
+	if s.cfg.EfGather > 0 {
+		ef = maxInt(ef, s.cfg.EfGather)
+	}
+	return ef
 }
 
 // seedScores runs the dense and sparse searches and returns three things: the
@@ -1137,8 +1246,20 @@ func (s *Store) Retrieve(ctx context.Context, query string, p RetrieveParams) ([
 // Similarity field), and the per-ordinal BM25 score (the lexical signal). Keeping
 // the dense cosine and BM25 separate lets the caller blend them by score, which
 // preserves the dense magnitude that rank fusion alone would discard.
-func (s *Store) seedScores(query string, qv []float32, seedK int) (seeds, sim, bm25 map[int]float32) {
-	dense := s.hnsw.Search(qv, seedK, maxInt(s.cfg.EfSearch, seedK))
+func (s *Store) seedScores(query string, qv []float32, seedK int, filter func(Chunk) bool) (seeds, sim, bm25 map[int]float32) {
+	var accept func(id string) bool
+	if filter != nil {
+		accept = func(id string) bool {
+			ord, ok := s.hnsw.Ord(id)
+			if !ok || ord < 0 || ord >= len(s.chunks) {
+				return false
+			}
+			return filter(s.chunks[ord])
+		}
+	}
+
+	dense := s.hnsw.SearchFiltered(qv, seedK, s.seedGatherEF(seedK), accept)
+
 	sim = make(map[int]float32, len(dense))
 	for _, h := range dense {
 		if ord, ok := s.hnsw.Ord(h.ID); ok {
@@ -1146,14 +1267,14 @@ func (s *Store) seedScores(query string, qv []float32, seedK int) (seeds, sim, b
 		}
 	}
 
+	bm25 = make(map[int]float32, seedK)
 	var ranked []lexical.Result
-	bm25 = map[int]float32{}
 	if !s.cfg.DisableLexical {
-		denseR := make([]lexical.Result, len(dense))
-		for i, h := range dense {
-			denseR[i] = lexical.Result{ID: h.ID, Score: h.Score}
+		denseR := make([]lexical.Result, 0, len(dense))
+		for _, h := range dense {
+			denseR = append(denseR, lexical.Result{ID: h.ID, Score: h.Score})
 		}
-		sparse := s.bm25.Search(query, seedK)
+		sparse := s.bm25.SearchFiltered(query, seedK, accept)
 		for _, r := range sparse {
 			if ord, ok := s.hnsw.Ord(r.ID); ok {
 				bm25[ord] = r.Score
@@ -1161,9 +1282,9 @@ func (s *Store) seedScores(query string, qv []float32, seedK int) (seeds, sim, b
 		}
 		ranked = lexical.RRF(s.cfg.RRFK, denseR, sparse)
 	} else {
-		ranked = make([]lexical.Result, len(dense))
-		for i, h := range dense {
-			ranked[i] = lexical.Result{ID: h.ID, Score: h.Score}
+		ranked = make([]lexical.Result, 0, len(dense))
+		for _, h := range dense {
+			ranked = append(ranked, lexical.Result{ID: h.ID, Score: h.Score})
 		}
 	}
 

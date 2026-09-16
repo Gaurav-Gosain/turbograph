@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-15",
+  "host": "Windows amd64, AMD Ryzen 5 7500F, 6-core",
+  "go": "go test -benchmem",
+  "note": "Baseline BEFORE optimization track. In-process keyword embedder (no Ollama), see rag/speed_test.go.",
+  "rag": {
+    "BenchmarkRetrieve":  {"ns_op": 95354, "B_op": 27773, "allocs_op": 72},
+    "BenchmarkRetrieveGraph": {"ns_op": 1398588, "B_op": 114599, "allocs_op": 75},
+    "BenchmarkSpeedSearch_chunks_1000": {"ns_op": 66465, "B_op": 25997, "allocs_op": 61},
+    "BenchmarkSpeedSearch_chunks_10000": {"ns_op": 138054, "B_op": 36417, "allocs_op": 74},
+    "BenchmarkSpeedOpen_chunks_10000_size_49MB": {"ns_op": 31511309, "B_op": 149918712, "allocs_op": 162566}
+  },
+  "index": {
+    "note": "heavy 100k/768 HNSW build bench timed out on this host; O4 recall harness is TestHNSWRecallQPSCurve",
+    "BenchmarkDotfSIMD": {"ns_op": 26.43},
+    "BenchmarkDotfGo": {"ns_op": 183}
+  }
+}

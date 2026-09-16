@@ -180,6 +180,12 @@
   .eb-count{color:var(--accent);font-variant-numeric:tabular-nums}
   .eb-toggle{border:0;background:transparent;color:var(--faint);cursor:pointer;padding:0;
     font-size:10px;line-height:1;flex:none;transition:transform .18s var(--ease-out),color .12s var(--ease-out)}
+  .eb-cancel{border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;
+    font-size:10px;line-height:1;padding:3px 8px;border-radius:5px;flex:none;
+    transition:color .12s var(--ease-out),border-color .12s var(--ease-out),opacity .12s var(--ease-out)}
+  .eb-cancel:hover{color:var(--danger);border-color:var(--danger)}
+  .eb-cancel:disabled{opacity:.4;cursor:default}
+  .eb-cancel:disabled:hover{color:var(--muted);border-color:var(--border)}
   .eb-head:hover .eb-toggle{color:var(--text)}
   #entBuild.collapsed .eb-toggle{transform:rotate(-90deg)}
   #entBuild.collapsed{gap:0}
@@ -319,6 +325,14 @@
   .po-row small{display:block;color:var(--muted);font-size:10px;margin-top:6px;line-height:1.4}
   .po-row .tg-check{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);cursor:pointer}
   .po-row .tg-check input{width:auto;cursor:pointer}
+  .preset-btns{display:flex;gap:5px;flex-wrap:wrap}
+  .preset-btns button{border:1px solid var(--border);background:var(--panel2);color:var(--text);
+    font-size:10.5px;padding:3px 9px;border-radius:6px;cursor:pointer;
+    transition:border-color .12s var(--ease-out),background .12s var(--ease-out),color .12s var(--ease-out)}
+  .preset-btns button:hover{border-color:var(--accent)}
+  .preset-btns button.active{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+  .preset-cur{color:var(--faint);font-weight:400}
+  #presetHint{min-height:28px}
   .popover>button{width:100%;margin-top:2px}
   input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;padding:0;
     background:var(--border);border:0;border-radius:3px;cursor:pointer}
@@ -696,6 +710,7 @@
   .row{display:flex;gap:8px}
   .row button{flex:1}
   .note{color:var(--muted);font-size:11px;min-height:15px}
+  .ing-sample{margin-top:4px;color:var(--dim);font-size:11px;line-height:1.4}
   .note.err{color:var(--danger)}
   .notice-pull{display:none;flex-direction:column;gap:9px;padding:12px;border-radius:8px;
     border:1px solid var(--warn);background:rgba(229,193,123,.07)}
@@ -803,6 +818,12 @@
   .dc-prog{display:none;flex-direction:column;gap:6px}
   .dash-card.building .dc-prog{display:flex}
   .dash-card.building #dashKGBtn{display:none}
+  .dc-pt{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:10.5px}
+  .dc-pt #dashKGProg{margin-right:auto}
+  .dc-stop{border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;
+    font-size:9.5px;line-height:1;padding:3px 8px;border-radius:5px;
+    transition:color .12s var(--ease-out),border-color .12s var(--ease-out)}
+  .dc-stop:hover{color:var(--danger);border-color:var(--danger)}
   .dc-bar{height:4px;border-radius:2px;background:var(--panel);overflow:hidden}
   .dc-bar i{display:block;height:100%;width:var(--p,0%);background:var(--accent);transition:width .2s var(--ease-out)}
   .dc-pt{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -866,7 +887,10 @@
       <div class="eb-head" id="ebHead">
         <span class="eb-title">extracting entities <b id="ebProg">0/0</b></span>
         <span id="ebCount" class="eb-count"></span>
-        <button class="eb-toggle" id="ebToggle" type="button" aria-label="collapse" title="collapse">&#9662;</button>
+        <span class="eb-stopwrap">
+          <button class="eb-cancel" id="ebCancel" type="button" title="stop the extraction; the graph built so far stays">stop</button>
+          <button class="eb-toggle" id="ebToggle" type="button" aria-label="collapse" title="collapse">&#9662;</button>
+        </span>
       </div>
       <div class="bar eb-bar"><i id="ebBarFill"></i></div>
       <div id="ebList" class="eb-list"></div>
@@ -901,7 +925,7 @@
           <button id="dashKGBtn" type="button">build knowledge graph</button>
           <div class="dc-prog">
             <div class="dc-bar"><i id="dashKGBar"></i></div>
-            <div class="dc-pt" id="dashKGProg">0/0</div>
+            <div class="dc-pt"><span id="dashKGProg">0/0</span><button id="dashKGStop" class="dc-stop" type="button" title="stop the extraction; the graph built so far stays">stop</button></div>
           </div>
         </div>
       </div>
@@ -921,6 +945,15 @@
       </div>
       <div id="settings" class="popover">
         <div class="po-head"><span>retrieval settings</span><span class="x" id="settingsClose">close</span></div>
+        <div class="po-row">
+          <div class="lab">model preset <span class="preset-cur" id="presetCur"></span></div>
+          <div class="preset-btns">
+            <button type="button" data-mpreset="small" title="for a small local model (&le;4B): 4 results, batch 1, chunk 60&ndash;80 words, no context window">small local</button>
+            <button type="button" data-mpreset="balanced" title="the defaults: 6 results, batch 2">balanced</button>
+            <button type="button" data-mpreset="quality" title="for a stronger or remote model: 10 results, batch 2, context window 2">quality</button>
+          </div>
+          <small id="presetHint">using a small local model (&le;4B)? the <b>small local</b> preset asks it for less per query: 4 results, batch 1, chunk ~60&ndash;80 words, no context window.</small>
+        </div>
         <div class="po-row">
           <div class="lab">results <b id="vTopK">6</b></div>
           <input id="pTopK" type="range" min="1" max="20" step="1" value="6">
@@ -1386,6 +1419,52 @@ const settingsEl=$("#settings");
 $("#settingsBtn").onclick=e=>{e.stopPropagation();settingsEl.classList.toggle("open")};
 $("#settingsClose").onclick=()=>settingsEl.classList.remove("open");
 $("#resetSettings").onclick=()=>{$("#pTopK").value=6;$("#pMix").value=0;$("#pMMR").value=0;$("#pEnt").value=0;$("#pMinSim").value=0;$("#pRerank").checked=false;$("#pWindow").value=0;syncReadouts();saveSettings()};
+// model presets are the two extremes the settings are built for. "small local"
+// targets a small on-device model (&le;4B): it only has so much context, so it gets
+// fewer chunks per query, batch 1 (each call reads exactly one chunk), a tighter
+// chunk target, and no context window. "quality" assumes a stronger or remote model
+// that can use more. Everything a preset touches is a knob the user can still turn.
+const PRESET={
+  small:{name:"small local",
+    apply(){setTopK(4);$("#pWindow").value=0;setEntBatchSel(1);const cw=$("#cfgChunkWords");if(cw)cw.value=70;
+      setHint("small local model (&le;4B)? asks it for less per query: 4 results, batch 1, chunk ~60&ndash;80 words, no context window.")},
+  },
+  balanced:{name:"balanced",
+    apply(){setTopK(6);$("#pWindow").value=0;setEntBatchSel(2);const cw=$("#cfgChunkWords");if(cw)cw.placeholder="120";
+      setHint("the defaults: 6 results, batch 2.")},
+  },
+  quality:{name:"quality",
+    apply(){setTopK(10);$("#pWindow").value=2;setEntBatchSel(2);const cw=$("#cfgChunkWords");if(cw)cw.placeholder="120";
+      setHint("a stronger or remote model has headroom: 10 results, batch 2, and a context window of 2 for coherent answers.")},
+  },
+};
+function setTopK(v){$("#pTopK").value=Math.max(1,Math.min(20,v))}
+function setEntBatchSel(v){const s=$("#cfgEntBatch");if(s)s.value=v;localStorage.setItem("tg.entBatch",v)}
+function setHint(text){$("#presetHint").innerHTML=text}
+function applyPreset(id){
+  const p=PRESET[id];if(!p)return;
+  try{localStorage.setItem("tg.preset",id)}catch(e){}
+  p.apply();syncReadouts();saveSettings();
+  highlightPreset(id);
+}
+function highlightPreset(id){
+  document.querySelectorAll("#settings [data-mpreset]").forEach(b=>{
+    b.classList.toggle("active",b.dataset.mpreset===id)});
+  const cur=$("#presetCur");if(cur)cur.innerHTML=id?"&middot; "+esc(PRESET[id].name):"";
+}
+(function initPresets(){
+  document.querySelectorAll("#settings [data-mpreset]").forEach(b=>{
+    b.onclick=()=>applyPreset(b.dataset.mpreset);
+  });
+  let stored="";try{stored=localStorage.getItem("tg.preset")||""}catch(e){}
+  if(PRESET[stored]){PRESET[stored].apply();}
+  highlightPreset(stored||"");
+  // Turning any covered knob by hand drops the preset highlight: the settings are
+  // the source of truth now, and the preset row should not claim authority it lost.
+  $("#pTopK").addEventListener("input",()=>highlightPreset(""));
+  $("#pWindow").addEventListener("input",()=>highlightPreset(""));
+  const es=$("#cfgEntBatch");if(es)es.addEventListener("change",()=>highlightPreset(""));
+})();
 document.addEventListener("click",e=>{
   if(settingsEl.classList.contains("open")&&!settingsEl.contains(e.target)&&e.target.id!=="settingsBtn")
     settingsEl.classList.remove("open");
@@ -2734,24 +2813,24 @@ async function handleFiles(files){
     else if(isImage(f.name)){const b=await f.arrayBuffer();
       images.push({id:f.name,b64:toB64(b),ext:f.name.split(".").pop().toLowerCase()});G.docs.set(f.name,{c:b.byteLength,img:true})}
   }
-  if(!text.length&&!binary.length&&!images.length){note.className="note err";note.textContent="no supported files (.txt .md"+(G.pdfSupported?" .pdf":"")+" images)";return}
+  if(!text.length&&!binary.length&&!images.length){note.className="note err";note.textContent="no supported files (.txt .md"+(G.pdfSupported?" .pdf":"")+" images)";return{chunks:0,docs:0}}
   renderDocList();
   const bar=$("#progBar");bar.style.display="block";bar.querySelector("i").style.setProperty("--p",.08);
   note.textContent="indexing "+(text.length+binary.length)+" document(s)...";
   try{
-    let total=0;
+    let total=0;const ingested=[];
     if(binary.length){
       const r=await api(bk("/api/ingest/files"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({files:binary,contextual:$("#ctxOpt").checked,transform:selectedTransforms()})});
       if(r.error)throw new Error(r.error);
-      total=r.chunks;markFailures(r.failed);
+      total=r.chunks;markFailures(r.failed);if(r.documents)ingested.push(r.documents);
     }
     bar.querySelector("i").style.setProperty("--p",.55);
     if(text.length){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({documents:text,contextual:$("#ctxOpt").checked,transform:selectedTransforms()})});
       if(r.error)throw new Error(r.error);total=r.chunks;
-      reportTransform(r);
+      reportTransform(r);if(r.documents)ingested.push(r.documents);
     }
     if(images.length){
       if(!G.model){toast("select a model (top right) to caption images",true);}
@@ -2764,11 +2843,28 @@ async function handleFiles(files){
       }
     }
     bar.querySelector("i").style.setProperty("--p",1);
-    note.textContent="indexed. "+total+" chunks total.";
+    const samples=ingested.flat();
+    note.innerHTML=ingestSummary(samples,total);
     await loadStats();await loadGraph();loadBuckets();
+    return{docs:countDocs(samples),chunks:total,samples};
   }catch(e){note.className="note err";note.textContent=e.message;toast(e.message,true)}
   finally{setTimeout(()=>{bar.style.display="none";bar.querySelector("i").style.setProperty("--p",0)},600)}
 }
+// ingestSummary renders the ingest note: "M docs -> N chunks" plus, for corpora made
+// of a handful of documents, the first and last chunk of the document, so indexing a
+// file shows you something about what was actually split instead of only a number.
+function ingestSummary(samples,total){
+  const all=(samples||[]).filter(s=>s&&s.chunks>0);
+  const docs=all.length;
+  let h="<b>"+docs+"</b> doc"+(docs===1?"":"s")+" &rarr; <b>"+total+"</b> chunk"+(total===1?"":"s")+".";
+  if(!docs)return h;
+  const ell=s=>{s=(s||"").replace(/\s+/g," ").trim();return esc(s.length>120?s.slice(0,120)+"…":s)};
+  const first=all[0];h+='<div class="ing-sample"><b>'+esc(first.id)+'</b> &ldquo;'+ell(first.first)+'&rdquo;';
+  if(first.chunks>1)h+=' &hellip; &ldquo;'+ell((all[all.length-1]||first).last)+'&rdquo;';
+  h+='</div>';
+  return h;
+}
+function countDocs(samples){return (samples||[]).filter(s=>s&&s.chunks>0).length}
 // reportTransform surfaces what the transform scripts did: a script that drops a
 // document is a decision worth telling the user about, and one that fails on a
 // document must not disappear silently.
@@ -3639,19 +3735,19 @@ async function runIngest(){
     mark(wave,"run");
     say('<span class="muted">indexing...</span>');
     const ctx=$("#ctxOpt").checked,tf=selectedTransforms();
-    let chunks=0;
+    let chunks=0,allSamples=[];
     if(F.ing.files.length){
       const r=await ingestThroughPanel(F.ing.files);
-      chunks+=r||0;
+      chunks+=r.chunks||0;allSamples=allSamples.concat(r.samples||[]);
     }
     if(F.ing.text.trim()){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({documents:[{id:"pasted-"+Date.now()+".txt",text:F.ing.text}],contextual:ctx,transform:tf})});
       if(r.error)throw new Error(r.error);
-      reportTransform(r);chunks=r.chunks||chunks;
+      reportTransform(r);chunks=r.chunks||chunks;if(r.documents)allSamples=allSamples.concat(r.documents);
     }
     mark(wave,"ran");
-    say('<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks in the bucket.</div>');
+    say('<div class="run-srchead">indexed</div><div class="muted">'+ingestSummary(allSamples,chunks)+'</div>');
 
     if(F.ing.entities){
       if(!G.model){toast("select a model to extract entities",true);mark(["entities","comm"],"")}
@@ -3684,9 +3780,7 @@ async function runIngest(){
 // ingestThroughPanel hands the files to the documents panel's own ingest, so the
 // pipeline runs the identical code path rather than a second implementation of it.
 async function ingestThroughPanel(files){
-  await handleFiles(files);
-  const st=await api(bk("/stats")).catch(()=>null);
-  return st?st.chunks:0;
+  return await handleFiles(files)||{chunks:0,docs:0,samples:[]};
 }
 
 // ---- run a query flow against the live bucket, tracing each stage ----
@@ -3796,19 +3890,22 @@ async function runFreeIngest(){
     $("#ctxOpt").checked=ctxBlock;
     boxes.forEach(b=>b.checked=tf.includes(b.dataset.tf));
     await animateRun(flowOrder());
-    let chunks=0;
-    if(F.ing.files.length)chunks=await ingestThroughPanel(F.ing.files)||0;
+    let chunks=0,allSamples=[];
+    if(F.ing.files.length){
+      const r=await ingestThroughPanel(F.ing.files)||{};
+      chunks=r.chunks||0;allSamples=allSamples.concat(r.samples||[]);
+    }
     if(F.ing.text.trim()){
       const r=await api(bk("/ingest"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({documents:[{id:"pasted-"+Date.now()+".txt",text:F.ing.text}],
           contextual:ctxBlock,transform:tf})});
       if(r.error)throw new Error(r.error);
-      reportTransform(r);chunks=r.chunks||chunks;
+      reportTransform(r);chunks=r.chunks||chunks;if(r.documents)allSamples=allSamples.concat(r.documents);
     }
     F.ing.files=[];F.ing.text="";
     await loadStats();await loadGraph();
-    F.ing.result='<div class="run-srchead">indexed</div><div class="muted">'+chunks+' chunks'+
-      (tf.length?' · ran '+tf.map(esc).join(", "):"")+(ctxBlock?" · contextual":"")+'</div>';
+    F.ing.result='<div class="run-srchead">indexed</div><div class="muted">'+ingestSummary(allSamples,chunks)+'</div>'+
+      (tf.length?'<div class="muted">ran '+tf.map(esc).join(", ")+'</div>':"")+(ctxBlock?'<div class="muted">contextual context</div>':"");
     renderSide();
   }catch(e){if(out)out.innerHTML='<span style="color:var(--danger)">'+esc(e.message)+'</span>';toast(e.message,true)}
   finally{
@@ -3902,6 +3999,12 @@ document.querySelectorAll("#graphMode button").forEach(b=>b.onclick=()=>{
 // nothing to stream (a 204 from a reconnect with no build in flight). The build runs
 // server-side and outlives this connection, so replaying its events on a fresh
 // connection rebuilds the graph-so-far.
+// BuildCancelled is thrown when the stream reports a cancelled build: the user asked
+// the server to stop, so this is neither done (no finished graph to load) nor an
+// error (nothing broke). runEntityBuild catches it and folds the panel away quietly.
+class BuildCancelled extends Error{
+  constructor(){super("entity build cancelled");this.cancelled=true}
+}
 async function streamBuild(resp,onProg){
   if(resp.status===204)return null;
   if(!resp.ok){let m="entity build failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
@@ -3913,11 +4016,33 @@ async function streamBuild(resp,onProg){
       const ev=parseSSE(buf.slice(0,i));buf=buf.slice(i+2);
       if(ev.event==="progress"){if(onProg)onProg(ev.data)}
       else if(ev.event==="error")throw new Error(ev.data.error);
+      else if(ev.event==="cancelled")throw new BuildCancelled();
       else if(ev.event==="done")return ev.data;
     }
   }
   return null;
 }
+// cancelBuild asks the server to stop the in-flight build for this bucket. The
+// server replies immediately; the build's own "cancelled" event closes the panel.
+// A 409 means nothing is running, which is fine: there is nothing left to stop.
+async function cancelBuild(){
+  const resp=await fetch(bk("/api/build-entities/cancel"),{method:"POST"});
+  if(resp.status===409)return false;
+  if(!resp.ok){let m="cancel failed ("+resp.status+")";try{m=(await resp.json()).error||m}catch(e){}throw new Error(m)}
+  const btn=$("#ebCancel");if(btn)btn.disabled=true;
+  toast("stopping entity graph build…");
+  return true;
+}
+function wireCancel(id){
+  const b=$(id);if(!b)return;
+  b.onclick=async()=>{
+    try{
+      const stopped=await cancelBuild();
+      if(stopped===false){const box=$("#entBuild");if(box)box.classList.remove("open");setBuilding(false);toast("no build is running")}
+    }catch(e){toast(e.message,true)}
+  };
+}
+wireCancel("#ebCancel");wireCancel("#dashKGStop");
 async function buildEntities(onProg,refresh){
   if(!G.model){throw new Error("select a model (top right) first; entity extraction needs one")}
   const resp=await fetch(bk("/api/build-entities")+"&model="+encodeURIComponent(G.model)+"&batch="+(+$("#cfgEntBatch")?.value||2)+(refresh?"&refresh=1":""),{method:"POST"});
@@ -4049,6 +4174,7 @@ async function runEntityBuild(stream){
   list.innerHTML="";done.textContent="";
   $("#ebProg").textContent="0/0";$("#ebCount").textContent="";
   $("#ebBarFill").style.setProperty("--p",0);
+  const cb=$("#ebCancel");if(cb)cb.disabled=false;
   box.classList.add("open");
   setBuilding(true);
   liveGraphReset();
@@ -4057,6 +4183,13 @@ async function runEntityBuild(stream){
     if(res)await entFinish(res,done,box);
     else box.classList.remove("open"); // nothing to attach to
   }catch(e){
+    if(e.cancelled){
+      toast("entity graph build stopped");
+      done.innerHTML='<span class="muted">extraction stopped; the graph built so far is kept</span>';
+      box.classList.add("cancelled");
+      setTimeout(()=>box.classList.remove("open"),1600);
+      return;
+    }
     toast(e.message,true);
     done.innerHTML='<span style="color:var(--danger)">extraction failed: '+esc(e.message)+'</span>';
   }finally{
@@ -4071,6 +4204,8 @@ function setBuilding(on){
   const pb=$("#buildGraphBtn");if(pb)pb.classList.toggle("busy",on);
   if(on){const dbar=$("#dashKGBar");if(dbar)dbar.style.setProperty("--p","0%");
     const dpt=$("#dashKGProg");if(dpt)dpt.textContent="starting…";}
+  else{const dbar=$("#dashKGBar");if(dbar)dbar.style.setProperty("--p","0%");
+    const dpt=$("#dashKGProg");if(dpt)dpt.textContent="";}
 }
 async function runBuildEntities(refresh){
   return runEntityBuild(onProg=>buildEntities(onProg,refresh));

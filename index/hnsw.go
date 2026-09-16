@@ -36,6 +36,8 @@ type HNSW struct {
 
 	entry int32 // entry point node, -1 if empty
 	top   int   // current top level
+
+	vecPool sync.Pool
 }
 
 type hnswNode struct {
@@ -75,6 +77,12 @@ func NewHNSW(dim int, cfg HNSWConfig) *HNSW {
 		rng:    quant.NewPCG(cfg.Seed),
 		idOrd:  make(map[string]int32),
 		entry:  -1,
+		vecPool: sync.Pool{
+			New: func() any {
+				v := make([]float32, dim)
+				return &v
+			},
+		},
 	}
 }
 
@@ -135,7 +143,7 @@ func (h *HNSW) Add(id string, vec []float32) int {
 	defer h.mu.Unlock()
 
 	cur := int32(len(h.ids))
-	norm := make([]float32, h.dim)
+	norm := *h.vecPool.Get().(*[]float32)
 	normalize(norm, vec)
 	h.data = append(h.data, norm...)
 	h.ids = append(h.ids, id)
@@ -148,6 +156,7 @@ func (h *HNSW) Add(id string, vec []float32) int {
 	if h.entry == -1 {
 		h.entry = cur
 		h.top = level
+		h.vecPool.Put(&norm)
 		return int(cur)
 	}
 
@@ -182,6 +191,7 @@ func (h *HNSW) Add(id string, vec []float32) int {
 		h.top = level
 		h.entry = cur
 	}
+	h.vecPool.Put(&norm)
 	return int(cur)
 }
 
@@ -313,7 +323,8 @@ func (h *HNSW) Search(query []float32, k, ef int) []Result {
 	if ef < k {
 		ef = k
 	}
-	norm := make([]float32, h.dim)
+	norm := *h.vecPool.Get().(*[]float32)
+	defer h.vecPool.Put(&norm)
 	normalize(norm, query)
 
 	ep := h.entry
@@ -344,9 +355,13 @@ func (h *HNSW) SearchFiltered(query []float32, k, ef int, accept func(id string)
 	if ef < k {
 		ef = k
 	}
-	norm := make([]float32, h.dim)
+	norm := *h.vecPool.Get().(*[]float32)
+	defer h.vecPool.Put(&norm)
 	normalize(norm, query)
-	pred := func(ord int32) bool { return accept(h.ids[ord]) }
+	var pred func(int32) bool
+	if accept != nil {
+		pred = func(ord int32) bool { return accept(h.ids[ord]) }
+	}
 
 	ep := h.entry
 	for l := h.top; l > 0; l-- {

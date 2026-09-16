@@ -54,10 +54,20 @@ type Entity struct {
 
 // Relation is a merged, undirected edge in the knowledge graph.
 type Relation struct {
-	Source      string  `json:"source"` // canonical entity name
-	Target      string  `json:"target"` // canonical entity name
-	Description string  `json:"description"`
-	Weight      float32 `json:"weight"` // number of times the relationship was seen
+	Source      string `json:"source"` // canonical entity name
+	Target      string `json:"target"` // canonical entity name
+	Description string `json:"description"`
+	// Descriptions holds every distinct description each observed chunk gave for
+	// this relationship, in first-seen order. Description above is the compatible
+	// "main" value (the first description); old snapshots have no Descriptions,
+	// and RelationContext falls back to Description for them. Persisted.
+	Descriptions []string `json:"descriptions,omitempty"`
+	// Chunks lists the chunk ids in which this relationship was observed, the
+	// provenance that lets a document forget remove facts whose supporting text
+	// is gone. Absent for relations restored from older snapshots that never
+	// tracked provenance.
+	Chunks []string `json:"chunks,omitempty"`
+	Weight float32  `json:"weight"` // number of times the relationship was seen
 }
 
 // Graph accumulates entities and relationships across many extractions, merging
@@ -65,7 +75,8 @@ type Relation struct {
 type Graph struct {
 	entities  map[string]*Entity
 	relations map[[2]string]*Relation
-	descSeen  map[string]map[string]struct{} // entity -> set of descriptions, to dedupe
+	descSeen  map[string]map[string]struct{}    // entity -> set of descriptions, to dedupe
+	relDesc   map[[2]string]map[string]struct{} // relation key -> set of descriptions, to dedupe
 }
 
 // NewGraph creates an empty knowledge graph.
@@ -74,6 +85,7 @@ func NewGraph() *Graph {
 		entities:  map[string]*Entity{},
 		relations: map[[2]string]*Relation{},
 		descSeen:  map[string]map[string]struct{}{},
+		relDesc:   map[[2]string]map[string]struct{}{},
 	}
 }
 
@@ -194,10 +206,25 @@ func (g *Graph) Add(chunkID string, ex Extraction) {
 		if !ok {
 			r = &Relation{Source: key[0], Target: key[1]}
 			g.relations[key] = r
+			g.relDesc[key] = map[string]struct{}{}
 		}
 		r.Weight++
-		if d := strings.TrimSpace(rel.Description); d != "" && r.Description == "" {
-			r.Description = d
+		if chunkID != "" {
+			r.Chunks = append(r.Chunks, chunkID)
+		}
+		// Every distinct description of the edge is kept, not just the first one:
+		// different chunks describe the same relationship differently, and a single
+		// Description field silently discarded all but the first observation. The
+		// order is first-seen; Description stays the first one for backward
+		// compatibility with callers and old snapshots.
+		if d := strings.TrimSpace(rel.Description); d != "" {
+			if _, dup := g.relDesc[key][d]; !dup {
+				g.relDesc[key][d] = struct{}{}
+				r.Descriptions = append(r.Descriptions, d)
+				if r.Description == "" {
+					r.Description = d
+				}
+			}
 		}
 	}
 }
@@ -250,7 +277,26 @@ func Restore(entities []Entity, relations []Relation) *Graph {
 		}
 		cp := r
 		cp.Source, cp.Target = key[0], key[1]
+		// Legacy snapshots carry Description but no Descriptions list; treat the
+		// single field as the list so nothing is lost on a later merge, and rebuild
+		// the dedup set so a future Add keeps it deduped against what is on disk.
+		seen := map[string]struct{}{}
+		descs := cp.Descriptions
+		if len(descs) == 0 && cp.Description != "" {
+			descs = []string{cp.Description}
+		}
+		cp.Descriptions = cp.Descriptions[:0]
+		for _, d := range descs {
+			if s := strings.TrimSpace(d); s != "" {
+				if _, dup := seen[s]; dup {
+					continue
+				}
+				seen[s] = struct{}{}
+				cp.Descriptions = append(cp.Descriptions, s)
+			}
+		}
 		g.relations[key] = &cp
+		g.relDesc[key] = seen
 	}
 	return g
 }
@@ -261,6 +307,11 @@ func Restore(entities []Entity, relations []Relation) *Graph {
 // without re-running the extractor: an entity whose every mention has been deleted is
 // no longer evidenced by anything, and leaving it behind means entity-seeded
 // retrieval hands back chunk ids that are not in the store any more.
+//
+// Relations tracked with provenance (their Chunks field) are pruned the same way:
+// when every chunk that evidenced a fact is gone, the fact is a hanging assertion
+// with no supporting text and is removed. Relations from older snapshots that never
+// tracked provenance survive, so a legacy graph is not mass-emptied.
 //
 // It returns the number of entities dropped.
 func (g *Graph) DropChunks(gone map[string]bool) int {
@@ -280,16 +331,29 @@ func (g *Graph) DropChunks(gone map[string]bool) int {
 			dead[name] = true
 		}
 	}
-	if len(dead) == 0 {
-		return 0
-	}
 	for name := range dead {
 		delete(g.entities, name)
 		delete(g.descSeen, name)
 	}
 	for key := range g.relations {
-		if dead[key[0]] || dead[key[1]] {
+		r := g.relations[key]
+		if dead[r.Source] || dead[r.Target] {
 			delete(g.relations, key)
+			delete(g.relDesc, key)
+			continue
+		}
+		if len(r.Chunks) > 0 {
+			kept := r.Chunks[:0]
+			for _, c := range r.Chunks {
+				if !gone[c] {
+					kept = append(kept, c)
+				}
+			}
+			r.Chunks = kept
+			if len(r.Chunks) == 0 {
+				delete(g.relations, key)
+				delete(g.relDesc, key)
+			}
 		}
 	}
 	return len(dead)

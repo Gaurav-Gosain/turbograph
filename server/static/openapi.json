@@ -29,7 +29,7 @@
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IngestRequest" } } }
         },
         "responses": {
-          "200": { "description": "indexed", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" } } } } } },
+          "200": { "description": "indexed", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" }, "indexed": { "type": "integer" }, "documents": { "type": "array", "items": { "$ref": "#/components/schemas/DocChunkSample" } }, "dropped": { "type": "array", "items": { "type": "string" } }, "failed": { "type": "array", "items": { "type": "object" } }, "saved": { "type": "boolean" } } } } } },
           "400": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -44,7 +44,7 @@
           "content": { "application/json": { "schema": { "type": "object", "properties": { "files": { "type": "array", "items": { "$ref": "#/components/schemas/IngestFile" } } }, "required": ["files"] } } }
         },
         "responses": {
-          "200": { "description": "result", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" }, "indexed": { "type": "integer" }, "failed": { "type": "array", "items": { "type": "object" } }, "saved": { "type": "boolean" } } } } } },
+          "200": { "description": "result", "content": { "application/json": { "schema": { "type": "object", "properties": { "chunks": { "type": "integer" }, "indexed": { "type": "integer" }, "documents": { "type": "array", "items": { "$ref": "#/components/schemas/DocChunkSample" } }, "failed": { "type": "array", "items": { "type": "object" } }, "saved": { "type": "boolean" } } } } } },
           "400": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -176,6 +176,24 @@
           { "name": "batch", "in": "query", "schema": { "type": "integer", "default": 4 } }
         ],
         "responses": { "200": { "description": "SSE: progress then done", "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      },
+      "get": {
+        "tags": ["graphs"],
+        "summary": "Stream entity-graph build progress (SSE)",
+        "description": "Replays progress already made and follows the build live. Terminal events: done, error, or cancelled.",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "responses": { "200": { "description": "SSE: progress then done|cancelled|error", "content": { "text/event-stream": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/build-entities/cancel": {
+      "post": {
+        "tags": ["graphs"],
+        "summary": "Stop the in-flight entity-graph build",
+        "parameters": [{ "$ref": "#/components/parameters/bucket" }],
+        "responses": {
+          "200": { "description": "cancel requested", "content": { "application/json": { "schema": { "type": "object", "properties": { "cancelled": { "type": "boolean" }, "bucket": { "type": "string" } } } } } },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/build-communities": {
@@ -281,6 +299,15 @@
         "properties": {
           "documents": { "type": "array", "items": { "$ref": "#/components/schemas/Document" } },
           "replace": { "type": "boolean", "description": "Rebuild the bucket from scratch instead of adding incrementally." }
+        }
+      },
+      "DocChunkSample": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Document id." },
+          "chunks": { "type": "integer", "description": "How many chunks the document was split into." },
+          "first": { "type": "string", "description": "The first chunk's body, as an ingest preview." },
+          "last": { "type": "string", "description": "The last chunk's body; omitted when the document has a single chunk." }
         }
       },
       "IngestFile": {

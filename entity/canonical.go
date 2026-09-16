@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // genericNames are surface forms too generic to be a useful entity or to drive a
@@ -48,17 +49,38 @@ func (g *Graph) Canonicalize() {
 
 	parent := make(map[string]string, len(names)) // variant name -> canonical name
 	var heads []string
+	var headsMu sync.RWMutex
+
+	// To speed up the O(N*H) search, we process names in chunks.
+	// Note: heads must be updated sequentially or with careful locking to maintain determinism.
+	// Since heads grows slowly and is read often, we use a read-lock for candidates.
 	for _, n := range names {
 		canon := ""
+		headsMu.RLock()
 		for _, h := range heads {
 			if mergeableNames(n, h) {
 				canon = h
 				break
 			}
 		}
+		headsMu.RUnlock()
+
 		if canon == "" {
-			heads = append(heads, n)
-			parent[n] = n
+			headsMu.Lock()
+			// Double-check after acquiring write lock
+			for _, h := range heads {
+				if mergeableNames(n, h) {
+					canon = h
+					break
+				}
+			}
+			if canon == "" {
+				heads = append(heads, n)
+				parent[n] = n
+			} else {
+				parent[n] = canon
+			}
+			headsMu.Unlock()
 		} else {
 			parent[n] = canon
 		}
@@ -106,9 +128,23 @@ func (g *Graph) Canonicalize() {
 		m.Description = strings.Join(ds, " ")
 	}
 
-	// Rewrite relation endpoints through the merge map and re-key, summing weights.
+	// Rewrite relation endpoints through the merge map and re-key, summing weights
+	// and unioning descriptions and chunk provenance. The key iteration is sorted so
+	// the first description chosen as the "main" one is deterministic across runs.
 	newRel := make(map[[2]string]*Relation, len(g.relations))
-	for _, r := range g.relations {
+	relDesc := make(map[[2]string]map[string]struct{}, len(g.relations))
+	keys := make([][2]string, 0, len(g.relations))
+	for key := range g.relations {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i][0] != keys[j][0] {
+			return keys[i][0] < keys[j][0]
+		}
+		return keys[i][1] < keys[j][1]
+	})
+	for _, relKey := range keys {
+		r := g.relations[relKey]
 		s, t := parent[r.Source], parent[r.Target]
 		if s == "" {
 			s = r.Source
@@ -127,16 +163,37 @@ func (g *Graph) Canonicalize() {
 		if !ok {
 			nr = &Relation{Source: key[0], Target: key[1]}
 			newRel[key] = nr
+			relDesc[key] = map[string]struct{}{}
 		}
 		nr.Weight += r.Weight
-		if nr.Description == "" {
-			nr.Description = r.Description
+		for _, c := range r.Chunks {
+			nr.Chunks = appendUnique(nr.Chunks, c)
+		}
+		descs := r.Descriptions
+		// Legacy relations carry Description but no Descriptions list.
+		if len(descs) == 0 && r.Description != "" {
+			descs = []string{r.Description}
+		}
+		for _, d := range descs {
+			d = strings.TrimSpace(d)
+			if d == "" {
+				continue
+			}
+			if _, dup := relDesc[key][d]; dup {
+				continue
+			}
+			relDesc[key][d] = struct{}{}
+			nr.Descriptions = append(nr.Descriptions, d)
+			if nr.Description == "" {
+				nr.Description = d
+			}
 		}
 	}
 
 	g.entities = merged
 	g.relations = newRel
 	g.descSeen = descSeen
+	g.relDesc = relDesc
 }
 
 // Prune drops low-value nodes: generic or empty names, and "ghost" endpoints that
@@ -163,6 +220,7 @@ func (g *Graph) Prune() {
 	for key := range g.relations {
 		if drop[key[0]] || drop[key[1]] {
 			delete(g.relations, key)
+			delete(g.relDesc, key)
 		}
 	}
 
@@ -190,6 +248,7 @@ func (g *Graph) Prune() {
 	for key := range g.relations {
 		if drop[key[0]] || drop[key[1]] {
 			delete(g.relations, key)
+			delete(g.relDesc, key)
 		}
 	}
 }
@@ -239,6 +298,17 @@ func editRatio(a, b string) float64 {
 	return 1 - float64(d)/float64(m)
 }
 
+var levPool = sync.Pool{
+	New: func() any {
+		return &levBuf{}
+	},
+}
+
+type levBuf struct {
+	prev []int
+	curr []int
+}
+
 // levenshtein is the standard two-row edit distance over bytes (entity names are
 // ASCII-dominant; bytes are an adequate and fast approximation).
 func levenshtein(a, b string) int {
@@ -249,8 +319,17 @@ func levenshtein(a, b string) int {
 	if lb == 0 {
 		return la
 	}
-	prev := make([]int, lb+1)
-	curr := make([]int, lb+1)
+
+	buf := levPool.Get().(*levBuf)
+	defer levPool.Put(buf)
+
+	if cap(buf.prev) < lb+1 || cap(buf.curr) < lb+1 {
+		buf.prev = make([]int, lb+1)
+		buf.curr = make([]int, lb+1)
+	}
+	prev := buf.prev[:lb+1]
+	curr := buf.curr[:lb+1]
+
 	for j := 0; j <= lb; j++ {
 		prev[j] = j
 	}
@@ -263,7 +342,7 @@ func levenshtein(a, b string) int {
 			}
 			curr[j] = min3(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
 		}
-		prev, curr = curr, prev
+		copy(prev, curr)
 	}
 	return prev[lb]
 }

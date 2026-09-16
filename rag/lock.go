@@ -6,6 +6,11 @@ import (
 	"path/filepath"
 )
 
+// errLocked is the sentinel behind the "store is busy" error raised by TryLockStore
+// when another process holds the lock. Callers can errors.Is it to give a client a
+// distinct, actionable message.
+var errLocked = fmt.Errorf("lock is held by another process")
+
 // Lock is an advisory lock over a store file, held for the duration of a read or a
 // read-modify-write cycle.
 //
@@ -31,6 +36,18 @@ type Lock struct {
 // NFS or SMB, so two machines writing the same store on a network share are not
 // protected. Do not do that.
 func LockStore(path string, read bool) (*Lock, error) {
+	return lockStoreOpt(path, read, false)
+}
+
+// TryLockStore is LockStore without the blocking: it fails immediately with a
+// "store is busy" error when another process holds the lock. It is for
+// long-lived processes (the MCP server) that must not hang a tool call on a
+// contended store — the caller can surface "lock busy" instead.
+func TryLockStore(path string, read bool) (*Lock, error) {
+	return lockStoreOpt(path, read, true)
+}
+
+func lockStoreOpt(path string, read bool, try bool) (*Lock, error) {
 	lp := path + ".lock"
 	if dir := filepath.Dir(lp); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -41,8 +58,11 @@ func LockStore(path string, read bool) (*Lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rag: cannot open the store lock %s: %w", lp, err)
 	}
-	if err := lockFD(f, read); err != nil {
+	if err := lockFD(f, read, try); err != nil {
 		f.Close()
+		if try {
+			return nil, fmt.Errorf("rag: store %s is busy (held by another process): %w", path, errLocked)
+		}
 		return nil, fmt.Errorf("rag: cannot lock %s: %w", lp, err)
 	}
 	return &Lock{f: f, path: lp}, nil

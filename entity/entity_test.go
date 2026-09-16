@@ -208,3 +208,128 @@ func TestCleanDropsVerbEndpoints(t *testing.T) {
 		t.Error("Lakemont was dropped; a capitalized endpoint is a real entity")
 	}
 }
+
+// TestRelationDescriptionsAreKeptAndDeduped pins B3: a relationship observed with
+// different descriptions in different chunks keeps every distinct description, and
+// Description stays the compatible "main" value (the first one).
+func TestRelationDescriptionsAreKeptAndDeduped(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "makes"}}})
+	g.Add("c2", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "produces"}}})
+	g.Add("c3", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "makes"}}})
+	rels := g.Relations()
+	if len(rels) != 1 {
+		t.Fatalf("relations = %d, want 1", len(rels))
+	}
+	r := rels[0]
+	if r.Description != "makes" {
+		t.Errorf("main Description = %q, want first seen %q", r.Description, "makes")
+	}
+	want := []string{"makes", "produces"}
+	if strings.Join(r.Descriptions, "|") != strings.Join(want, "|") {
+		t.Errorf("Descriptions = %v, want %v", r.Descriptions, want)
+	}
+	if len(r.Chunks) != 3 {
+		t.Errorf("Chunks = %v, want 3 provenance entries", r.Chunks)
+	}
+}
+
+// TestRelationDescriptionsSurviveSnapshot pins that the dedup set is rebuilt on
+// restore, so re-adding a known description after a load does not duplicate it.
+func TestRelationDescriptionsSurviveSnapshot(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "makes"}}})
+	g.Add("c2", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "produces"}}})
+
+	g2 := Restore(g.Entities(), g.Relations())
+	g2.Add("c3", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "produces"}}})
+	rels := g2.Relations()
+	if len(rels) != 1 {
+		t.Fatalf("relations = %d, want 1", len(rels))
+	}
+	if len(rels[0].Descriptions) != 2 {
+		t.Errorf("after restore+deduped add, Descriptions = %v, want 2 distinct", rels[0].Descriptions)
+	}
+	// Legacy snapshot without Descriptions: Description alone must survive.
+	g3 := Restore([]Entity{}, []Relation{{Source: "Acme", Target: "Widget", Description: "legacy fact"}})
+	g3.Add("c4", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "legacy fact"}}})
+	r3 := g3.Relations()
+	if len(r3) != 1 || len(r3[0].Descriptions) != 1 {
+		t.Errorf("legacy Description not recovered, got %+v", r3)
+	}
+	if r3[0].Description != "legacy fact" {
+		t.Errorf("main Description lost = %q", r3[0].Description)
+	}
+}
+
+// TestCanonicalizeUnionsRelationDescriptions pins that merging surface variants
+// into one entity also unions (and dedups) the relation's descriptions and chunk
+// provenance, with a deterministic main Description.
+func TestCanonicalizeUnionsRelationDescriptions(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{
+		Entities:  []ExtractedEntity{{Name: "Ada Lovelace", Type: "person", Description: "mathematician"}},
+		Relations: []ExtractedRelation{{Source: "Ada Lovelace", Target: "Analytical Engine", Description: "wrote algorithm for"}},
+	})
+	g.Add("c2", Extraction{
+		Entities:  []ExtractedEntity{{Name: "Lovelace", Type: "person", Description: "poet"}},
+		Relations: []ExtractedRelation{{Source: "Lovelace", Target: "Analytical Engine", Description: "described the machine for"}},
+	})
+	ends := len(g.Relations())
+	if ends != 2 {
+		t.Fatalf("pre-canonicalize relations = %d, want 2 distinct edges (Ada Lovelace + Lovelace)", ends)
+	}
+	g.Canonicalize()
+	rels := g.Relations()
+	if len(rels) != 1 {
+		t.Fatalf("canonicalized relations = %d, want 1", len(rels))
+	}
+	r := rels[0]
+	if r.Description != "wrote algorithm for" {
+		t.Errorf("main Description = %q, want deterministic first", r.Description)
+	}
+	if len(r.Descriptions) != 2 {
+		t.Errorf("Descriptions = %v, want the 2 distinct ones", r.Descriptions)
+	}
+	if len(r.Chunks) != 2 {
+		t.Errorf("Chunks = %v, want 2 provenance entries", r.Chunks)
+	}
+}
+
+// TestDropChunksDropsHangingRelations pins A1: a relation that tracked provenance
+// and lost every supporting chunk is removed, a legacy relation with no provenance
+// survives (compat gate), and relations touching a dead entity always go.
+func TestDropChunksDropsHangingRelations(t *testing.T) {
+	g := NewGraph()
+	g.Add("c1", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "makes"}}})
+	g.Add("c2", Extraction{Relations: []ExtractedRelation{{Source: "Acme", Target: "Widget", Description: "produces"}}})
+	g.Add("solo", Extraction{Relations: []ExtractedRelation{{Source: "Alice", Target: "Bob", Description: "knows"}}})
+	// Legacy relation, no chunk provenance at all.
+	g.Add("c3", Extraction{Relations: []ExtractedRelation{{Source: "LegacyA", Target: "LegacyB", Description: "old"}}})
+	for _, r := range g.Relations() {
+		if r.Source == "LegacyA" {
+			r.Chunks = nil // simulate a snapshot that never tracked provenance
+		}
+	}
+
+	// Drop every chunk that evidenced the Acme-Widget and Alice-Bob edges. LegacyA/B
+	// evidence (c3) stays. Every entity named only in those dropped chunks dies with
+	// them, including relation endpoints.
+	dropped := g.DropChunks(map[string]bool{"c1": true, "c2": true, "solo": true})
+	if dropped != 4 {
+		t.Errorf("dropped %d entities, want 4 (acme, widget, alice, bob)", dropped)
+	}
+	byEndpoints := map[[2]string]string{}
+	for _, r := range g.Relations() {
+		byEndpoints[[2]string{r.Source, r.Target}] = r.Description
+	}
+	if _, ok := byEndpoints[[2]string{"acme", "widget"}]; ok {
+		t.Errorf("hanging Acme-Widget fact survived DropChunks: %v", g.Relations())
+	}
+	if _, ok := byEndpoints[[2]string{"alice", "bob"}]; ok {
+		t.Errorf("Alice-Bob lost every supporting chunk and must go: %v", byEndpoints)
+	}
+	if _, ok := byEndpoints[[2]string{"legacya", "legacyb"}]; !ok {
+		t.Errorf("legacy relation without provenance must survive the gate, got %v", byEndpoints)
+	}
+}

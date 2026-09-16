@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -18,14 +19,16 @@ import (
 // graph-so-far instead of staring at an empty canvas; the terminal result is held
 // until the next build for the same bucket replaces the job.
 type entBuildJob struct {
-	mu       sync.Mutex
-	events   []map[string]any // progress payloads, in order, for replay
-	running  bool
-	finished bool
-	done     map[string]int // the terminal "done" payload
-	errMsg   string
+	mu        sync.Mutex
+	events    []map[string]any // progress payloads, in order, for replay
+	running   bool
+	finished  bool
+	cancelled bool
+	done      map[string]int // the terminal "done" payload
+	errMsg    string
 	// Snapshot counters, so the cheap status endpoint does not have to walk events.
 	nDone, total, entities, relations int
+	ctx                               context.Context
 	cancel                            context.CancelFunc
 }
 
@@ -34,7 +37,7 @@ func (j *entBuildJob) record(p rag.EntityProgress) {
 	// progress handling is unchanged: "new" and "edges" carry the entities and
 	// relationships this chunk surfaced, so the graph draws as it is discovered.
 	payload := map[string]any{
-		"done": p.Done, "total": p.Total, "cached": p.Cached,
+		"done": p.Done, "total": p.Total, "cached": p.Cached, "skipped": p.SkippedEmpty,
 		"entities": p.Entities, "relations": p.Relations,
 		"new": p.New, "edges": p.NewRelations,
 	}
@@ -51,6 +54,13 @@ func (j *entBuildJob) fail(msg string) {
 	j.mu.Unlock()
 }
 
+func (j *entBuildJob) cancelledDone() {
+	j.mu.Lock()
+	j.cancelled = true
+	j.running, j.finished = false, true
+	j.mu.Unlock()
+}
+
 func (j *entBuildJob) complete(done map[string]int) {
 	j.mu.Lock()
 	j.done = done
@@ -61,7 +71,7 @@ func (j *entBuildJob) complete(done map[string]int) {
 // startEntBuild launches a detached build for the bucket unless one is already
 // running, and returns the job to stream. It never starts a second concurrent build
 // for the same bucket: a caller that arrives while one is in flight attaches to it.
-func (s *Server) startEntBuild(bucket string, st *rag.Store, model string, batch int, refresh bool) *entBuildJob {
+func (s *Server) startEntBuild(bucket string, st *rag.Store, model string, batch int, refresh bool, ratio float32, minTokens int) *entBuildJob {
 	s.entJobsMu.Lock()
 	if s.entJobs == nil {
 		s.entJobs = map[string]*entBuildJob{}
@@ -76,10 +86,13 @@ func (s *Server) startEntBuild(bucket string, st *rag.Store, model string, batch
 		}
 	}
 	job := &entBuildJob{running: true}
+	// The cancel hook is installed before the build goroutine exists, so a cancel
+	// request can never race a build that is not yet cancellable.
+	job.ctx, job.cancel = context.WithCancel(context.Background())
 	s.entJobs[bucket] = job
 	s.entJobsMu.Unlock()
 
-	go s.runEntBuild(bucket, job, st, model, batch, refresh)
+	go s.runEntBuild(bucket, job, st, model, batch, refresh, ratio, minTokens)
 	return job
 }
 
@@ -90,19 +103,17 @@ func (s *Server) entJob(bucket string) *entBuildJob {
 	return s.entJobs[bucket]
 }
 
-func (s *Server) runEntBuild(bucket string, job *entBuildJob, st *rag.Store, model string, batch int, refresh bool) {
-	ctx, cancel := context.WithCancel(context.Background())
-	job.mu.Lock()
-	job.cancel = cancel
-	job.mu.Unlock()
-	defer cancel()
+func (s *Server) runEntBuild(bucket string, job *entBuildJob, st *rag.Store, model string, batch int, refresh bool, ratio float32, minTokens int) {
+	defer job.cancel()
 
 	var extracted, cached int
 	ex := entity.NewLLMExtractor(genAdapter{c: s.gen, model: model})
-	err := st.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
-		BatchSize: batch,
-		Model:     model,
-		Refresh:   refresh,
+	err := st.BuildEntityGraph(job.ctx, ex, rag.EntityBuildOptions{
+		BatchSize:          batch,
+		Model:              model,
+		Refresh:            refresh,
+		PrefilterRatio:     ratio,
+		PrefilterMinTokens: minTokens,
 		OnProgress: func(p rag.EntityProgress) {
 			extracted = p.Entities // raw count, before canonicalization prunes and merges
 			cached = p.Cached
@@ -110,6 +121,10 @@ func (s *Server) runEntBuild(bucket string, job *entBuildJob, st *rag.Store, mod
 		},
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			job.cancelledDone()
+			return
+		}
 		job.fail(err.Error())
 		return
 	}
@@ -141,16 +156,19 @@ func (j *entBuildJob) stream(w http.ResponseWriter, r *http.Request) {
 		j.mu.Lock()
 		batch := append([]map[string]any(nil), j.events[cursor:]...)
 		cursor = len(j.events)
-		fin, errMsg, done := j.finished, j.errMsg, j.done
+		fin, errMsg, done, cancelled := j.finished, j.errMsg, j.done, j.cancelled
 		j.mu.Unlock()
 
 		for _, e := range batch {
 			send("progress", e)
 		}
 		if fin {
-			if errMsg != "" {
+			switch {
+			case cancelled:
+				send("cancelled", map[string]bool{"cancelled": true})
+			case errMsg != "":
 				send("error", map[string]string{"error": errMsg})
-			} else {
+			default:
 				send("done", done)
 			}
 			return
@@ -161,4 +179,29 @@ func (j *entBuildJob) stream(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
+}
+
+// handleEntityBuildCancel stops the in-flight entity build for the bucket. The
+// build's context is cancelled, the workers finish whatever model call is under
+// way, and the job reaches a terminal "cancelled" state: the stream sends a
+// "cancelled" event instead of "done", the store is not persisted with a partial
+// graph, and a later build call starts clean (the extraction cache is left as-is,
+// so nothing already extracted is paid for twice). A job that is not running
+// returns 409.
+func (s *Server) handleEntityBuildCancel(w http.ResponseWriter, r *http.Request) {
+	job := s.entJob(bucketOf(r))
+	if job == nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "no entity build for this bucket"})
+		return
+	}
+	job.mu.Lock()
+	running := job.running
+	cancel := job.cancel
+	job.mu.Unlock()
+	if !running || cancel == nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "entity build is not running"})
+		return
+	}
+	cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "bucket": bucketOf(r)})
 }

@@ -118,14 +118,13 @@ func (s *Server) chatGlobal(w http.ResponseWriter, r *http.Request, st *rag.Stor
 		return
 	}
 	// Report the communities as sources, reusing the source shape so the UI can
-	// list them; one representative document id per community.
+	// list them.  The "fragment" is a real verbatim member passage (not the
+	// generated summary), so the user sees an actual document quote.  The chunk's
+	// DocID and [start,end) offsets let the source-preview panel highlight the
+	// exact passage within its original document.
 	srcs := make([]queryResult, len(comms))
 	for i, c := range comms {
-		doc := fmt.Sprintf("community %d", c.Label)
-		if len(c.DocIDs) > 0 {
-			doc = fmt.Sprintf("%d docs incl. %s", len(c.DocIDs), c.DocIDs[0])
-		}
-		srcs[i] = queryResult{ID: fmt.Sprintf("community-%d", c.Label), DocID: doc, Text: c.Summary, Start: -1, End: -1}
+		srcs[i] = communitySource(st, c)
 	}
 	send("sources", map[string]any{"sources": srcs})
 
@@ -139,6 +138,46 @@ func (s *Server) chatGlobal(w http.ResponseWriter, r *http.Request, st *rag.Stor
 		return
 	}
 	send("done", map[string]bool{"done": true})
+}
+
+// communitySource returns a queryResult for one community whose fragment is a
+// real verbatim member passage, never the generated summary.  It picks the first
+// text chunk with known document offsets so the source-preview panel can
+// highlight it in context.  Fallback is one of the remaining text chunks, or
+// the summary only if the community is somehow empty.
+func communitySource(st *rag.Store, c rag.CommunitySummary) queryResult {
+	id := fmt.Sprintf("community-%d", c.Label)
+	fallback := queryResult{ID: id, DocID: id, Text: c.Summary, Start: -1, End: -1}
+	if len(c.Chunks) == 0 {
+		return fallback
+	}
+	chunks := st.ChunksByID(c.Chunks)
+	if len(chunks) == 0 {
+		return fallback
+	}
+	// Prefer a normal text chunk with known document span.
+	for _, ch := range chunks {
+		if ch.Kind == "" && ch.Start >= 0 && ch.End > ch.Start {
+			return queryResult{
+				ID: ch.ID, DocID: ch.DocID, Text: ch.Text,
+				Start: ch.Start, End: ch.End,
+			}
+		}
+	}
+	// Any text chunk; may not highlight if offsets are -1.
+	for _, ch := range chunks {
+		if ch.Kind == "" && ch.Text != "" {
+			return queryResult{
+				ID: ch.ID, DocID: ch.DocID, Text: ch.Text,
+				Start: ch.Start, End: ch.End,
+			}
+		}
+	}
+	ch := chunks[0]
+	return queryResult{
+		ID: ch.ID, DocID: ch.DocID, Text: ch.Text,
+		Start: ch.Start, End: ch.End, Kind: ch.Kind, ImageRef: ch.ImageRef,
+	}
 }
 
 const communityAnswerSystem = "You answer broad questions about a corpus using the provided section summaries. " +

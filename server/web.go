@@ -218,11 +218,22 @@ func (s *Server) handleBuildEntities(w http.ResponseWriter, r *http.Request) {
 	}
 	// refresh=1 ignores the extraction cache and re-asks the model about every chunk.
 	refresh := r.URL.Query().Get("refresh") == "1"
+	// ratio / min_tokens enable the prefilter: chunks with a letter ratio below
+	// `ratio` (0..1) or fewer than `min_tokens` words never reach the model and are
+	// reported as skipped. Both default (0/missing) to the old behavior.
+	var ratio float32
+	var minTokens int
+	if f, err := strconv.ParseFloat(r.URL.Query().Get("ratio"), 32); err == nil && f > 0 {
+		ratio = float32(f)
+	}
+	if n, err := strconv.Atoi(r.URL.Query().Get("min_tokens")); err == nil && n > 0 {
+		minTokens = n
+	}
 
 	// The build runs in its own goroutine so it survives this client disconnecting;
 	// this request just streams its progress. A reconnecting client uses GET on the
 	// same path (handleEntityBuildStream) to reattach.
-	job := s.startEntBuild(bucketOf(r), st, model, batch, refresh)
+	job := s.startEntBuild(bucketOf(r), st, model, batch, refresh, ratio, minTokens)
 	job.stream(w, r)
 }
 
@@ -250,7 +261,8 @@ func (s *Server) handleBuildStatus(w http.ResponseWriter, r *http.Request) {
 	job.mu.Lock()
 	resp := map[string]any{
 		"running": job.running, "finished": job.finished,
-		"done": job.nDone, "total": job.total,
+		"cancelled": job.cancelled,
+		"done":      job.nDone, "total": job.total,
 		"entities": job.entities, "relations": job.relations,
 	}
 	job.mu.Unlock()
@@ -394,10 +406,15 @@ func (s *Server) handleIngestFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	ids := make([]string, len(docs))
+	for i, d := range docs {
+		ids[i] = d.ID
+	}
 	saved, saveErr := s.persist(bucketOf(r))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"chunks":     st.Len(),
 		"indexed":    len(docs),
+		"documents":  st.DocChunkSamples(ids),
 		"failed":     failed,
 		"dropped":    dropped,
 		"saved":      saved,

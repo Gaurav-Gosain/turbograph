@@ -194,3 +194,59 @@ func TestRetrieveDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestDocChunkSamples(t *testing.T) {
+	st := newTestStore(t)
+	// Pick any known doc ids from the bridge corpus; expect chunks to exist.
+	var ids []string
+	for _, d := range st.Documents() {
+		ids = append(ids, d.ID)
+	}
+	if len(ids) == 0 {
+		t.Fatal("expected at least one document")
+	}
+	samples := st.DocChunkSamples(append(ids, "nonexistent-doc"))
+	if len(samples) == 0 {
+		t.Fatal("expected at least one sample")
+	}
+	for _, s := range samples {
+		if s.Chunks == 0 {
+			t.Errorf("sample %s has 0 chunks", s.ID)
+		}
+		if s.First == "" {
+			t.Errorf("sample %s has empty first chunk", s.ID)
+		}
+		if s.Chunks > 1 && s.Last == "" {
+			t.Errorf("sample %s has >1 chunks but empty last", s.ID)
+		}
+	}
+}
+
+func TestChunksByID(t *testing.T) {
+	st := newTestStore(t)
+	// Collect every chunk id present in the store.
+	var ids []string
+	for i := 0; i < st.Len(); i++ {
+		c := st.Chunk(i)
+		ids = append(ids, c.ID)
+	}
+	if len(ids) == 0 {
+		t.Fatal("expected chunks in store")
+	}
+	got := st.ChunksByID(append(ids, "no/such/id"))
+	if len(got) != len(ids) {
+		t.Fatalf("expected %d chunks, got %d", len(ids), len(got))
+	}
+	for i, id := range ids {
+		if got[i].ID != id {
+			t.Errorf("slot %d: expected %s, got %s", i, id, got[i].ID)
+		}
+		if got[i].Text == "" {
+			t.Errorf("slot %d: empty text for %s", i, id)
+		}
+	}
+	// Empty slice returns empty.
+	if out := st.ChunksByID(nil); len(out) != 0 {
+		t.Errorf("expected empty slice for nil ids, got %d", len(out))
+	}
+}

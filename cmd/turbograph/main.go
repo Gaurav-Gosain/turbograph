@@ -397,12 +397,15 @@ func cmdIngest(args []string) error {
 	bits := fs.Int("bits", 4, "quantization bits per coordinate (1-8)")
 	residual := fs.Int("residual", 32, "QJL residual projections (0-64)")
 	knn := fs.Int("knn", 12, "similarity neighbors per chunk in the graph")
+	ef := fs.Int("ef", 0, "query-time HNSW search width (0 = store default 64)")
+	efGather := fs.Int("ef-gather", 0, "seed-gather HNSW width for PageRank seeds (0 = gather at max(ef,3*topk); off until recall evidence)")
+	stem := fs.Bool("stem", false, "enable BM25 morphological stemming (English Porter, Russian Snowball) and language stopwords; must stay consistent between indexing and querying")
 	target := fs.Int("chunk-words", 120, "target chunk size in words")
 	overlap := fs.Int("chunk-overlap", 24, "chunk overlap in words")
 	chunkStrategy := fs.String("chunk-strategy", rag.StrategyRecursive, "chunking strategy: recursive, word, markdown, or sentence")
 	minSim := fs.Float64("min-sim", 0.5, "minimum cosine similarity for a graph edge")
 	batch := fs.Int("batch", 64, "embedding request batch size: max chunks sent to the backend per call (1 = one chunk per call; applies to a freshly built store, a resumed store keeps its saved setting)")
-	workers := fs.Int("workers", 0, "documents embedded concurrently (0 = number of CPUs)")
+	workers := fs.Int("workers", 0, "documents embedded concurrently (0 = store config IngestWorkers, else number of CPUs)")
 	checkpoint := fs.Int("checkpoint", 200, "save the store every N documents for crash recovery (0 = only at end)")
 	pdfCmd := fs.String("pdf-cmd", "", "override the pdf extraction command, {in} for input path")
 	ocrCmd := fs.String("ocr-cmd", "", "OCR command for scanned pdfs and images, e.g. a PaddleOCR PP-OCRv6 wrapper")
@@ -410,6 +413,7 @@ func cmdIngest(args []string) error {
 	entModel := fs.String("gen-model", "", "model used to extract entities when --entities is set")
 	entBatch := fs.Int("entity-batch", 4, "chunks per model call during entity extraction (1 = one call per chunk; higher is faster but can dilute a small model)")
 	lean := fs.String("lean", "exact", "vector storage in the .tg file: exact (float32), codes (compact TurboQuant, ~40% size, ~98% recall), or text (no vectors, re-embed on load, smallest and lossless)")
+	bak := fs.Bool("bak", false, "keep a .bak of the previous store at each save, so a later bad save can be rolled back (default off)")
 	fs.Parse(args)
 
 	if *src == "" {
@@ -464,6 +468,9 @@ func cmdIngest(args []string) error {
 			Bits: *bits, ResidualDims: *residual, GraphKNN: *knn,
 			MinSimilarity:  float32(*minSim),
 			EmbedBatchSize: *batch,
+			EfSearch:       *ef,
+			EfGather:       *efGather,
+			LexicalStem:    *stem,
 			Chunk:          rag.ChunkConfig{Strategy: *chunkStrategy, TargetWords: *target, OverlapWords: *overlap},
 		})
 	}
@@ -479,15 +486,15 @@ func cmdIngest(args []string) error {
 	prog, ingErr := store.Ingest(ctx, docs, 0, rag.IngestOptions{
 		Workers:         *workers,
 		Journal:         journal,
-		Save:            func() error { return saveStore(store, *out, vmode) },
+		Save:            func() error { return saveStoreOpt(store, *out, vmode, *bak) },
 		CheckpointEvery: *checkpoint,
 		OnProgress: func(p rag.Progress) {
-			fmt.Fprintf(os.Stderr, "\rdone %d  failed %d  skipped %d  chunks %d", p.Done, p.Failed, p.Skipped, p.Chunks)
+			fmt.Fprintf(os.Stderr, "\rdone %d  failed %d  skipped %d  chunks %d  embedded %d", p.Done, p.Failed, p.Skipped, p.Chunks, p.ChunksEmbedded)
 		},
 	})
 	fmt.Fprintln(os.Stderr)
 
-	if err := saveStore(store, *out, vmode); err != nil {
+	if err := saveStoreOpt(store, *out, vmode, *bak); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "indexed %d new documents (%d chunks) in %s; store has %d documents, %d chunks\n",
@@ -623,6 +630,15 @@ func (d dirEntry) Info() (os.FileInfo, error) { return d.fi, nil }
 // ingest checkpointing exists to survive. A rename is atomic, so the old store stands
 // until the new one is complete.
 func saveStore(store *rag.Store, path string, mode rag.VectorMode) error {
+	return saveStoreOpt(store, path, mode, false)
+}
+
+// saveStoreOpt is saveStore with an optional keep-one backup. When keepBackup is
+// true, the previous store at path is renamed to path+".bak" before the new store
+// takes its place, so a later bad save can be rolled back to the last good one.
+// Default is off: backups double the disk writes and are not needed for the common
+// single-store workflow.
+func saveStoreOpt(store *rag.Store, path string, mode rag.VectorMode, keepBackup bool) error {
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -638,8 +654,25 @@ func saveStore(store *rag.Store, path string, mode rag.VectorMode) error {
 		tmp.Close()
 		return err
 	}
+	// fsync before the rename: a rename alone can land before the file's data blocks
+	// are flushed, so after a power loss the new .tg may exist but hold only the tail
+	// of the write. Syncing first guarantees that once the rename is visible, the
+	// whole store is durable beneath it.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	if keepBackup {
+		if _, err := os.Stat(path); err == nil {
+			if err := os.Rename(path, path+".bak"); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return os.Rename(tmp.Name(), path)
 }
@@ -743,6 +776,17 @@ func cmdStats(args []string) error {
 		return err
 	}
 	fmt.Printf("chunks: %d\n", store.Len())
+	cs := store.CacheStats()
+	fmt.Printf("extract cache: %d entries, %d bytes", cs.ExtractEntries, cs.ExtractBytes)
+	if cs.ExtractMaxEntries > 0 || cs.ExtractMaxBytes > 0 {
+		fmt.Printf(" (cap %d entries / %d bytes)", cs.ExtractMaxEntries, cs.ExtractMaxBytes)
+	}
+	fmt.Println()
+	fmt.Printf("versions: %d across %d documents", cs.Versions, cs.VersionDocs)
+	if cs.MaxVersions > 0 {
+		fmt.Printf(" (max %d per doc)", cs.MaxVersions)
+	}
+	fmt.Println()
 	return nil
 }
 

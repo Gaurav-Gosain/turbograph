@@ -226,3 +226,97 @@ func TestIngestCancel(t *testing.T) {
 		t.Errorf("doc count %d != done %d after cancel", st.DocCount(), prog.Done)
 	}
 }
+
+// TestIngestDedupWithinDoc: with the flag on, repeated passages inside one document
+// are embedded and indexed once; off, they are indexed every time.
+func TestIngestDedupWithinDoc(t *testing.T) {
+	sentence := "The quick brown fox jumps over the lazy dog near the river bank."
+	text := strings.TrimSpace(strings.Repeat(sentence+" ", 24))
+	cfg := Config{Seed: 1, Chunk: ChunkConfig{Strategy: StrategySentence, TargetWords: 2}}
+	mk := func() *Store { return New(newKeywordEmbedder(96), cfg) }
+
+	off := mk()
+	_, err := off.Ingest(context.Background(), feed([]Document{{ID: "d", Text: text}}), 1,
+		IngestOptions{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := mk()
+	progOn, err := on.Ingest(context.Background(), feed([]Document{{ID: "d", Text: text}}), 1,
+		IngestOptions{Workers: 1, DedupWithinDoc: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progOn.Chunks != 1 {
+		t.Errorf("dedup within doc: %d unique chunks, want 1 (the whole doc is one repeated sentence)", progOn.Chunks)
+	}
+	if on.Len() >= off.Len() || on.Len() != progOn.Chunks {
+		t.Errorf("dedup left %d chunks vs %d without, want fewer (and equal to the embed count)", on.Len(), off.Len())
+	}
+	if progOn.ChunksEmbedded != progOn.Chunks {
+		t.Errorf("dedup embedded %d chunks for %d stored, want them equal (duplicates neither stored nor embedded)",
+			progOn.ChunksEmbedded, progOn.Chunks)
+	}
+}
+
+// TestIngestChunksEmbeddedReuseVectors: ChunksEmbedded equals Chunks on a first
+// ingest, but an update that keeps some chunk text reuses its embeddings, so only
+// the changed chunk is embedded.
+func TestIngestChunksEmbeddedReuseVectors(t *testing.T) {
+	st := New(newKeywordEmbedder(96), Config{Seed: 1,
+		Chunk: ChunkConfig{Strategy: StrategySentence, TargetWords: 8}})
+	mkText := func(tail string) string {
+		var b strings.Builder
+		for i := 1; i <= 30; i++ {
+			fmt.Fprintf(&b, "Sentence number %d about the topic with some detail words. ", i)
+			if i == 30 {
+				b.WriteString(tail + " ")
+			}
+		}
+		return b.String()
+	}
+	first := mkText("")
+	prog1, err := st.Ingest(context.Background(), feed([]Document{{ID: "d", Text: first}}), 1, IngestOptions{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prog1.ChunksEmbedded != prog1.Chunks || prog1.Chunks == 0 {
+		t.Fatalf("first ingest should embed every chunk: embedded=%d chunks=%d", prog1.ChunksEmbedded, prog1.Chunks)
+	}
+	// Change only the last sentence: every earlier chunk reuses its vector.
+	updated := mkText("This replacement sentence only now appears here.")
+	prog2, err := st.Ingest(context.Background(), feed([]Document{{ID: "d", Text: updated}}), 1, IngestOptions{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prog2.Chunks < 1 || prog2.ChunksEmbedded < 1 {
+		t.Fatalf("update should add and embed the changed tail chunk, got %+v", prog2)
+	}
+	if prog2.ChunksEmbedded >= prog2.Chunks {
+		t.Errorf("update embedded %d of %d chunks, want < (earlier chunks reused)", prog2.ChunksEmbedded, prog2.Chunks)
+	}
+}
+
+// TestIngestConfigWorkersDefault: Workers:0 falls back to Config.IngestWorkers, and
+// the result is deterministic (same docs, same count as an explicit single-worker run).
+func TestIngestConfigWorkersDefault(t *testing.T) {
+	docs := genDocs(40)
+	run := func(opt IngestOptions) (int, int) {
+		st := New(newKeywordEmbedder(96), Config{Seed: 1, IngestWorkers: 3,
+			Chunk: ChunkConfig{TargetWords: 200}})
+		p, err := st.Ingest(context.Background(), feed(docs), len(docs), opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Done, st.Len()
+	}
+	doneCfg, chunksCfg := run(IngestOptions{}) // Workers 0 -> Config.IngestWorkers
+	if doneCfg != 40 {
+		t.Errorf("config-workers run ingested %d docs, want 40", doneCfg)
+	}
+	doneSer, chunksSer := run(IngestOptions{Workers: 1}) // explicit serial baseline
+	if doneCfg != doneSer || chunksCfg != chunksSer {
+		t.Errorf("config-workers (%d/%d) diverged from serial (%d/%d)",
+			doneCfg, chunksCfg, doneSer, chunksSer)
+	}
+}

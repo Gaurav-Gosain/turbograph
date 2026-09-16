@@ -42,7 +42,13 @@ func (s *Store) recordVersionLocked(id string, h [32]byte, text string, chunks i
 	if n := len(v); n > 0 && v[n-1].Hash == h {
 		return
 	}
-	s.versions[id] = append(v, docVersion{Hash: h, Time: nowUnix(), Text: text, Chunks: chunks})
+	v = append(v, docVersion{Hash: h, Time: nowUnix(), Text: text, Chunks: chunks})
+	// Cap the history so an aggressively-updated document cannot grow the store
+	// without bound. 0 (the default) keeps the old unbounded behavior.
+	if s.cfg.MaxVersions > 0 && len(v) > s.cfg.MaxVersions {
+		v = v[len(v)-s.cfg.MaxVersions:]
+	}
+	s.versions[id] = v
 }
 
 // DocVersions returns the version history of a document, oldest first, marking

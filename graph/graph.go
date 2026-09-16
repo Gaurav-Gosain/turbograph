@@ -8,6 +8,7 @@ package graph
 import (
 	"math"
 	"sort"
+	"sync"
 )
 
 // Builder accumulates weighted undirected edges before they are frozen into the
@@ -75,7 +76,15 @@ func (b *Builder) Build() *Graph {
 		outSum[i] = s
 	}
 	rowPtr[b.n] = pos
-	return &Graph{n: b.n, rowPtr: rowPtr, cols: cols, wts: wts, outSum: outSum}
+	return &Graph{
+		n: b.n, rowPtr: rowPtr, cols: cols, wts: wts, outSum: outSum,
+		vecPool: sync.Pool{
+			New: func() any {
+				v := make([]float32, b.n)
+				return &v
+			},
+		},
+	}
 }
 
 // Graph is an immutable weighted undirected graph in compressed sparse row form.
@@ -85,6 +94,9 @@ type Graph struct {
 	cols   []int32
 	wts    []float32
 	outSum []float32
+
+	// vecPool reuses PageRank buffers to avoid per-query allocations.
+	vecPool sync.Pool
 }
 
 // Snapshot is a serializable view of the graph's CSR arrays.
@@ -103,7 +115,15 @@ func (g *Graph) Snapshot() Snapshot {
 
 // Restore rebuilds a graph from a snapshot.
 func Restore(s Snapshot) *Graph {
-	return &Graph{n: s.N, rowPtr: s.RowPtr, cols: s.Cols, wts: s.Wts, outSum: s.OutSum}
+	return &Graph{
+		n: s.N, rowPtr: s.RowPtr, cols: s.Cols, wts: s.Wts, outSum: s.OutSum,
+		vecPool: sync.Pool{
+			New: func() any {
+				v := make([]float32, s.N)
+				return &v
+			},
+		},
+	}
 }
 
 // N returns the number of nodes.
@@ -157,10 +177,13 @@ func (g *Graph) PersonalizedPageRank(seeds map[int]float32, p PPRParams) []float
 		s[i] *= inv
 	}
 
-	r := make([]float32, g.n)
+	rp := g.vecPool.Get().(*[]float32)
+	r := *rp
 	copy(r, s)
-	next := make([]float32, g.n)
+	nextp := g.vecPool.Get().(*[]float32)
+	next := *nextp
 	d := p.Damping
+
 	for iter := 0; iter < p.MaxIter; iter++ {
 		// Restart component.
 		for i := range next {
@@ -188,6 +211,7 @@ func (g *Graph) PersonalizedPageRank(seeds map[int]float32, p PPRParams) []float
 				next[i] += d * dangling * s[i]
 			}
 		}
+
 		var diff float32
 		for i := range r {
 			diff += float32(math.Abs(float64(next[i] - r[i])))
@@ -197,5 +221,10 @@ func (g *Graph) PersonalizedPageRank(seeds map[int]float32, p PPRParams) []float
 			break
 		}
 	}
-	return r
+
+	res := make([]float32, g.n)
+	copy(res, r)
+	g.vecPool.Put(rp)
+	g.vecPool.Put(nextp)
+	return res
 }

@@ -3,7 +3,9 @@ package rag
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -112,4 +114,107 @@ func containsDoc(ids []string, id string) bool {
 		}
 	}
 	return false
+}
+
+// TestCommunityVectorsEmbedOnce pins B10: summaries are embedded exactly once at
+// generation, cached, and reused by every global query; a reload picks the cache
+// back up from disk instead of re-embedding.
+func TestCommunityVectorsEmbedOnce(t *testing.T) {
+	ctx := context.Background()
+	emb := &countingEmbedder{inner: newKeywordEmbedder(96)}
+	st := New(emb, Config{Seed: 1, GraphKNN: 3, MinSimilarity: 0.02,
+		Chunk: ChunkConfig{TargetWords: 8, OverlapWords: 0}})
+	docs := []Document{
+		{ID: "space", Text: "rockets orbit planets moons gravity launch thrust fuel astronauts"},
+		{ID: "cooking", Text: "recipes bake oven flour sugar butter knead dough pastry"},
+		{ID: "finance", Text: "stocks bonds markets interest rates inflation portfolio dividends"},
+	}
+	if err := st.Build(ctx, docs); err != nil {
+		t.Fatal(err)
+	}
+	afterBuild := atomic.LoadInt64(&emb.embedded)
+
+	if err := st.BuildCommunitySummaries(ctx, labelSummarizer, CommunityOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	afterSummaries := atomic.LoadInt64(&emb.embedded)
+	comms := st.CommunitySummaries()
+	if len(comms) == 0 {
+		t.Fatal("no summaries built")
+	}
+	if got := afterSummaries - afterBuild; got != int64(len(comms)) {
+		t.Errorf("generating %d summaries embedded %d texts, want one per summary", len(comms), got)
+	}
+
+	// First and second global queries embed only the query vector (or nothing once
+	// the TZ O5 query-LRU has the text): the summaries must not be re-embedded per call.
+	if _, err := st.RelevantCommunities(ctx, "rockets gravity astronauts", 1); err != nil {
+		t.Fatal(err)
+	}
+	afterFirst := atomic.LoadInt64(&emb.embedded)
+	if got := afterFirst - afterSummaries; got != 1 {
+		t.Errorf("first global query embedded %d texts, want 1 (the query only)", got)
+	}
+	if _, err := st.RelevantCommunities(ctx, "rockets gravity astronauts", 1); err != nil {
+		t.Fatal(err)
+	}
+	afterSecond := atomic.LoadInt64(&emb.embedded)
+	if got := afterSecond - afterFirst; got != 0 {
+		t.Errorf("repeat global query embedded %d texts, want 0 (query LRU hit)", got)
+	}
+
+	// The cache survives a save/load round trip: the first query on the reloaded
+	// store embeds the query but not the summaries.
+	path := t.TempDir() + "/cvec.tg"
+	if err := saveTo(st, path); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	emb2 := &countingEmbedder{inner: newKeywordEmbedder(96)}
+	st2, err := Load(emb2, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st2.commVec) != len(comms) {
+		t.Errorf("commVec after reload = %d entries, want %d", len(st2.commVec), len(comms))
+	}
+	before := atomic.LoadInt64(&emb2.embedded)
+	if _, err := st2.RelevantCommunities(ctx, "rockets gravity astronauts", 1); err != nil {
+		t.Fatal(err)
+	}
+	after := atomic.LoadInt64(&emb2.embedded)
+	if got := after - before; got != 1 {
+		t.Errorf("global query on reloaded store embedded %d texts, want 1 (cache persisted)", got)
+	}
+}
+
+// TestCommunityVectorsInvalidate pins B10 parity: wherever summaries are cleared,
+// their cached embeddings are cleared with them.
+func TestCommunityVectorsInvalidate(t *testing.T) {
+	ctx := context.Background()
+	st := communityStore(t)
+	if err := st.BuildCommunitySummaries(ctx, labelSummarizer, CommunityOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.commVec) == 0 {
+		t.Fatal("no commVec after build")
+	}
+	st.AddDocuments(ctx, []Document{{ID: "music", Text: "guitar piano violin orchestra melody rhythm tempo"}})
+	if len(st.commVec) != 0 {
+		t.Fatal("commVec survived a corpus change that nulled commSummary")
+	}
+	st.BuildCommunitySummaries(ctx, labelSummarizer, CommunityOptions{})
+	if len(st.commVec) == 0 {
+		t.Fatal("commVec not rebuilt with the summaries")
+	}
+	if n := st.DeleteDocument("music"); n == 0 {
+		t.Fatal("expected the music document to be removed")
+	}
+	if len(st.commVec) != 0 {
+		t.Fatal("commVec survived a document delete that nulled commSummary")
+	}
 }

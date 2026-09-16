@@ -11,12 +11,13 @@ import (
 // ready to be applied to the store. It is the unit both the synchronous and the
 // streaming ingestion paths produce, so versioning logic lives in one place.
 type prepared struct {
-	id     string
-	hash   [32]byte
-	text   string         // original document text, kept for the version history
-	meta   map[string]any // user metadata to attach to the document
-	chunks []Chunk
-	vecs   [][]float32
+	id       string
+	hash     [32]byte
+	text     string         // original document text, kept for the version history
+	meta     map[string]any // user metadata to attach to the document
+	chunks   []Chunk
+	vecs     [][]float32
+	embedded int // chunks freshly embedded (not reused from a prior version)
 }
 
 // docEmbeddings returns the embeddings of a document's current chunks, keyed by
@@ -46,10 +47,25 @@ func (s *Store) idHashOf(id string) ([32]byte, bool) {
 // prepareDoc chunks and embeds a document off the write lock. For an update (the
 // id already exists) it diffs the new chunks against the current ones by content
 // hash and embeds only the chunks whose text changed, reusing existing
-// embeddings for the rest.
-func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
+// embeddings for the rest. dedupWithinDoc, when true, drops chunks whose text
+// repeats earlier in the same document (keeping the first occurrence) before
+// anything is embedded.
+func (s *Store) prepareDoc(ctx context.Context, d Document, dedupWithinDoc bool) (prepared, error) {
 	h := contentHash(d.Text)
 	chunks := s.ChunkDocument(d)
+	if dedupWithinDoc && len(chunks) > 1 {
+		seen := make(map[[32]byte]struct{}, len(chunks))
+		kept := chunks[:0]
+		for _, c := range chunks {
+			k := contentHash(c.Text)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			kept = append(kept, c)
+		}
+		chunks = kept
+	}
 	if len(chunks) == 0 {
 		return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta}, nil
 	}
@@ -80,7 +96,7 @@ func (s *Store) prepareDoc(ctx context.Context, d Document) (prepared, error) {
 			vecs[idx] = embedded[k]
 		}
 	}
-	return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta, chunks: chunks, vecs: vecs}, nil
+	return prepared{id: d.ID, hash: h, text: d.Text, meta: d.Meta, chunks: chunks, vecs: vecs, embedded: len(missText)}, nil
 }
 
 // removeDocLocked deletes all chunks of a document from the source-of-truth
@@ -127,6 +143,7 @@ func (s *Store) DeleteDocument(id string) int {
 	delete(s.versions, id)
 	if removed > 0 {
 		s.commSummary = nil // graph changed; community summaries are now stale
+		s.commVec = nil
 		// The entity graph cites chunks. Forgetting a document must forget the entities
 		// that only that document evidenced, or entity-seeded retrieval keeps handing back
 		// chunk ids that are no longer in the store. This needs no model: an entity whose
@@ -174,7 +191,7 @@ func (s *Store) rebuildIndexesLocked() {
 // tokenization, with no distance computations, so recomputing it is cheap and storing
 // it would bloat every .tg for no gain.
 func (s *Store) rebuildLexicalLocked() {
-	s.bm25 = lexical.New(lexical.DefaultConfig())
+	s.bm25 = lexical.New(s.lexicalConfig())
 	ids := make([]string, len(s.chunks))
 	texts := make([]string, len(s.chunks))
 	for i := range s.chunks {

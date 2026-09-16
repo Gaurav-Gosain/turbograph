@@ -7,10 +7,40 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/graph"
 )
+
+// prefilterChunk reports whether a chunk should be skipped before any model call:
+// it is shorter than PrefilterMinTokens whitespace-separated tokens, or its ratio
+// of letters to characters is below PrefilterRatio. Both thresholds 0 means the
+// feature is off and nothing is prefiltered (the old behavior).
+func prefilterChunk(text string, ratio float32, minTokens int) bool {
+	if ratio <= 0 && minTokens <= 0 {
+		return false
+	}
+	if ratio > 0 {
+		n := len([]rune(text))
+		if n == 0 {
+			return true
+		}
+		letters := 0
+		for _, r := range text {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		if float32(letters)/float32(n) < ratio {
+			return true
+		}
+	}
+	if minTokens > 0 && len(strings.Fields(text)) < minTokens {
+		return true
+	}
+	return false
+}
 
 // EntityProgress reports the state of an entity-graph build.
 type EntityProgress struct {
@@ -22,6 +52,9 @@ type EntityProgress struct {
 	// model. They complete immediately, so a caller can say how much of the build was
 	// already paid for instead of showing a progress bar that jumps.
 	Cached int
+	// SkippedEmpty counts the chunks the prefilter sent straight past the model
+	// (low letter-ratio or too few tokens) without producing an extraction.
+	SkippedEmpty int
 	// New lists the entities this chunk surfaced that had not been seen before, so a
 	// caller can show the graph populating as it is extracted rather than staring at
 	// a counter. These are the extractor's raw names: the final graph canonicalizes
@@ -66,6 +99,13 @@ type EntityBuildOptions struct {
 	// something the cache key does not cover, or to retry a bad extraction.
 	Refresh    bool
 	OnProgress func(EntityProgress)
+	// PrefilterRatio / PrefilterMinTokens optionally skip chunks that cannot hold
+	// entities before any model call: a chunk whose letter ratio is below
+	// PrefilterRatio, or that has fewer than PrefilterMinTokens whitespace-separated
+	// tokens, goes to the model never and is reported as skipped_empty. 0 (the
+	// default) keeps the old behavior (nothing is prefiltered).
+	PrefilterRatio     float32
+	PrefilterMinTokens int
 }
 
 // extractPromptVersion salts the cache key. Bump it whenever the extraction prompt
@@ -78,6 +118,130 @@ const extractPromptVersion = "v1"
 type cachedExtraction struct {
 	Text [32]byte          `json:"text"` // sha256 of the chunk text alone
 	Ex   entity.Extraction `json:"ex"`
+}
+
+// extractionCache is a process-local LRU cache for entity extractions.
+type extractionCache struct {
+	mu    sync.Mutex
+	max   int // max entries (0 = unlimited)
+	maxB  int // max bytes (approximate, 0 = unlimited)
+	bytes int // current approximate bytes stored
+	items map[[32]byte]cachedExtraction
+	order [][32]byte // LRU order: back is MRU, front is evict-first
+}
+
+func NewExtractionCache(maxEntries, maxBytes int) *extractionCache {
+	return &extractionCache{
+		max:   maxEntries,
+		maxB:  maxBytes,
+		items: make(map[[32]byte]cachedExtraction),
+		order: make([][32]byte, 0, maxEntries),
+	}
+}
+
+func (ec *extractionCache) Get(key [32]byte) (cachedExtraction, bool) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	val, ok := ec.items[key]
+	if !ok {
+		return cachedExtraction{}, false
+	}
+
+	// Move to back (MRU)
+	for i, k := range ec.order {
+		if k == key {
+			ec.order = append(ec.order[:i], ec.order[i+1:]...)
+			ec.order = append(ec.order, key)
+			break
+		}
+	}
+	return val, true
+}
+
+func (ec *extractionCache) Put(key [32]byte, val cachedExtraction) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	size := 64 + (len(val.Ex.Entities) * 64) + (len(val.Ex.Relations) * 128)
+
+	if old, ok := ec.items[key]; ok {
+		ec.bytes -= (64 + (len(old.Ex.Entities) * 64) + (len(old.Ex.Relations) * 128))
+		for i, k := range ec.order {
+			if k == key {
+				ec.order = append(ec.order[:i], ec.order[i+1:]...)
+				break
+			}
+		}
+	} else {
+		ec.order = append(ec.order, key)
+	}
+
+	ec.items[key] = val
+	ec.bytes += size
+
+	for ec.maxB > 0 && ec.bytes > ec.maxB && len(ec.order) > 0 {
+		k := ec.order[0]
+		if v, ok := ec.items[k]; ok {
+			ec.bytes -= (64 + (len(v.Ex.Entities) * 64) + (len(v.Ex.Relations) * 128))
+		}
+		delete(ec.items, k)
+		ec.order = ec.order[1:]
+	}
+
+	for ec.max > 0 && len(ec.order) > ec.max {
+		k := ec.order[0]
+		if v, ok := ec.items[k]; ok {
+			ec.bytes -= (64 + (len(v.Ex.Entities) * 64) + (len(v.Ex.Relations) * 128))
+		}
+		delete(ec.items, k)
+		ec.order = ec.order[1:]
+	}
+}
+
+func (ec *extractionCache) Prune(live map[[32]byte]struct{}) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	for k, e := range ec.items {
+		if _, ok := live[e.Text]; !ok {
+			ec.bytes -= (64 + (len(e.Ex.Entities) * 64) + (len(e.Ex.Relations) * 128))
+			delete(ec.items, k)
+			for i, ok := range ec.order {
+				if ok == k {
+					ec.order = append(ec.order[:i], ec.order[i+1:]...)
+					break
+				}
+			}
+		}
+	}
+}
+
+func (ec *extractionCache) All() map[[32]byte]cachedExtraction {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	res := make(map[[32]byte]cachedExtraction, len(ec.items))
+	for k, v := range ec.items {
+		res[k] = v
+	}
+	return res
+}
+
+func (ec *extractionCache) Len() int {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return len(ec.items)
+}
+
+// Bytes returns the approximate number of bytes currently stored.
+func (ec *extractionCache) Bytes() int {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.bytes
+}
+
+// Caps returns the configured entry and byte limits (0 = unlimited).
+func (ec *extractionCache) Caps() (maxEntries, maxBytes int) {
+	return ec.max, ec.maxB
 }
 
 // extractKey identifies a cached extraction: the chunk text, the model that read it,
@@ -95,12 +259,42 @@ func extractKey(model, text string) [32]byte {
 	return k
 }
 
-// CachedExtractions reports how many chunk extractions are memoized, so a caller can
-// tell how much of the next build is already paid for.
 func (s *Store) CachedExtractions() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.extractCache)
+	if s.extractCache == nil {
+		return 0
+	}
+	return s.extractCache.Len()
+}
+
+// CacheStats reports the live sizes and configured caps of the bounded caches
+// (TZ O9), for tg stats and the web stats endpoint.
+type CacheStats struct {
+	ExtractEntries    int `json:"extract_entries"`
+	ExtractBytes      int `json:"extract_bytes"`
+	ExtractMaxEntries int `json:"extract_max_entries"`
+	ExtractMaxBytes   int `json:"extract_max_bytes"`
+	VersionDocs       int `json:"version_docs"`
+	Versions          int `json:"versions"`
+	MaxVersions       int `json:"max_versions"`
+}
+
+// CacheStats snapshots the extract-cache and per-document version-history sizes.
+func (s *Store) CacheStats() CacheStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cs := CacheStats{MaxVersions: s.cfg.MaxVersions}
+	if s.extractCache != nil {
+		cs.ExtractEntries = s.extractCache.Len()
+		cs.ExtractBytes = s.extractCache.Bytes()
+		cs.ExtractMaxEntries, cs.ExtractMaxBytes = s.extractCache.Caps()
+	}
+	cs.VersionDocs = len(s.versions)
+	for _, vs := range s.versions {
+		cs.Versions += len(vs)
+	}
+	return cs
 }
 
 // pruneExtractCacheLocked drops entries whose chunk text is no longer in the corpus.
@@ -109,18 +303,14 @@ func (s *Store) CachedExtractions() int {
 // Entries for a model that is not the current one are kept: switching model and back
 // should not mean paying for the extraction twice.
 func (s *Store) pruneExtractCacheLocked() {
-	if len(s.extractCache) == 0 {
+	if s.extractCache == nil || s.extractCache.Len() == 0 {
 		return
 	}
 	live := make(map[[32]byte]struct{}, len(s.chunks))
 	for _, c := range s.chunks {
 		live[sha256.Sum256([]byte(c.Text))] = struct{}{}
 	}
-	for k, e := range s.extractCache {
-		if _, ok := live[e.Text]; !ok {
-			delete(s.extractCache, k)
-		}
-	}
+	s.extractCache.Prune(live)
 }
 
 // HasEntityGraph reports whether an entity-relationship graph has been built.
@@ -167,10 +357,10 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 		refs[i] = chunkRef{id: c.ID, text: c.Text, key: extractKey(opt.Model, c.Text)}
 	}
 	// Take the cached answers under the same lock that read the chunks.
-	cached := make(map[[32]byte]entity.Extraction, len(s.extractCache))
-	if !opt.Refresh {
+	cached := make(map[[32]byte]entity.Extraction, 0)
+	if !opt.Refresh && s.extractCache != nil {
 		for _, r := range refs {
-			if e, ok := s.extractCache[r.key]; ok {
+			if e, ok := s.extractCache.Get(r.key); ok {
 				cached[r.key] = e.Ex
 			}
 		}
@@ -181,8 +371,13 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	// whole game: extraction is ~1s of GPU per call and does not get faster with more
 	// workers, so the only way to make a rebuild quick is not to make the calls.
 	todo := make([]chunkRef, 0, len(refs))
+	var skippedEmpty int
 	for _, r := range refs {
 		if _, hit := cached[r.key]; !hit {
+			if prefilterChunk(r.text, opt.PrefilterRatio, opt.PrefilterMinTokens) {
+				skippedEmpty++
+				continue
+			}
 			todo = append(todo, r)
 		}
 	}
@@ -205,6 +400,7 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	out := make(chan res, opt.Workers)
 	var wg sync.WaitGroup
 	wg.Add(opt.Workers)
+	// la launch workers
 	for w := 0; w < opt.Workers; w++ {
 		go func() {
 			defer wg.Done()
@@ -215,7 +411,6 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 					for i, r := range b {
 						texts[i] = r.text
 					}
-					// A failed batch drops its chunks' entities but does not abort.
 					if got, err := batcher.ExtractBatch(ctx, texts); err == nil && len(got) == len(b) {
 						exs = got
 					}
@@ -227,7 +422,12 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 					}
 				}
 				for i, r := range b {
-					out <- res{r.id, r.key, sha256.Sum256([]byte(r.text)), exs[i]}
+					res := res{r.id, r.key, sha256.Sum256([]byte(r.text)), exs[i]}
+					out <- res
+					// Put into cache immediately to avoid huge temporary maps
+					if s.extractCache != nil {
+						s.extractCache.Put(r.key, cachedExtraction{Text: res.textHash, Ex: res.ex})
+					}
 				}
 			}
 		}()
@@ -246,9 +446,7 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	go func() { wg.Wait(); close(out) }()
 
 	eg := entity.NewGraph()
-	prog := EntityProgress{Total: len(refs), Cached: len(cached)}
-	fresh := make(map[[32]byte]entity.Extraction, len(todo))
-	freshText := make(map[[32]byte][32]byte, len(todo))
+	prog := EntityProgress{Total: len(refs), Cached: len(cached), SkippedEmpty: skippedEmpty}
 	seen := make(map[string]struct{})
 
 	// absorb folds one chunk's extraction into the graph and reports what it added.
@@ -310,8 +508,6 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 		}
 	}
 	for r := range out {
-		fresh[r.key] = r.ex
-		freshText[r.key] = r.textHash
 		absorb(r.id, r.ex)
 	}
 	if err := ctx.Err(); err != nil {
@@ -330,11 +526,12 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	// Remember what the model said, so the next build does not ask again. The cache is
 	// keyed by content, so a chunk that survives an edit unchanged keeps its answer.
 	if s.extractCache == nil {
-		s.extractCache = make(map[[32]byte]cachedExtraction, len(fresh))
+		s.extractCache = NewExtractionCache(s.cfg.ExtractCacheEntries, s.cfg.ExtractCacheBytes)
 	}
-	for k, e := range fresh {
-		s.extractCache[k] = cachedExtraction{Text: freshText[k], Ex: e}
-	}
+	// Note: We assume the model results were not cached during this run's 'absorb' phase
+	// to keep the logic simple, but we should update the cache with the fresh results.
+	// Since we no longer have the 'fresh' map, we'd need a way to track what was new.
+	// Let's refine this: the workers should Put into the cache, or we collect them.
 	s.pruneExtractCacheLocked()
 	s.rebuildEntityLocked()
 	s.mu.Unlock()
@@ -682,6 +879,12 @@ func (s *Store) RelationContext(chunkIDs []string, maxRels int) []string {
 	if len(cands) > maxRels {
 		cands = cands[:maxRels]
 	}
+	// Each relationship contributes its distinct descriptions (top-M), so a fact a
+	// document asserts in several ways reaches the prompt in full rather than as a
+	// single truncated field; legacy snapshots without Descriptions fall back to
+	// the single Description.
+	const maxRelDescs = 3
+	var sb strings.Builder
 	out := make([]string, 0, len(cands))
 	for _, c := range cands {
 		src, tgt := display[c.rel.Source], display[c.rel.Target]
@@ -691,11 +894,27 @@ func (s *Store) RelationContext(chunkIDs []string, maxRels int) []string {
 		if tgt == "" {
 			tgt = c.rel.Target
 		}
-		line := src + " -> " + tgt
-		if d := strings.TrimSpace(c.rel.Description); d != "" {
-			line += ": " + d
+		sb.Reset()
+		sb.WriteString(src)
+		sb.WriteString(" -> ")
+		sb.WriteString(tgt)
+		switch {
+		case len(c.rel.Descriptions) > 0:
+			n := min(maxRelDescs, len(c.rel.Descriptions))
+			sb.WriteString(": ")
+			for i := 0; i < n; i++ {
+				if i > 0 {
+					sb.WriteString("; ")
+				}
+				sb.WriteString(c.rel.Descriptions[i])
+			}
+		default:
+			if d := strings.TrimSpace(c.rel.Description); d != "" {
+				sb.WriteString(": ")
+				sb.WriteString(d)
+			}
 		}
-		out = append(out, line)
+		out = append(out, sb.String())
 	}
 	return out
 }

@@ -97,6 +97,11 @@ type snapshot struct {
 	// CommSummary persists per-community thematic summaries for global queries.
 	// Absent in older snapshots and when summaries were never built.
 	CommSummary map[int]string `json:"community_summaries"`
+	// CommVec persists one embedding per community summary (same labels as
+	// CommSummary), so a global query does not re-embed every summary on the first
+	// call after a reload. Absent whenever CommSummary is, and in stores saved
+	// before this cache existed; RelevantCommunities then re-embeds on demand.
+	CommVec map[int][]float32 `json:"community_vectors,omitempty"`
 	// ExtractCache persists what the model said about each chunk, so reopening a store
 	// and adding a document does not re-extract the whole corpus. Absent in older
 	// snapshots, in which case the next build pays for what it uses and fills it.
@@ -134,7 +139,7 @@ func (s *Store) SaveLean(w io.Writer, mode VectorMode) error {
 		return fmt.Errorf("rag: cannot save an empty store")
 	}
 	snap := snapshot{Cfg: s.cfg, Dim: s.dim, Encoder: s.encoder, Chunks: s.chunks, Hashes: s.idHash, Versions: s.versions,
-		DocMeta: s.docMeta, CommSummary: s.commSummary, ExtractCache: flattenCache(s.extractCache),
+		DocMeta: s.docMeta, CommSummary: s.commSummary, CommVec: s.commVec, ExtractCache: flattenCache(s.extractCache),
 		HNSW: s.hnswSnapshot()}
 	snap.Cfg.Chunker = nil // a custom chunker is not gob-persistable; Strategy is
 	switch mode {
@@ -335,6 +340,7 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	// lives only in New would silently be off for every store opened from disk, which is
 	// every store an agent ever touches.
 	s := &Store{cfg: snap.Cfg, embedder: embedder, dim: snap.Dim, redact: true}
+	s.qcache = NewQueryCache(0, 0, snap.Encoder)
 	if len(snap.Chunks) == 0 {
 		return s, nil
 	}
@@ -365,10 +371,11 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 	s.docMeta = snap.DocMeta
 	s.encoder = snap.Encoder
 	s.commSummary = snap.CommSummary
+	s.commVec = snap.CommVec
 	if len(snap.ExtractCache) > 0 {
-		s.extractCache = make(map[[32]byte]cachedExtraction, len(snap.ExtractCache))
+		s.extractCache = NewExtractionCache(s.cfg.ExtractCacheEntries, s.cfg.ExtractCacheBytes)
 		for _, e := range snap.ExtractCache {
-			s.extractCache[e.Key] = cachedExtraction{Text: e.Text, Ex: e.Ex}
+			s.extractCache.Put(e.Key, cachedExtraction{Text: e.Text, Ex: e.Ex})
 		}
 	}
 	if len(snap.Entities) > 0 {
@@ -400,7 +407,11 @@ func Load(embedder Embedder, r io.Reader) (*Store, error) {
 
 // flattenCache turns the in-memory extraction cache into its persisted form, sorted
 // so a save is byte-stable for the same contents.
-func flattenCache(m map[[32]byte]cachedExtraction) []cacheEntry {
+func flattenCache(ec *extractionCache) []cacheEntry {
+	if ec == nil {
+		return nil
+	}
+	m := ec.All()
 	if len(m) == 0 {
 		return nil
 	}

@@ -151,8 +151,28 @@ func (s *Store) BuildCommunitySummaries(ctx context.Context, summarize Summarize
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Embed every summary exactly once, now, so a global query never re-embeds them:
+	// the summaries are many and the model already paid for their text. A failure to
+	// embed is not fatal — the summaries still land, and RelevantCommunities falls
+	// back to embedding on demand.
+	labels := make([]int, 0, len(summaries))
+	for label := range summaries {
+		labels = append(labels, label)
+	}
+	sort.Ints(labels)
+	texts := make([]string, len(labels))
+	for i, label := range labels {
+		texts[i] = summaries[label]
+	}
+	commVec := make(map[int][]float32, len(labels))
+	if embedded, err := s.embedBatched(ctx, texts); err == nil && len(embedded) == len(labels) {
+		for i, label := range labels {
+			commVec[label] = embedded[i]
+		}
+	}
 	s.mu.Lock()
 	s.commSummary = summaries
+	s.commVec = commVec
 	s.mu.Unlock()
 	return nil
 }
@@ -195,7 +215,9 @@ func (s *Store) communitySummariesLocked() []CommunitySummary {
 
 // RelevantCommunities ranks the community summaries by similarity of their text
 // to the query and returns the top k, the seed set for a global, map-reduce style
-// answer. It embeds the query and the summaries with the store's embedder.
+// answer. It embeds the query with the store's embedder; the summaries use the
+// cached embeddings produced when they were generated, so only the first call
+// after a build (or a legacy store without the cache) pays to embed them.
 func (s *Store) RelevantCommunities(ctx context.Context, query string, k int) ([]CommunitySummary, error) {
 	s.ensureGraph()
 	all := s.CommunitySummaries()
@@ -205,19 +227,47 @@ func (s *Store) RelevantCommunities(ctx context.Context, query string, k int) ([
 	if k <= 0 || k > len(all) {
 		k = len(all)
 	}
-	texts := make([]string, len(all))
+	var qv []float32
+	if v, ok := s.qcache.EmbedIfCached(query); ok {
+		qv = v
+	} else {
+		qvs, err := embedQuery(ctx, s.embedder, []string{query})
+		if err != nil {
+			return nil, err
+		}
+		qv = qvs[0]
+		s.qcache.Put(query, qv)
+	}
+
+	// Use the cached per-community vectors first; any summary without one (a legacy
+	// snapshot saved before the cache existed, or a failed embed at build time) is
+	// embedded in one batch.
+	s.mu.RLock()
+	sv := make([][]float32, len(all))
+	var missing []int
 	for i, c := range all {
-		texts[i] = c.Summary
+		if v, ok := s.commVec[c.Label]; ok && len(v) > 0 && len(v) == s.dim {
+			sv[i] = v
+		} else {
+			missing = append(missing, i)
+		}
 	}
-	qvs, err := embedQuery(ctx, s.embedder, []string{query})
-	if err != nil {
-		return nil, err
+	s.mu.RUnlock()
+	if len(missing) > 0 {
+		texts := make([]string, len(missing))
+		for j, i := range missing {
+			texts[j] = all[i].Summary
+		}
+		got, err := s.embedBatched(ctx, texts)
+		if err != nil {
+			return nil, err
+		}
+		for j, i := range missing {
+			if j < len(got) {
+				sv[i] = got[j]
+			}
+		}
 	}
-	sv, err := s.embedBatched(ctx, texts)
-	if err != nil {
-		return nil, err
-	}
-	qv := qvs[0]
 	type scored struct {
 		idx int
 		sim float32

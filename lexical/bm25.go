@@ -22,6 +22,11 @@ type Config struct {
 	// B controls document-length normalization, in [0,1]. At 1 the penalty for
 	// long documents is full; at 0 length is ignored.
 	B float64
+	// Stem enables morphological stemming (English Porter + Russian Snowball)
+	// and Russian stopword filtering in the tokenizer. The zero value (false)
+	// keeps the classic tokenization, so indexes built with and without it are
+	// different; pick one per corpus and stick to it.
+	Stem bool
 }
 
 // DefaultConfig returns the canonical Okapi BM25 parameters.
@@ -56,6 +61,9 @@ type Index struct {
 	// scorePool reuses the per-query score accumulator across Search calls, the
 	// dominant allocation on the retrieval hot path. Safe for concurrent Search.
 	scorePool sync.Pool
+
+	// tfPool reuses term-frequency maps during batch indexing to reduce GC pressure.
+	tfPool sync.Pool
 }
 
 // New returns an empty index using cfg. Out-of-range parameters are clamped to
@@ -73,6 +81,11 @@ func New(cfg Config) *Index {
 		cfg:      cfg,
 		postings: make(map[string][]posting),
 		idf:      make(map[string]float64),
+		tfPool: sync.Pool{
+			New: func() any {
+				return make(map[string]uint32)
+			},
+		},
 	}
 }
 
@@ -86,7 +99,7 @@ func (ix *Index) Add(id, text string) {
 	ord := uint32(len(ix.ids))
 	ix.ids = append(ix.ids, id)
 
-	toks := tokenize(text)
+	toks := tokenize(text, ix.cfg.Stem)
 	ix.docLen = append(ix.docLen, uint32(len(toks)))
 	ix.totalLen += uint64(len(toks))
 
@@ -154,6 +167,12 @@ func (ix *Index) Finalize() {
 // by document ID so results are fully deterministic. A non-positive k or a
 // query with no scorable terms yields nil.
 func (ix *Index) Search(query string, k int) []Result {
+	return ix.SearchFiltered(query, k, nil)
+}
+
+// SearchFiltered is Search restricted to documents for which accept returns true.
+// The predicate is evaluated by document ID.
+func (ix *Index) SearchFiltered(query string, k int, accept func(id string) bool) []Result {
 	if k <= 0 || len(ix.ids) == 0 {
 		return nil
 	}
@@ -161,7 +180,7 @@ func (ix *Index) Search(query string, k int) []Result {
 		ix.finalize()
 	}
 
-	qterms := tokenize(query)
+	qterms := tokenize(query, ix.cfg.Stem)
 	if len(qterms) == 0 {
 		return nil
 	}
@@ -189,6 +208,9 @@ func (ix *Index) Search(query string, k int) []Result {
 		}
 		idf := ix.idf[term]
 		for _, p := range plist {
+			if accept != nil && !accept(ix.ids[p.ord]) {
+				continue
+			}
 			scores[p.ord] += ix.termScore(idf, p.tf, ix.docLen[p.ord])
 		}
 	}
@@ -341,11 +363,10 @@ func (ix *Index) AddBatch(ids, texts []string) {
 		go func(w int) {
 			defer wg.Done()
 			for i := w; i < n; i += workers {
-				// Count straight into the map: the intermediate token slice is garbage the
-				// moment it is built, and it was the largest allocation in the whole build.
-				tf := make(map[string]uint32, len(texts[i])/8+1)
+				tf := ix.tfPool.Get().(map[string]uint32)
+				clear(tf)
 				total := 0
-				tokenizeFunc(texts[i], func(tok string) {
+				tokenizeFunc(texts[i], ix.cfg.Stem, func(tok string) {
 					tf[tok]++
 					total++
 				})
@@ -364,5 +385,6 @@ func (ix *Index) AddBatch(ids, texts []string) {
 		for term, c := range docs[i].tf {
 			ix.postings[term] = append(ix.postings[term], posting{ord: ord, tf: c})
 		}
+		ix.tfPool.Put(docs[i].tf)
 	}
 }

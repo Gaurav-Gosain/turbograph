@@ -8,18 +8,25 @@ import (
 
 // Progress reports the running state of a bulk ingestion.
 type Progress struct {
-	Total   int // documents offered, if known (0 means unknown/streaming)
-	Done    int // documents durably ingested this run
-	Failed  int // documents that errored
-	Skipped int // documents already present (resumed)
-	Chunks  int // chunks added this run
+	Total          int // documents offered, if known (0 means unknown/streaming)
+	Done           int // documents durably ingested this run
+	Failed         int // documents that errored
+	Skipped        int // documents already present (resumed)
+	Chunks         int // chunks added this run
+	ChunksEmbedded int // chunks freshly embedded this run (reused ones excluded)
 }
 
 // IngestOptions configures a bulk ingestion.
 type IngestOptions struct {
 	// Workers is how many documents are embedded concurrently. Embedding is the
-	// bottleneck, so this is the main parallelism knob. Defaults to GOMAXPROCS.
+	// bottleneck, so this is the main parallelism knob. Defaults to the store's
+	// Config.IngestWorkers, or GOMAXPROCS when that is 0.
 	Workers int
+	// DedupWithinDoc drops near-identical chunks whose text repeats within the
+	// same document, keeping only the first occurrence. Default false = old
+	// behavior (every chunk is indexed, duplicates included). Measure quality
+	// before enabling: this is a throughput knob, not a ranking improvement.
+	DedupWithinDoc bool
 	// Journal, if set, records durably-ingested documents so an interrupted run
 	// resumes without re-embedding completed work.
 	Journal *Journal
@@ -52,6 +59,9 @@ type ingestResult struct {
 func (s *Store) Ingest(ctx context.Context, docs <-chan Document, total int, opt IngestOptions) (Progress, error) {
 	if opt.Workers <= 0 {
 		opt.Workers = runtime.GOMAXPROCS(0)
+		if s.cfg.IngestWorkers > 0 {
+			opt.Workers = s.cfg.IngestWorkers
+		}
 	}
 
 	results := make(chan ingestResult, opt.Workers*2)
@@ -68,7 +78,7 @@ func (s *Store) Ingest(ctx context.Context, docs <-chan Document, total int, opt
 					if !ok {
 						return
 					}
-					results <- s.prepareForIngest(ctx, d, opt.Journal)
+					results <- s.prepareForIngest(ctx, d, opt)
 				}
 			}
 		}()
@@ -111,6 +121,7 @@ func (s *Store) Ingest(ctx context.Context, docs <-chan Document, total int, opt
 			}
 			prog.Done++
 			prog.Chunks += len(r.prep.chunks)
+			prog.ChunksEmbedded += r.prep.embedded
 			pending = append(pending, r.id)
 			if opt.Save != nil && opt.CheckpointEvery > 0 && len(pending) >= opt.CheckpointEvery {
 				if err := checkpoint(); err != nil {
@@ -140,9 +151,9 @@ func (s *Store) Ingest(ctx context.Context, docs <-chan Document, total int, opt
 // embeds it (reusing embeddings for unchanged chunks on an update). Documents
 // already completed (per the journal), already present with identical content, or
 // duplicating content under another id are skipped without embedding.
-func (s *Store) prepareForIngest(ctx context.Context, d Document, j *Journal) ingestResult {
+func (s *Store) prepareForIngest(ctx context.Context, d Document, opt IngestOptions) ingestResult {
 	h := contentHash(d.Text)
-	if j != nil && j.Done(d.ID) {
+	if opt.Journal != nil && opt.Journal.Done(d.ID) {
 		return ingestResult{id: d.ID, skipped: true}
 	}
 	if owner, ok := s.ContentOwner(h); ok && owner != d.ID {
@@ -151,7 +162,7 @@ func (s *Store) prepareForIngest(ctx context.Context, d Document, j *Journal) in
 	if cur, ok := s.idHashOf(d.ID); ok && cur == h {
 		return ingestResult{id: d.ID, skipped: true} // unchanged
 	}
-	p, err := s.prepareDoc(ctx, d)
+	p, err := s.prepareDoc(ctx, d, opt.DedupWithinDoc)
 	if err != nil {
 		return ingestResult{id: d.ID, err: err}
 	}

@@ -20,8 +20,26 @@ import (
 // is enough to verify that the retrieval pipeline ranks lexically-related text
 // correctly and to catch regressions without a network or a model server. It is
 // never used for the published benchmark numbers, which use a real embedder.
+//
+// Stopwords and single-character tokens are dropped before hashing, matching the
+// lexical index's view of a document. Without that, every document in the corpus
+// shares a handful of high-frequency words and cosine similarity saturates at a
+// floor high enough to hide a genuinely relevant hit behind unrelated text, which
+// would make the deterministic suite insensitive to ranking regressions. With the
+// same token view on both signals, dense and lexical agree on what is the same
+// text, which is exactly the regime where hybrid fusion is well-defined.
 type HashEmbedder struct {
 	Dim int // embedding dimension; 256 is a good default for the tests
+}
+
+// stopwords mirrors lexical's small function-word set so the dense and sparse
+// sides agree on what is discriminative text.
+var stopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {},
+	"by": {}, "for": {}, "from": {}, "has": {}, "he": {}, "in": {}, "is": {},
+	"it": {}, "its": {}, "of": {}, "on": {}, "or": {}, "that": {}, "the": {},
+	"to": {}, "was": {}, "were": {}, "will": {}, "with": {}, "this": {},
+	"these": {}, "those": {}, "but": {}, "not": {}, "they": {}, "their": {},
 }
 
 func (e HashEmbedder) dim() int {
@@ -30,6 +48,16 @@ func (e HashEmbedder) dim() int {
 	}
 	return e.Dim
 }
+
+// hardDim is the offline suite's embedding width. The hashing trick makes two
+// distinct tokens collide with probability ~1/dim when they land in the same
+// bucket, and at 256 buckets that noise is visible as a spurious cosine floor
+// between unrelated documents. 2048 keeps the small deterministic corpora
+// effectively collision-free while staying fast at test scale.
+const hardDim = 2048
+
+// hardEmbedder returns the embedder used by the deterministic regression suites.
+func hardEmbedder() HashEmbedder { return HashEmbedder{Dim: hardDim} }
 
 // Embed implements rag.Embedder.
 func (e HashEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -69,9 +97,20 @@ func (e HashEmbedder) vector(text string, d int) []float32 {
 	return v
 }
 
-// tokenize lowercases and splits on non-alphanumeric runes.
+// tokenize lowercases, splits on non-alphanumeric runes, and drops stopwords and
+// single-character tokens, mirroring the lexical index's token view.
 func tokenize(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+	var out []string
+	for _, f := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
+	}) {
+		if len(f) < 2 {
+			continue
+		}
+		if _, stop := stopwords[f]; stop {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }

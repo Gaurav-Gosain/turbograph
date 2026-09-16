@@ -2,22 +2,26 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/Gaurav-Gosain/turbograph/mcp"
 	"github.com/Gaurav-Gosain/turbograph/ollama"
 	"github.com/Gaurav-Gosain/turbograph/rag"
+	"github.com/Gaurav-Gosain/turbograph/redact"
 )
 
 // cmdMCP serves a store to MCP clients (Claude Desktop, editors, agents) over
-// stdio. It exposes two tools: "search" returns the top retrieved chunks as
-// JSON, and "answer" synthesizes a grounded answer with the configured model.
+// stdio. It exposes four tools: "search" returns the top retrieved chunks as
+// JSON, "answer" synthesizes a grounded answer with the configured model,
+// "add_document" indexes new text, and "forget_document" removes it.
 // The transport is line-delimited JSON-RPC on stdin/stdout, so it plugs into any
 // MCP host with a command entry.
 func cmdMCP(args []string) error {
@@ -42,6 +46,7 @@ func cmdMCP(args []string) error {
 	mmr := fs.Float64("mmr", 0, "default MMR diversity in (0,1); 0 is off")
 	minSim := fs.Float64("min-sim", 0, "default grounding floor; abstain when the top hit's cosine is below this")
 	rerank := fs.Bool("rerank", false, "re-score candidates with the model by default")
+	noRedact := fs.Bool("no-redact", false, "do not strip credentials from added documents (they would be indexed, and shipped with the store)")
 	fs.Parse(args)
 
 	f, err := os.Open(*storePath)
@@ -60,6 +65,48 @@ func cmdMCP(args []string) error {
 	gen := buildBackend(cliEndpoint(*genAPI, orStr(*genURL, *ollamaURL), *genKey))
 
 	srv := mcp.NewServer("turbograph", "1")
+
+	// storeRef guards the in-memory store so write tools can swap in a freshly
+	// persisted copy (loaded under the file lock) while search/answer keep reading a
+	// consistent snapshot. MCP command dispatch is serial anyway, but the answer
+	// tool spawns the model asynchronously while a write may be in flight.
+	var storeMu sync.RWMutex
+	getStore := func() *rag.Store {
+		storeMu.RLock()
+		defer storeMu.RUnlock()
+		return store
+	}
+
+	// mutate runs fn against a fresh copy of the store loaded under the exclusive
+	// file lock, persists it, and installs it as the live store. It is the same
+	// read-modify-write cycle as the CLI's editStore, so an agent driving the MCP
+	// cannot clobber a concurrent `turbograph add`. Returns the mutated store.
+	mutate := func(fn func(st *rag.Store) error) (*rag.Store, error) {
+		lock, err := rag.TryLockStore(*storePath, false)
+		if err != nil {
+			return nil, err
+		}
+		defer lock.Unlock()
+		nf, err := os.Open(*storePath)
+		if err != nil {
+			return nil, err
+		}
+		defer nf.Close()
+		st, err := rag.Load(embedder, nf)
+		if err != nil {
+			return nil, err
+		}
+		if err := fn(st); err != nil {
+			return nil, err
+		}
+		if err := save(*storePath, st); err != nil {
+			return nil, err
+		}
+		storeMu.Lock()
+		store = st
+		storeMu.Unlock()
+		return st, nil
+	}
 
 	// tuneArgs are the retrieval knobs an agent may set per call. Each field is a pointer
 	// so an omitted one falls back to the server default rather than to a zero that would
@@ -100,7 +147,7 @@ func cmdMCP(args []string) error {
 				candK = 20
 			}
 		}
-		res, err := store.Retrieve(ctx, a.Query, rag.RetrieveParams{
+		res, err := getStore().Retrieve(ctx, a.Query, rag.RetrieveParams{
 			TopK:       candK,
 			GraphMix:   f64(a.GraphMix, *graphMix),
 			EntityMix:  f64(a.EntityMix, *entityMix),
@@ -186,7 +233,9 @@ func cmdMCP(args []string) error {
 			})
 	}
 
-	registerFetchTools(srv, store)
+	registerWriteTools(srv, getStore, mutate, *noRedact)
+
+	registerFetchTools(srv, getStore)
 
 	fmt.Fprintf(os.Stderr, "turbograph mcp serving %s (%d chunks, embed=%s, gen=%s) on stdio\n",
 		*storePath, store.Len(), *embedModel, orStr(*genModel, "none"))
@@ -200,7 +249,7 @@ func cmdMCP(args []string) error {
 // at once without blowing its context window. "get" and "multi_get" cover those,
 // with an explicit byte budget so the caller stays in control of how much text
 // lands in its context.
-func registerFetchTools(srv *mcp.Server, store *rag.Store) {
+func registerFetchTools(srv *mcp.Server, getStore func() *rag.Store) {
 	getSchema := json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -226,7 +275,7 @@ func registerFetchTools(srv *mcp.Server, store *rag.Store) {
 			if a.Doc == "" && a.Chunk == "" {
 				return "", fmt.Errorf("one of doc or chunk is required")
 			}
-			text, docID, err := fetchText(store, a.Doc, a.Chunk, a.Lines, a.Window)
+			text, docID, err := fetchText(getStore(), a.Doc, a.Chunk, a.Lines, a.Window)
 			if err != nil {
 				return "", err
 			}
@@ -275,9 +324,9 @@ func registerFetchTools(srv *mcp.Server, store *rag.Store) {
 				var text, docID string
 				var err error
 				if asChunk {
-					text, docID, err = fetchText(store, "", id, "", a.Window)
+					text, docID, err = fetchText(getStore(), "", id, "", a.Window)
 				} else {
-					text, docID, err = fetchText(store, id, "", "", 0)
+					text, docID, err = fetchText(getStore(), id, "", "", 0)
 				}
 				if err != nil {
 					items = append(items, map[string]any{"id": id, "error": err.Error()})
@@ -289,6 +338,95 @@ func registerFetchTools(srv *mcp.Server, store *rag.Store) {
 				})
 			}
 			b, _ := json.Marshal(map[string]any{"items": items})
+			return string(b), nil
+		})
+}
+
+// registerWriteTools adds the tools that grow or shrink the corpus: add_document
+// and forget_document. They are the agent-facing shape of the CLI's add/forget:
+// the same flock + read-modify-write + atomic save as editStore, with redaction
+// on by default. Writes swap the live store under the mutex, so a subsequent
+// search immediately sees the new text.
+func registerWriteTools(srv *mcp.Server, getStore func() *rag.Store, mutate func(func(*rag.Store) error) (*rag.Store, error), noRedact bool) {
+	addSchema := json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "text": {"type": "string", "description": "the document text to index"},
+    "id": {"type": "string", "description": "document id; the same id replaces the previous version (default: a hash of the text)"},
+    "meta": {"type": "object", "description": "arbitrary JSON metadata to attach to the document, e.g. {\"source\":\"slack\",\"date\":\"2026-07-14\"}"}
+  },
+  "required": ["text"]
+}`)
+	srv.Register("add_document", "Add a text document to the corpus and index it, so later searches can find it. Re-adds the same id with different text as an update; identical text is a no-op. Credentials are stripped by default.",
+		addSchema, func(_ context.Context, raw json.RawMessage) (string, error) {
+			var a struct {
+				Text string         `json:"text"`
+				ID   string         `json:"id"`
+				Meta map[string]any `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return "", err
+			}
+			a.Text = strings.TrimSpace(a.Text)
+			if a.Text == "" {
+				return "", fmt.Errorf("text is required")
+			}
+			docID := a.ID
+			if docID == "" {
+				docID = "note-" + shortHash(a.Text) + ".md"
+			}
+			st, err := mutate(func(st *rag.Store) error {
+				st.SetRedaction(!noRedact)
+				// Detect duplicate content using the redacted form, exactly like cmdAdd:
+				// hash the text the same way it will be stored, then check if some other
+				// document id already owns this content.
+				stored := a.Text
+				if !noRedact {
+					stored, _ = redact.Text(a.Text)
+				}
+				owner, known := st.ContentOwner(sha256.Sum256([]byte(stored)))
+				if known && owner != docID {
+					return fmt.Errorf("duplicate: that text is already in the store under id %q", owner)
+				}
+				return st.AddDocuments(context.Background(), []rag.Document{{ID: docID, Text: a.Text, Meta: a.Meta}})
+			})
+			if err != nil {
+				return "", err
+			}
+			out := map[string]any{"id": docID, "action": "indexed", "documents": st.DocCount(), "chunks": st.Len()}
+			b, _ := json.Marshal(out)
+			return string(b), nil
+		})
+
+	forgetSchema := json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "description": "document id to remove (list them with the docs of the search results, or via the CLI: turbograph docs)"}
+  },
+  "required": ["id"]
+}`)
+	srv.Register("forget_document", "Remove a document and all its chunks from the corpus. It is gone from retrieval and from the store file. Returns an error if the id is not present.",
+		forgetSchema, func(_ context.Context, raw json.RawMessage) (string, error) {
+			var a struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return "", err
+			}
+			if a.ID == "" {
+				return "", fmt.Errorf("id is required")
+			}
+			st, err := mutate(func(st *rag.Store) error {
+				if st.DeleteDocument(a.ID) == 0 {
+					return fmt.Errorf("no document %q in the store", a.ID)
+				}
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			out := map[string]any{"forgot": a.ID, "documents": st.DocCount(), "chunks": st.Len()}
+			b, _ := json.Marshal(out)
 			return string(b), nil
 		})
 }

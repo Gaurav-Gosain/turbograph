@@ -84,6 +84,23 @@ jobs:
       - name: build and run benchmarks once
         run: go test -run=^$ -bench=. -benchtime=1x ./...
 
+  regression-hard:
+    name: hard-set retrieval regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - name: hard-set regression (HARD_REPORT)
+        env:
+          HARD_REPORT: hard_report.json
+        run: |
+          go test ./bench/ -run 'TestRetrievalHardRegression|TestHardAblation' -count=1 -v
+          echo "HARD_REPORT artifact:"
+          cat hard_report.json
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

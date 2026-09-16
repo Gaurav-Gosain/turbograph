@@ -63,6 +63,32 @@ func TestEntBuildStreamReportsError(t *testing.T) {
 	}
 }
 
+// A build stopped by a cancel request streams a "cancelled" terminal event, not a
+// done or error, so the client can distinguish "you asked me to stop" from "it
+// broke" and hide its cancel affordance.
+func TestEntBuildStreamEmitsCancelled(t *testing.T) {
+	job := &entBuildJob{running: true}
+	job.record(rag.EntityProgress{Done: 2, Total: 5, Entities: 3, Relations: 2})
+	job.cancelledDone()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/build-entities", nil)
+	job.stream(rec, req)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: cancelled") {
+		t.Fatalf("expected a cancelled event, got:\n%s", out)
+	}
+	for _, bad := range []string{"event: done", "event: error"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("a cancelled build must not send %s, got:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, `"done":2`) {
+		t.Errorf("replay should include the progress made before cancellation, got:\n%s", out)
+	}
+}
+
 // A reconnect that hits a client-side cancel returns instead of blocking forever, and
 // the build (a separate goroutine) is unaffected.
 func TestEntBuildStreamReturnsOnClientCancel(t *testing.T) {

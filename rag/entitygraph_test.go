@@ -211,3 +211,113 @@ func TestRelationContext(t *testing.T) {
 		t.Errorf("maxRels=0 should return nil, got %v", got)
 	}
 }
+
+// descExtractor relates capitalized words and describes each edge differently per
+// chunk, to prove that every distinct description of a relationship reaches the
+// prompt, not just the first one seen.
+type descExtractor struct {
+	byChunk map[string]string
+}
+
+func (e descExtractor) Extract(ctx context.Context, text string) (entity.Extraction, error) {
+	var ex entity.Extraction
+	var caps []string
+	for _, w := range strings.Fields(text) {
+		w = strings.Trim(w, ".,;:!?")
+		if w != "" && w[0] >= 'A' && w[0] <= 'Z' {
+			caps = append(caps, w)
+			ex.Entities = append(ex.Entities, entity.ExtractedEntity{Name: w, Type: "thing"})
+		}
+	}
+	desc := e.byChunk[text]
+	for i := 0; i+1 < len(caps); i++ {
+		ex.Relations = append(ex.Relations, entity.ExtractedRelation{Source: caps[i], Target: caps[i+1], Description: desc})
+	}
+	return ex, nil
+}
+
+func TestRelationContextShowsDistinctDescriptions(t *testing.T) {
+	st := New(newKeywordEmbedder(96), Config{Seed: 1, GraphKNN: 3, MinSimilarity: 0.05,
+		Chunk: ChunkConfig{TargetWords: 200}})
+	docs := []Document{
+		{ID: "d1", Text: "Alice works at Acme"},
+		{ID: "d2", Text: "Alice and Acme are partners"},
+	}
+	ex := descExtractor{byChunk: map[string]string{
+		"Alice works at Acme":         "the employer of",
+		"Alice and Acme are partners": "co-signer on the deal",
+	}}
+	if err := st.Build(context.Background(), docs); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BuildEntityGraph(context.Background(), ex, EntityBuildOptions{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := st.Retrieve(context.Background(), "Alice Acme", RetrieveParams{TopK: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range res {
+		ids = append(ids, r.Chunk.ID)
+	}
+	facts := st.RelationContext(ids, 5)
+	if len(facts) == 0 {
+		t.Fatal("expected grounded fact lines, got none")
+	}
+	joined := strings.ToLower(strings.Join(facts, "\n"))
+	if !strings.Contains(joined, "the employer of") || !strings.Contains(joined, "co-signer on the deal") {
+		t.Fatalf("expected both distinct descriptions of the edge in the facts, got %v", facts)
+	}
+}
+
+// TestEntityBuildPrefilterSkipsNoisyChunks: a chunk that is mostly not letters, or
+// that has too few tokens to hold an entity, must never reach the model, must not
+// appear in the graph, and must be reported as skipped_empty in the progress.
+func TestEntityBuildPrefilterSkipsNoisyChunks(t *testing.T) {
+	st := New(newKeywordEmbedder(32), Config{Seed: 1})
+	docs := []Document{
+		{ID: "d1", Text: "Acme builds Rockets near the Moon."},
+		{ID: "d2", Text: "1f8b0800 4c53553 00ff4473 c3a9d9aa 913b3747 9ff05490 8a6a2"}, // hex dump-ish
+		{ID: "d3", Text: "RTÉ"},
+	}
+	if err := st.Build(context.Background(), docs); err != nil {
+		t.Fatal(err)
+	}
+	ex := &countingExtractor{}
+	var skipped, total int
+	opt := EntityBuildOptions{
+		Workers:            1,
+		PrefilterRatio:     0.3,
+		PrefilterMinTokens: 3,
+		OnProgress: func(p EntityProgress) {
+			skipped, total = p.SkippedEmpty, p.Total
+		},
+	}
+	if err := st.BuildEntityGraph(context.Background(), ex, opt); err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("total progress wrong: %d, want 3", total)
+	}
+	if skipped != 2 {
+		t.Errorf("progress reported %d skipped chunks, want 2 (d2 low letter ratio, d3 too few tokens)", skipped)
+	}
+	// d2 has letters (the hex chars) but a letter ratio below 0.3; d3 has 2 tokens.
+	if got := ex.calls.Load(); got != 1 {
+		t.Errorf("prefilter still let %d chunks through to the model, want 1 (d1 only)", got)
+	}
+	// The noise must not pollute the graph: only d1's entities should be present.
+	if st.EntityCount() != 2 { // E-Acme… and Hub from countingExtractor
+		t.Errorf("entity count %d, want 2 (only the clean chunk extracted)", st.EntityCount())
+	}
+	// With the feature off (zero thresholds) nothing is ever skipped: the chunks the
+	// prefilter had left unextracted (d2, d3) now go to the model; d1 is already cached.
+	ex2 := &countingExtractor{}
+	if err := st.BuildEntityGraph(context.Background(), ex2, EntityBuildOptions{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ex2.calls.Load(); got != 2 {
+		t.Errorf("with prefilter off %d chunks reached the model, want 2 (d2, d3; d1 cached)", got)
+	}
+}

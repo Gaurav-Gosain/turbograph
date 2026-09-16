@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -74,7 +75,7 @@ func worstCaseCorpus(n int) []Document {
 func speedStore(tb testing.TB, n int) *Store {
 	tb.Helper()
 	const dim = 768
-	path := fmt.Sprintf("/tmp/tg-speed-%d.tg", n)
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("tg-speed-%d.tg", n))
 	if b, err := os.ReadFile(path); err == nil {
 		s, err := Load(newKeywordEmbedder(dim), bytes.NewReader(b))
 		if err == nil {
@@ -164,10 +165,10 @@ func BenchmarkSpeedOpen(b *testing.B) {
 		sizes = append(sizes, 100000)
 	}
 	for _, n := range sizes {
-		blob, err := os.ReadFile(fmt.Sprintf("/tmp/tg-speed-%d.tg", n))
+		blob, err := os.ReadFile(filepath.Join(os.TempDir(), fmt.Sprintf("tg-speed-%d.tg", n)))
 		if err != nil {
 			speedStore(b, n)
-			blob, err = os.ReadFile(fmt.Sprintf("/tmp/tg-speed-%d.tg", n))
+			blob, err = os.ReadFile(filepath.Join(os.TempDir(), fmt.Sprintf("tg-speed-%d.tg", n)))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -255,7 +256,7 @@ func BenchmarkSpeedOpenAndSearch(b *testing.B) {
 		b.Skip("set TG_BENCH_BIG=1")
 	}
 	speedStore(b, 100000)
-	blob, err := os.ReadFile("/tmp/tg-speed-100000.tg")
+	blob, err := os.ReadFile(filepath.Join(os.TempDir(), "tg-speed-100000.tg"))
 	if err != nil {
 		b.Fatal(err)
 	}

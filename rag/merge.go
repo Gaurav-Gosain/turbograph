@@ -47,7 +47,10 @@ func Merge(dst, src *Store) (MergeStats, error) {
 	srcHash := maps.Clone(src.idHash)
 	srcMeta := maps.Clone(src.docMeta)
 	srcVersions := maps.Clone(src.versions)
-	srcCache := maps.Clone(src.extractCache)
+	var srcCache map[[32]byte]cachedExtraction
+	if src.extractCache != nil {
+		srcCache = src.extractCache.All()
+	}
 	src.mu.RUnlock()
 
 	if len(srcChunks) == 0 {
@@ -151,13 +154,13 @@ func Merge(dst, src *Store) (MergeStats, error) {
 	var cached int
 	if len(srcCache) > 0 {
 		if dst.extractCache == nil {
-			dst.extractCache = make(map[[32]byte]cachedExtraction, len(srcCache))
+			dst.extractCache = NewExtractionCache(dst.cfg.ExtractCacheEntries, dst.cfg.ExtractCacheBytes)
 		}
 		for k, v := range srcCache {
-			if _, dup := dst.extractCache[k]; dup {
+			if _, dup := dst.extractCache.Get(k); dup {
 				continue
 			}
-			dst.extractCache[k] = v
+			dst.extractCache.Put(k, v)
 			cached++
 		}
 		// Drop anything whose text is not in the merged corpus, so a merge cannot smuggle

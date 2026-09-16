@@ -217,6 +217,45 @@ func TestCommunitySummariesAndGlobalChat(t *testing.T) {
 	if !strings.Contains(string(ctext), "event: sources") || !strings.Contains(string(ctext), "main themes") {
 		t.Fatalf("global chat did not answer from summaries: %s", ctext)
 	}
+
+	// The fragments a global answer reports as its sources must be verbatim
+	// corpus passages, never the synthesized community summaries.
+	summToSrcs := func(stream string) []queryResult {
+		var out []queryResult
+		for _, part := range strings.Split(stream, "\n\n") {
+			if !strings.Contains(part, "event: sources") {
+				continue
+			}
+			for _, line := range strings.Split(part, "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					var v struct {
+						Sources []queryResult `json:"sources"`
+					}
+					if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &v) == nil {
+						out = v.Sources
+					}
+				}
+			}
+		}
+		return out
+	}
+	srcs := summToSrcs(string(ctext))
+	if len(srcs) == 0 {
+		t.Fatal("global chat sent no source fragments")
+	}
+	known := map[string]bool{}
+	for i := 0; i < store.Len(); i++ {
+		known[store.Chunk(i).Text] = true
+	}
+	summary := "This section covers the main themes [1]."
+	for i, s := range srcs {
+		if s.Text == summary {
+			t.Errorf("source %d leaked the generated summary as a fragment: %q", i, s.Text)
+		}
+		if !known[s.Text] {
+			t.Errorf("source %d is not verbatim corpus text: %q", i, s.Text)
+		}
+	}
 }
 
 func TestDecomposeQueryParsing(t *testing.T) {

@@ -9,3 +9,10 @@ bin/
 *.tg.journal
 turbograph-data/
 testdata/corpus/
+go.mod
+bench/hard_report.json
+
+# local spec inputs and build artifacts that must not be committed
+turbograph-tz-dodelka (1).txt
+turbograph-tz-optimization.txt
+cmd/turbograph/turbograph.exe

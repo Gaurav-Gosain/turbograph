@@ -106,6 +106,73 @@ func TestIngestIncremental(t *testing.T) {
 	if out["chunks"].(float64) < 4 {
 		t.Errorf("expected chunk count to grow after ingest, got %v", out["chunks"])
 	}
+	// The ingest response must describe what was indexed so the UI can show
+	// "3 chunks from 1 doc" with a first/last chunk preview.
+	if out["indexed"].(float64) != 1 {
+		t.Errorf("expected indexed == 1, got %v", out["indexed"])
+	}
+	docs, ok := out["documents"].([]any)
+	if !ok || len(docs) != 1 {
+		t.Fatalf("expected a documents array with 1 entry, got %v", out["documents"])
+	}
+	sample := docs[0].(map[string]any)
+	if sample["id"] != "d" {
+		t.Errorf("unexpected document sample id %v", sample["id"])
+	}
+	if n, ok := sample["chunks"].(float64); !ok || n < 1 {
+		t.Errorf("expected a positive chunk count in the sample, got %v", sample["chunks"])
+	}
+	first, ok := sample["first"].(string)
+	if !ok || first == "" {
+		t.Errorf("expected a non-empty first-chunk preview, got %v", sample["first"])
+	}
+}
+
+// The cancel endpoint refuses to act when nothing is running, and really cancels
+// the in-flight job's context when there is one.
+func TestEntityBuildCancel(t *testing.T) {
+	store := rag.New(hashEmbedder{dim: 128}, rag.Config{Seed: 1})
+	s := New(store)
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/build-entities/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("cancel with no build should be 409, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// A running build -> 200, and the job's context really is cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &entBuildJob{running: true, ctx: ctx, cancel: cancel}
+	job.record(rag.EntityProgress{Done: 1, Total: 9})
+	s.entJobsMu.Lock()
+	if s.entJobs == nil {
+		s.entJobs = map[string]*entBuildJob{}
+	}
+	s.entJobs[DefaultBucket] = job
+	s.entJobsMu.Unlock()
+
+	resp, err = http.Post(srv.URL+"/api/build-entities/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel with a running build should be 200, got %d", resp.StatusCode)
+	}
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if out["cancelled"] != true {
+		t.Errorf("expected cancelled:true in response, got %v", out)
+	}
+	if err := ctx.Err(); err != context.Canceled {
+		t.Errorf("cancel did not cancel the job context: %v", err)
+	}
 }
 
 func TestQueryValidation(t *testing.T) {

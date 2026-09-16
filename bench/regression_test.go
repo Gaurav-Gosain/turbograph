@@ -50,7 +50,7 @@ func goldDataset() *Dataset {
 func TestRetrievalRegression(t *testing.T) {
 	ds := goldDataset()
 	cfg := rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05}
-	rep, err := Evaluate(context.Background(), HashEmbedder{Dim: 256}, cfg, ds, Options{K: 5, DocLevel: true})
+	rep, err := Evaluate(context.Background(), hardEmbedder(), cfg, ds, Options{K: 5, DocLevel: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +75,13 @@ func TestLexicalFusionHelpsOrHolds(t *testing.T) {
 	base := rag.Config{Seed: 1, GraphKNN: 4, MinSimilarity: 0.05}
 	ctx := context.Background()
 
-	withLex, err := Evaluate(ctx, HashEmbedder{Dim: 256}, base, ds, Options{K: 5, DocLevel: true})
+	withLex, err := Evaluate(ctx, hardEmbedder(), base, ds, Options{K: 5, DocLevel: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	noLexCfg := base
 	noLexCfg.DisableLexical = true
-	noLex, err := Evaluate(ctx, HashEmbedder{Dim: 256}, noLexCfg, ds, Options{K: 5, DocLevel: true})
+	noLex, err := Evaluate(ctx, hardEmbedder(), noLexCfg, ds, Options{K: 5, DocLevel: true})
 	if err != nil {
 		t.Fatal(err)
 	}

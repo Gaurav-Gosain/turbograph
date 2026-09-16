@@ -165,6 +165,7 @@ func (s *Server) routes(opt Options) http.Handler {
 	mux.HandleFunc("GET /api/entity-graph", s.handleEntityGraph)
 	mux.HandleFunc("POST /api/build-entities", s.handleBuildEntities)
 	mux.HandleFunc("GET /api/build-entities", s.handleEntityBuildStream)
+	mux.HandleFunc("POST /api/build-entities/cancel", s.handleEntityBuildCancel)
 	mux.HandleFunc("GET /api/build-status", s.handleBuildStatus)
 	mux.HandleFunc("GET /api/communities", s.handleCommunities)
 	mux.HandleFunc("POST /api/build-communities", s.handleBuildCommunities)
@@ -262,6 +263,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if c := st.Communities(); c != nil {
 		resp["communities"] = c.NumCommunities()
 	}
+	resp["extract_cache"] = st.CacheStats()
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -316,6 +318,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if len(docs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"chunks": st.Len(), "dropped": dropped, "failed": failed, "saved": false,
+			"indexed": 0, "documents": []rag.DocChunkSample{},
 		})
 		return
 	}
@@ -329,10 +332,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	ids := make([]string, len(docs))
+	for i, d := range docs {
+		ids[i] = d.ID
+	}
 	saved, saveErr := s.persist(bucketOf(r))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"chunks": st.Len(), "saved": saved, "save_error": saveErr,
 		"dropped": dropped, "failed": failed,
+		"indexed": len(docs), "documents": st.DocChunkSamples(ids),
 	})
 }
 

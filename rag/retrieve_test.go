@@ -141,3 +141,33 @@ func TestLexicalWeightLiftsExactMatch(t *testing.T) {
 		t.Error("lexical weight had no effect on the score")
 	}
 }
+
+// TestLazyGraphRetrieval confirms that similarity graphs are not built if GraphMix is 0,
+// even if they were deferred. This verifies the strict lazy path for O1.
+func TestLazyGraphRetrieval(t *testing.T) {
+	ctx := context.Background()
+	s := New(newKeywordEmbedder(64), Config{Seed: 1, GraphKNN: 3, MinSimilarity: 0.05})
+	docs := []Document{
+		{ID: "a", Text: "the quick brown fox jumps over the lazy dog"},
+		{ID: "b", Text: "another document with some overlapping text"},
+	}
+	if err := s.Build(ctx, docs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the graph to be deferred
+	s.mu.Lock()
+	s.deferGraph = true
+	s.mu.Unlock()
+
+	// Retrieve with GraphMix=0. This should NOT trigger ensureGraph.
+	if _, err := s.Retrieve(ctx, "the quick brown fox", RetrieveParams{TopK: 2, GraphMix: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.deferGraph {
+		t.Error("expected graph to remain deferred when GraphMix=0, but it was built")
+	}
+}

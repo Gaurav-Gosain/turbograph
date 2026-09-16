@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-16",
+  "host": "Windows amd64, AMD Ryzen 5 7500F, 6-core (12 threads)",
+  "go": "go test -benchmem",
+  "baseline": "bench/baseline-2026-09-15.json",
+  "note": "After the optimization track: stemmer refactor, query-embedding LRU cache, ef-gather knob, parallel lexical rebuild, two-tier index/graph deferral, raw contiguous vector block, vector sharing. Same host as baseline. In-process keyword embedder (no Ollama), see rag/speed_test.go and rag/retrieve_bench_test.go. delta_ns_pct = (after-before)/before*100, positive means slower. Retrieve and RetrieveGraph are reported from a second, longer run (benchtime=500x); their first-run deltas (1.5% and 4.6%) were run-to-run jitter and the 500x run shows parity within noise. Dotf kernels were not touched by the track; their small deltas are CPU clock noise. The similarity-graph PPR path was measured with a parallel worker implementation and reverted to the serial algorithm, which was ~50% faster at 3000 nodes with ~9x fewer allocations; the pool-reuse of the two PPR buffers is kept.",
+  "rag": {
+    "BenchmarkRetrieve": {
+      "before": {"ns_op": 95354, "B_op": 27773, "allocs_op": 72},
+      "after": {"ns_op": 90994, "B_op": 26137, "allocs_op": 67},
+      "delta_ns_pct": -4.6
+    },
+    "BenchmarkRetrieveGraph": {
+      "before": {"ns_op": 1398588, "B_op": 114599, "allocs_op": 75},
+      "after": {"ns_op": 1412646, "B_op": 100289, "allocs_op": 69},
+      "delta_ns_pct": 1.0
+    },
+    "BenchmarkSpeedSearch/chunks=1000": {
+      "before": {"ns_op": 66465, "B_op": 25997, "allocs_op": 61},
+      "after": {"ns_op": 60125, "B_op": 24065, "allocs_op": 63},
+      "delta_ns_pct": -9.5
+    },
+    "BenchmarkSpeedSearch/chunks=10000": {
+      "before": {"ns_op": 138054, "B_op": 36417, "allocs_op": 74},
+      "after": {"ns_op": 130319, "B_op": 32591, "allocs_op": 69},
+      "delta_ns_pct": -5.6
+    },
+    "BenchmarkSpeedOpen/chunks=10000/size=49MB": {
+      "before": {"ns_op": 31511309, "B_op": 149918712, "allocs_op": 162566},
+      "after": {"ns_op": 29393957, "B_op": 149919920, "allocs_op": 162570},
+      "delta_ns_pct": -6.7
+    }
+  },
+  "index": {
+    "BenchmarkDotfSIMD": {"before_ns_op": 26.43, "after_ns_op": 27.22, "delta_ns_pct": 3.0},
+    "BenchmarkDotfGo": {"before_ns_op": 183, "after_ns_op": 174.6, "delta_ns_pct": -4.6}
+  }
+}
