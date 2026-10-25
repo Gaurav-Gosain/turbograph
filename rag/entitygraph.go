@@ -62,6 +62,11 @@ type EntityBuildOptions struct {
 	// a 4b local model said about a chunk is not what a frontier model would say, so
 	// switching models must re-extract rather than reuse.
 	Model string
+	// Fallback lists other models whose cached answers stand in for a chunk Model
+	// has not read yet. Switching to a new model then costs only the chunks no
+	// listed model has read, instead of re-reading the whole corpus; the new model
+	// reads only what is new. Refresh ignores it.
+	Fallback []string
 	// Refresh ignores the cache and re-extracts every chunk. Use it after changing
 	// something the cache key does not cover, or to retry a bad extraction.
 	Refresh    bool
@@ -172,6 +177,13 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 		for _, r := range refs {
 			if e, ok := s.extractCache[r.key]; ok {
 				cached[r.key] = e.Ex
+				continue
+			}
+			for _, fb := range opt.Fallback {
+				if e, ok := s.extractCache[extractKey(fb, r.text)]; ok {
+					cached[r.key] = e.Ex
+					break
+				}
 			}
 		}
 	}

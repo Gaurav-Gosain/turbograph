@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,6 +40,16 @@ type Client struct {
 	QueryPrefix string
 	DocPrefix   string
 	EmbedDim    int
+
+	// promptTok and outputTok total the tokens the server reported for Generate
+	// calls, so a caller paying per token can say what a run cost.
+	promptTok, outputTok atomic.Int64
+}
+
+// Usage returns the prompt and completion tokens reported by the server across
+// every Generate call on this client so far.
+func (c *Client) Usage() (prompt, completion int64) {
+	return c.promptTok.Load(), c.outputTok.Load()
 }
 
 // New returns a client for baseURL with the given API key. baseURL should be the
@@ -173,10 +184,16 @@ func (c *Client) Generate(ctx context.Context, model, system, prompt string) (st
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", fmt.Errorf("oai generate decode: %w", err)
 	}
+	c.promptTok.Add(out.Usage.PromptTokens)
+	c.outputTok.Add(out.Usage.CompletionTokens)
 	if len(out.Choices) == 0 {
 		return "", nil
 	}

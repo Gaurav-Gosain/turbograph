@@ -54,8 +54,10 @@ func (f *fakeOpenAI) handler(t *testing.T) http.Handler {
 			content := "entity|Pandan Factory|project|an OCR model factory\n" +
 				"entity|dots.mocr|product|a document OCR model\n" +
 				"relation|Pandan Factory|dots.mocr|fine-tunes it\n"
-			json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{
-				{"message": map[string]any{"role": "assistant", "content": content}}}})
+			json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": content}}},
+				"usage":   map[string]any{"prompt_tokens": 100, "completion_tokens": 20},
+			})
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -83,6 +85,16 @@ func TestEntitiesAndAskUseOpenAIBackend(t *testing.T) {
 	}
 	if err := cmdAsk(append(append([]string{"--store", store, "--q", "what does Pandan Factory fine-tune?", "--json"}, embed...), llm...)); err != nil {
 		t.Fatalf("ask: %v", err)
+	}
+
+	// token usage is totalled for cost reporting
+	be := buildBackend(cliEndpoint("openai", ts.URL, "sk-test"))
+	if _, err := be.Generate(t.Context(), "deepseek-chat", "", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	res := map[string]any{}
+	if note := addUsage(res, be); note == "" || res["usage"].(map[string]int64)["prompt_tokens"] != 100 {
+		t.Errorf("usage not reported: %q %v", note, res)
 	}
 
 	fake.mu.Lock()

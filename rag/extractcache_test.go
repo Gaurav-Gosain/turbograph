@@ -299,3 +299,32 @@ func TestUpdateDropsStaleExtractions(t *testing.T) {
 		t.Errorf("entities from the superseded text survived the update: %d", s.EntityCount())
 	}
 }
+
+// TestExtractCacheFallbackModel: with the old model listed as a fallback, switching
+// models reads only the chunks the old model never saw.
+func TestExtractCacheFallbackModel(t *testing.T) {
+	s := buildStore(t, "alpha", "beta")
+	ex := &countingExtractor{}
+	if err := s.BuildEntityGraph(context.Background(), ex, EntityBuildOptions{Model: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddDocuments(context.Background(), []Document{{ID: "gamma", Text: "gamma"}}); err != nil {
+		t.Fatal(err)
+	}
+	before := ex.calls.Load()
+	opt := EntityBuildOptions{Model: "hosted", Fallback: []string{"local"}}
+	if err := s.BuildEntityGraph(context.Background(), ex, opt); err != nil {
+		t.Fatal(err)
+	}
+	if got := ex.calls.Load() - before; got != 1 {
+		t.Fatalf("switching models with a fallback should read only the new chunk, read %d", got)
+	}
+	// the new model's answer is cached under its own name; the next build reads nothing
+	before = ex.calls.Load()
+	if err := s.BuildEntityGraph(context.Background(), ex, opt); err != nil {
+		t.Fatal(err)
+	}
+	if got := ex.calls.Load() - before; got != 0 {
+		t.Fatalf("a repeat build should read nothing, read %d", got)
+	}
+}

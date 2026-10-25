@@ -376,11 +376,16 @@ func cmdAsk(args []string) error {
 	for i, r := range res {
 		sources[i] = map[string]any{"id": r.Chunk.ID, "doc_id": r.Chunk.DocID, "score": round3(r.Score)}
 	}
-	emit(*asJSON, map[string]any{"question": *q, "answer": answer, "sources": sources}, func() {
+	result := map[string]any{"question": *q, "answer": answer, "sources": sources}
+	usage := addUsage(result, client)
+	emit(*asJSON, result, func() {
 		fmt.Println(answer)
 		fmt.Fprintln(os.Stderr, "\nsources:")
 		for _, s := range sources {
 			fmt.Fprintf(os.Stderr, "  %s\n", s["id"])
+		}
+		if usage != "" {
+			fmt.Fprintln(os.Stderr, strings.TrimPrefix(usage, "; "))
 		}
 	})
 	return nil
@@ -537,6 +542,7 @@ func cmdEntities(args []string) error {
 	gen := genFlags(fs)
 	batch := fs.Int("batch", 2, "chunks per model call; more is faster and measurably lossier on a small model")
 	refresh := fs.Bool("refresh", false, "ignore the extraction cache and re-read every chunk")
+	fallback := fs.String("fallback-model", "", "comma-separated models whose cached extractions stand in for chunks --gen-model has not read, so switching models does not re-read the corpus")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
 	eo := embedFlags(fs)
 	fs.Parse(args)
@@ -558,7 +564,7 @@ func cmdEntities(args []string) error {
 	// unreadable smear, so there it prints nothing at all.
 	tty := isTerminal(os.Stderr)
 	var cached int
-	err = buildEntitiesOn(ctx, store, client, *genModel, *batch, *refresh, func(done, total, c int) {
+	err = buildEntitiesOn(ctx, store, client, *genModel, splitList(*fallback), *batch, *refresh, func(done, total, c int) {
 		cached = c
 		if tty && !*asJSON {
 			fmt.Fprintf(os.Stderr, "\rextracting %d/%d", done, total)
@@ -573,15 +579,17 @@ func cmdEntities(args []string) error {
 	if err := commit(); err != nil {
 		return err
 	}
-	emit(*asJSON, map[string]any{"store": *storePath, "entities": store.EntityCount(),
+	result := map[string]any{"store": *storePath, "entities": store.EntityCount(),
 		"relations": store.RelationCount(), "chunks_from_cache": cached,
-		"seconds": round3(float32(time.Since(start).Seconds()))}, func() {
+		"seconds": round3(float32(time.Since(start).Seconds()))}
+	usage := addUsage(result, client)
+	emit(*asJSON, result, func() {
 		fmt.Printf("entity graph: %d entities, %d relationships in %s",
 			store.EntityCount(), store.RelationCount(), time.Since(start).Round(time.Millisecond))
 		if cached > 0 {
 			fmt.Printf(" (%d chunks answered from cache)", cached)
 		}
-		fmt.Println()
+		fmt.Println(usage)
 	})
 	return nil
 }
@@ -615,12 +623,13 @@ func shortHash(s string) string {
 // buildEntitiesOn runs the extraction pass, reporting progress. It sits here rather
 // than in cmdEntities so `ingest --entities` and `entities` share one code path.
 func buildEntitiesOn(ctx context.Context, store *rag.Store, gen server.Backend, model string,
-	batch int, refresh bool, onProgress func(done, total, cached int),
+	fallback []string, batch int, refresh bool, onProgress func(done, total, cached int),
 ) error {
 	ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: model})
 	return store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 		BatchSize: batch,
 		Model:     model,
+		Fallback:  fallback,
 		Refresh:   refresh,
 		OnProgress: func(p rag.EntityProgress) {
 			if onProgress != nil {
@@ -628,4 +637,30 @@ func buildEntitiesOn(ctx context.Context, store *rag.Store, gen server.Backend, 
 			}
 		},
 	})
+}
+
+// addUsage records the tokens a metered backend reported, under "usage", and
+// returns a short human-readable note ("" when the backend reports none).
+func addUsage(result map[string]any, gen server.Backend) string {
+	u, ok := gen.(interface{ Usage() (int64, int64) })
+	if !ok {
+		return ""
+	}
+	in, out := u.Usage()
+	if in == 0 && out == 0 {
+		return ""
+	}
+	result["usage"] = map[string]int64{"prompt_tokens": in, "completion_tokens": out}
+	return fmt.Sprintf("; %d prompt + %d completion tokens", in, out)
+}
+
+// splitList splits a comma-separated flag value, dropping empty items.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
