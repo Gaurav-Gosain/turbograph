@@ -441,6 +441,9 @@ func cmdIngest(args []string) error {
 	ocrCmd := fs.String("ocr-cmd", "", "OCR command for scanned pdfs and images, e.g. a PaddleOCR PP-OCRv6 wrapper")
 	entities := fs.Bool("entities", false, "after indexing, extract an entity-relationship knowledge graph (GraphRAG style)")
 	entModel := fs.String("gen-model", "", "model used to extract entities when --entities is set")
+	llmAPI := fs.String("llm-api", "ollama", "generation backend for --entities: ollama or openai")
+	llmURL := fs.String("llm-url", "", "base URL for an openai generation backend")
+	llmKey := fs.String("llm-key", "", "API key for an openai generation backend (also $OPENAI_API_KEY)")
 	entBatch := fs.Int("entity-batch", 4, "chunks per model call during entity extraction (1 = one call per chunk; higher is faster but can dilute a small model)")
 	lean := fs.String("lean", "exact", "vector storage in the .tg file: exact (float32), codes (compact TurboQuant, ~40% size, ~98% recall), or text (no vectors, re-embed on load, smallest and lossless)")
 	fs.Parse(args)
@@ -539,7 +542,7 @@ func cmdIngest(args []string) error {
 			return fmt.Errorf("--entities requires --gen-model for extraction")
 		}
 		fmt.Fprintf(os.Stderr, "extracting entity graph with %s ...\n", *entModel)
-		gen := buildBackend(server.Endpoint{API: "ollama", BaseURL: *ollamaURL})
+		gen := buildBackend(cliEndpoint(*llmAPI, orStr(*llmURL, *ollamaURL), *llmKey))
 		ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: *entModel})
 		eerr := store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 			BatchSize: *entBatch,

@@ -61,6 +61,27 @@ func (o embedOpts) embedder() rag.Embedder {
 	return buildEmbedder(cliEndpoint(*o.api, *o.url, *o.key), *o.model, *o.dim)
 }
 
+// genFlags registers the generation backend flags, the same set `mcp` takes: Ollama
+// by default, or any OpenAI-compatible endpoint (OpenAI, OpenRouter, DeepSeek, vLLM),
+// independent of the embedding backend. A hosted model keeps a large local model out
+// of memory on machines that only have room for the embedder.
+type genOpts struct {
+	api, url, key, ollamaURL *string
+}
+
+func genFlags(fs *flag.FlagSet) genOpts {
+	return genOpts{
+		api:       fs.String("llm-api", "ollama", "generation backend: ollama or openai"),
+		url:       fs.String("llm-url", "", "base URL for an openai generation backend"),
+		key:       fs.String("llm-key", "", "API key for an openai generation backend (also $OPENAI_API_KEY)"),
+		ollamaURL: fs.String("ollama-url", "", "Ollama base URL"),
+	}
+}
+
+func (o genOpts) backend() server.Backend {
+	return buildBackend(cliEndpoint(*o.api, orStr(*o.url, *o.ollamaURL), *o.key))
+}
+
 // openStore loads a store, or returns an empty one when the file does not exist and
 // create is set. Creating on first write is what lets an agent start a knowledge base
 // with a single command instead of an init step it has to remember.
@@ -315,7 +336,7 @@ func cmdAsk(args []string) error {
 	mix := fs.Float64("graph", 0, "graph boost in [0,1]; 0 is off")
 	entityMix := fs.Float64("entity", 0, "entity-graph blend in [0,1]; 0 is off")
 	genModel := fs.String("gen-model", envOr("TURBOGRAPH_MODEL", ""), "model for the answer (default $TURBOGRAPH_MODEL)")
-	ollamaURL := fs.String("ollama-url", "", "Ollama base URL")
+	gen := genFlags(fs)
 	asJSON := fs.Bool("json", false, "print the answer and its sources as JSON")
 	eo := embedFlags(fs)
 	fs.Parse(args)
@@ -330,10 +351,7 @@ func cmdAsk(args []string) error {
 	if err != nil {
 		return err
 	}
-	client := ollama.New()
-	if *ollamaURL != "" {
-		client.BaseURL = *ollamaURL
-	}
+	client := gen.backend()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	res, err := store.Retrieve(ctx, *q, rag.RetrieveParams{
@@ -516,7 +534,7 @@ func cmdEntities(args []string) error {
 	fs := flag.NewFlagSet("entities", flag.ExitOnError)
 	storePath := storeFlag(fs)
 	genModel := fs.String("gen-model", envOr("TURBOGRAPH_MODEL", ""), "model that reads each chunk (default $TURBOGRAPH_MODEL)")
-	ollamaURL := fs.String("ollama-url", "", "Ollama base URL")
+	gen := genFlags(fs)
 	batch := fs.Int("batch", 2, "chunks per model call; more is faster and measurably lossier on a small model")
 	refresh := fs.Bool("refresh", false, "ignore the extraction cache and re-read every chunk")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
@@ -530,10 +548,7 @@ func cmdEntities(args []string) error {
 	if err != nil {
 		return err
 	}
-	client := ollama.New()
-	if *ollamaURL != "" {
-		client.BaseURL = *ollamaURL
-	}
+	client := gen.backend()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
