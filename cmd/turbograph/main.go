@@ -1019,7 +1019,7 @@ func benchBuildStore(ds *bench.Dataset, embedder rag.Embedder, cfg rag.Config, o
 	}
 	extStart := time.Now()
 	last := time.Now()
-	err := buildEntitiesOn(ctx, store, client, genModel, nil, batch, false, func(done, total, cached int) {
+	err := buildEntitiesOn(ctx, store, client, genModel, nil, nil, batch, false, func(done, total, cached int) {
 		if time.Since(last) > 5*time.Second {
 			last = time.Now()
 			el := time.Since(extStart)

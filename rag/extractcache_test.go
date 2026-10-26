@@ -328,3 +328,19 @@ func TestExtractCacheFallbackModel(t *testing.T) {
 		t.Fatalf("a repeat build should read nothing, read %d", got)
 	}
 }
+
+// TestEntityGraphInclude: chunks of excluded documents are neither read nor graphed.
+func TestEntityGraphInclude(t *testing.T) {
+	s := buildStore(t, "alpha", "beta", "gamma")
+	ex := &countingExtractor{}
+	opt := EntityBuildOptions{Model: "m1", Include: func(id string) bool { return id != "beta" }}
+	if err := s.BuildEntityGraph(context.Background(), ex, opt); err != nil {
+		t.Fatal(err)
+	}
+	if got := ex.calls.Load(); got != 2 {
+		t.Fatalf("want 2 chunks read, got %d", got)
+	}
+	if s.CachedExtractions() != 2 {
+		t.Fatalf("want 2 cached extractions, got %d", s.CachedExtractions())
+	}
+}

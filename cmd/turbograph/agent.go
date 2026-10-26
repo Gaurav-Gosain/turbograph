@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -542,6 +543,7 @@ func cmdEntities(args []string) error {
 	gen := genFlags(fs)
 	batch := fs.Int("batch", 2, "chunks per model call; more is faster and measurably lossier on a small model")
 	refresh := fs.Bool("refresh", false, "ignore the extraction cache and re-read every chunk")
+	only := fs.String("only", "", "comma-separated document-id patterns to graph (* within a path segment, ** across); default all")
 	fallback := fs.String("fallback-model", "", "comma-separated models whose cached extractions stand in for chunks --gen-model has not read, so switching models does not re-read the corpus")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
 	eo := embedFlags(fs)
@@ -549,6 +551,10 @@ func cmdEntities(args []string) error {
 
 	if *genModel == "" {
 		return fmt.Errorf("--gen-model is required (or set $TURBOGRAPH_MODEL)")
+	}
+	include, err := docFilter(splitList(*only))
+	if err != nil {
+		return err
 	}
 	store, commit, err := editStore(*storePath, eo.embedder(), false)
 	if err != nil {
@@ -564,7 +570,7 @@ func cmdEntities(args []string) error {
 	// unreadable smear, so there it prints nothing at all.
 	tty := isTerminal(os.Stderr)
 	var cached int
-	err = buildEntitiesOn(ctx, store, client, *genModel, splitList(*fallback), *batch, *refresh, func(done, total, c int) {
+	err = buildEntitiesOn(ctx, store, client, *genModel, splitList(*fallback), include, *batch, *refresh, func(done, total, c int) {
 		cached = c
 		if tty && !*asJSON {
 			fmt.Fprintf(os.Stderr, "\rextracting %d/%d", done, total)
@@ -623,13 +629,14 @@ func shortHash(s string) string {
 // buildEntitiesOn runs the extraction pass, reporting progress. It sits here rather
 // than in cmdEntities so `ingest --entities` and `entities` share one code path.
 func buildEntitiesOn(ctx context.Context, store *rag.Store, gen server.Backend, model string,
-	fallback []string, batch int, refresh bool, onProgress func(done, total, cached int),
+	fallback []string, include func(string) bool, batch int, refresh bool, onProgress func(done, total, cached int),
 ) error {
 	ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: model})
 	return store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
 		BatchSize: batch,
 		Model:     model,
 		Fallback:  fallback,
+		Include:   include,
 		Refresh:   refresh,
 		OnProgress: func(p rag.EntityProgress) {
 			if onProgress != nil {
@@ -663,4 +670,32 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// docFilter compiles document-id patterns into a filter: * matches within one path
+// segment, ** across segments. No patterns means every document.
+func docFilter(patterns []string) (func(string) bool, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	res := make([]*regexp.Regexp, len(patterns))
+	for i, p := range patterns {
+		q := regexp.QuoteMeta(p)
+		q = strings.ReplaceAll(q, `\*\*`, "\x00")
+		q = strings.ReplaceAll(q, `\*`, "[^/]*")
+		q = strings.ReplaceAll(q, "\x00", ".*")
+		re, err := regexp.Compile("^" + q + "$")
+		if err != nil {
+			return nil, fmt.Errorf("--only %q: %w", p, err)
+		}
+		res[i] = re
+	}
+	return func(id string) bool {
+		for _, re := range res {
+			if re.MatchString(id) {
+				return true
+			}
+		}
+		return false
+	}, nil
 }

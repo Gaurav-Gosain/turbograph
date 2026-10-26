@@ -142,3 +142,27 @@ func TestLLMKeyFromEnvironment(t *testing.T) {
 }
 
 func newFlagSet() *flag.FlagSet { return flag.NewFlagSet("test", flag.ContinueOnError) }
+
+func TestDocFilter(t *testing.T) {
+	f, err := docFilter([]string{"sessions/**", "projects/*/_card.md", "projects/**/README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]bool{
+		"sessions/2026-10-26-x":    true,
+		"projects/kcd/_card.md":    true,
+		"projects/a/b/_card.md":    false,
+		"projects/a/b/README.md":   true,
+		"projects/a/README.md.bak": false,
+		"research/x/README.md":     false,
+		"projects/a+b/README.md":   true,
+	}
+	for id, want := range cases {
+		if got := f(id); got != want {
+			t.Errorf("%s: got %v want %v", id, got, want)
+		}
+	}
+	if f, _ := docFilter(nil); f != nil {
+		t.Error("no patterns should mean no filter")
+	}
+}

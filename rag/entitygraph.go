@@ -67,6 +67,10 @@ type EntityBuildOptions struct {
 	// listed model has read, instead of re-reading the whole corpus; the new model
 	// reads only what is new. Refresh ignores it.
 	Fallback []string
+	// Include, when set, limits extraction to chunks of the documents it accepts;
+	// the rest are neither read nor part of the graph. It lets a large store graph
+	// only the documents worth it (decision notes, not vendored reference text).
+	Include func(docID string) bool
 	// Refresh ignores the cache and re-extracts every chunk. Use it after changing
 	// something the cache key does not cover, or to retry a bad extraction.
 	Refresh    bool
@@ -167,9 +171,12 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 		key      [32]byte
 	}
 	s.mu.RLock()
-	refs := make([]chunkRef, len(s.chunks))
-	for i, c := range s.chunks {
-		refs[i] = chunkRef{id: c.ID, text: c.Text, key: extractKey(opt.Model, c.Text)}
+	refs := make([]chunkRef, 0, len(s.chunks))
+	for _, c := range s.chunks {
+		if opt.Include != nil && !opt.Include(c.DocID) {
+			continue
+		}
+		refs = append(refs, chunkRef{id: c.ID, text: c.Text, key: extractKey(opt.Model, c.Text)})
 	}
 	// Take the cached answers under the same lock that read the chunks.
 	cached := make(map[[32]byte]entity.Extraction, len(s.extractCache))
