@@ -341,25 +341,33 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 	if every <= 0 {
 		every = time.Minute
 	}
+	checkpoint := func() {
+		s.mu.Lock()
+		if s.extractCache == nil {
+			s.extractCache = make(map[[32]byte]cachedExtraction, len(fresh))
+		}
+		for k, e := range fresh {
+			s.extractCache[k] = cachedExtraction{Text: freshText[k], Ex: e}
+		}
+		s.mu.Unlock()
+		opt.Checkpoint()
+	}
 	lastCheckpoint := time.Now()
 	for r := range out {
 		fresh[r.key] = r.ex
 		freshText[r.key] = r.textHash
 		absorb(r.id, r.ex)
 		if opt.Checkpoint != nil && time.Since(lastCheckpoint) >= every {
-			s.mu.Lock()
-			if s.extractCache == nil {
-				s.extractCache = make(map[[32]byte]cachedExtraction, len(fresh))
-			}
-			for k, e := range fresh {
-				s.extractCache[k] = cachedExtraction{Text: freshText[k], Ex: e}
-			}
-			s.mu.Unlock()
-			opt.Checkpoint()
+			checkpoint()
 			lastCheckpoint = time.Now()
 		}
 	}
 	if err := ctx.Err(); err != nil {
+		// A cancelled run (a timeout, a watchdog, Ctrl+C) still keeps what it
+		// was paid for: save the answers received since the last checkpoint.
+		if opt.Checkpoint != nil && len(fresh) > 0 {
+			checkpoint()
+		}
 		return err
 	}
 
