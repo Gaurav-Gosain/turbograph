@@ -100,6 +100,12 @@ type embedResponse struct {
 	} `json:"data"`
 }
 
+// MaxEmbedBatch caps how many inputs go into one /v1/embeddings request.
+// Providers limit the inputs and tokens per request, and a local server can fall
+// over on one request carrying a whole large document, so Embed splits bigger
+// inputs into several requests of at most this size.
+const MaxEmbedBatch = 64
+
 // Embed returns one embedding per input, encoded as documents (DocPrefix applied).
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return c.embed(ctx, texts, c.DocPrefix)
@@ -111,6 +117,22 @@ func (c *Client) EmbedQuery(ctx context.Context, texts []string) ([][]float32, e
 }
 
 func (c *Client) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
+	if len(texts) <= MaxEmbedBatch {
+		return c.embedBatch(ctx, texts, prefix)
+	}
+	out := make([][]float32, 0, len(texts))
+	for i := 0; i < len(texts); i += MaxEmbedBatch {
+		vecs, err := c.embedBatch(ctx, texts[i:min(i+MaxEmbedBatch, len(texts))], prefix)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+	}
+	return out, nil
+}
+
+// embedBatch embeds texts in a single /v1/embeddings request.
+func (c *Client) embedBatch(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}

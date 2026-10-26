@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -155,5 +156,48 @@ func TestHeadersOnTheWire(t *testing.T) {
 	}
 	if got.Get("Authorization") != "Basic overridden" {
 		t.Errorf("extra header did not override the bearer token: %q", got.Get("Authorization"))
+	}
+}
+
+// TestOAIEmbedSplitsLargeRequests verifies that Embed never sends more than
+// MaxEmbedBatch inputs in one request and that each request's out-of-order,
+// request-local indices still land every vector at its position in the input.
+func TestOAIEmbedSplitsLargeRequests(t *testing.T) {
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req embedRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		sizes = append(sizes, len(req.Input))
+		data := make([]map[string]any, len(req.Input))
+		for i := range req.Input {
+			idx := len(req.Input) - 1 - i
+			n, _ := strconv.Atoi(req.Input[idx])
+			data[i] = map[string]any{"embedding": []float32{float32(n), 1}, "index": idx}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", "text-embedding-3-small")
+	texts := make([]string, 2*MaxEmbedBatch+22)
+	for i := range texts {
+		texts[i] = strconv.Itoa(i)
+	}
+	vecs, err := c.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sizes) != 3 {
+		t.Fatalf("want 3 requests for %d inputs, got %v", len(texts), sizes)
+	}
+	for _, n := range sizes {
+		if n > MaxEmbedBatch {
+			t.Fatalf("request carried %d inputs, cap is %d", n, MaxEmbedBatch)
+		}
+	}
+	for i, v := range vecs {
+		if v[0] != float32(i) {
+			t.Fatalf("vector %d out of order: first coord %v", i, v[0])
+		}
 	}
 }
