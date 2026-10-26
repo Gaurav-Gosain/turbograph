@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -119,5 +120,52 @@ func TestEmbedDimTruncates(t *testing.T) {
 	}
 	if len(v[0]) != 4 {
 		t.Fatalf("want truncated dim 4, got %d", len(v[0]))
+	}
+}
+
+// TestEmbedSplitsLargeRequests verifies that Embed never sends more than
+// MaxEmbedBatch inputs in one request and returns the vectors in input order
+// across the requests.
+func TestEmbedSplitsLargeRequests(t *testing.T) {
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req embedRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		sizes = append(sizes, len(req.Input))
+		out := embedResponse{Embeddings: make([][]float32, len(req.Input))}
+		for i, in := range req.Input {
+			n, _ := strconv.Atoi(in)
+			out.Embeddings[i] = []float32{float32(n), 1}
+		}
+		json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.DocPrefix = ""
+	texts := make([]string, 2*MaxEmbedBatch+22)
+	for i := range texts {
+		texts[i] = strconv.Itoa(i)
+	}
+	vecs, err := c.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sizes) != 3 {
+		t.Fatalf("want 3 requests for %d inputs, got %v", len(texts), sizes)
+	}
+	for _, n := range sizes {
+		if n > MaxEmbedBatch {
+			t.Fatalf("request carried %d inputs, cap is %d", n, MaxEmbedBatch)
+		}
+	}
+	if len(vecs) != len(texts) {
+		t.Fatalf("want %d vectors, got %d", len(texts), len(vecs))
+	}
+	for i, v := range vecs {
+		if v[0] != float32(i) {
+			t.Fatalf("vector %d out of order: first coord %v", i, v[0])
+		}
 	}
 }
