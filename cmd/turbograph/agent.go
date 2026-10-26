@@ -543,6 +543,7 @@ func cmdEntities(args []string) error {
 	gen := genFlags(fs)
 	batch := fs.Int("batch", 2, "chunks per model call; more is faster and measurably lossier on a small model")
 	refresh := fs.Bool("refresh", false, "ignore the extraction cache and re-read every chunk")
+	every := fs.Duration("checkpoint", time.Minute, "save extractions to the store this often during the run, so an interrupted run resumes instead of starting over (0 = only at the end)")
 	only := fs.String("only", "", "comma-separated document-id patterns to graph (* within a path segment, ** across); default all")
 	fallback := fs.String("fallback-model", "", "comma-separated models whose cached extractions stand in for chunks --gen-model has not read, so switching models does not re-read the corpus")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
@@ -570,7 +571,21 @@ func cmdEntities(args []string) error {
 	// unreadable smear, so there it prints nothing at all.
 	tty := isTerminal(os.Stderr)
 	var cached int
-	err = buildEntitiesOn(ctx, store, client, *genModel, splitList(*fallback), include, *batch, *refresh, func(done, total, c int) {
+	// Saving needs no extra locking: editStore holds the store's lock for the whole run.
+	var checkpoint func() error
+	if *every > 0 {
+		checkpoint = func() error {
+			if err := save(*storePath, store); err != nil {
+				fmt.Fprintf(os.Stderr, "checkpoint failed: %v\n", err)
+				return err
+			}
+			if !*asJSON {
+				fmt.Fprintf(os.Stderr, "\ncheckpoint: %d extractions saved\n", store.CachedExtractions())
+			}
+			return nil
+		}
+	}
+	err = buildEntitiesOn(ctx, store, client, *genModel, splitList(*fallback), include, checkpoint, *every, *batch, *refresh, func(done, total, c int) {
 		cached = c
 		if tty && !*asJSON {
 			fmt.Fprintf(os.Stderr, "\rextracting %d/%d", done, total)
@@ -629,15 +644,18 @@ func shortHash(s string) string {
 // buildEntitiesOn runs the extraction pass, reporting progress. It sits here rather
 // than in cmdEntities so `ingest --entities` and `entities` share one code path.
 func buildEntitiesOn(ctx context.Context, store *rag.Store, gen server.Backend, model string,
-	fallback []string, include func(string) bool, batch int, refresh bool, onProgress func(done, total, cached int),
+	fallback []string, include func(string) bool, checkpoint func() error, every time.Duration,
+	batch int, refresh bool, onProgress func(done, total, cached int),
 ) error {
 	ex := entity.NewLLMExtractor(cliGenerator{c: gen, model: model})
 	return store.BuildEntityGraph(ctx, ex, rag.EntityBuildOptions{
-		BatchSize: batch,
-		Model:     model,
-		Fallback:  fallback,
-		Include:   include,
-		Refresh:   refresh,
+		BatchSize:       batch,
+		Model:           model,
+		Fallback:        fallback,
+		Include:         include,
+		Checkpoint:      checkpoint,
+		CheckpointEvery: every,
+		Refresh:         refresh,
 		OnProgress: func(p rag.EntityProgress) {
 			if onProgress != nil {
 				onProgress(p.Done, p.Total, p.Cached)

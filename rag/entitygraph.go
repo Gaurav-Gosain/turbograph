@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 	"github.com/Gaurav-Gosain/turbograph/graph"
@@ -71,6 +72,14 @@ type EntityBuildOptions struct {
 	// the rest are neither read nor part of the graph. It lets a large store graph
 	// only the documents worth it (decision notes, not vendored reference text).
 	Include func(docID string) bool
+	// Checkpoint, when set, is called during the run with the store's extraction
+	// cache updated to hold every answer received so far, at most once per
+	// CheckpointEvery (default one minute). It is how a caller persists progress:
+	// the graph itself is only built at the end, so without it an interrupted run
+	// loses every answer it paid for. With it, the next run reads only the chunks
+	// still missing. A Checkpoint error is the caller's to report; the run goes on.
+	Checkpoint      func() error
+	CheckpointEvery time.Duration
 	// Refresh ignores the cache and re-extracts every chunk. Use it after changing
 	// something the cache key does not cover, or to retry a bad extraction.
 	Refresh    bool
@@ -328,10 +337,27 @@ func (s *Store) BuildEntityGraph(ctx context.Context, ex entity.Extractor, opt E
 			absorb(r.id, e)
 		}
 	}
+	every := opt.CheckpointEvery
+	if every <= 0 {
+		every = time.Minute
+	}
+	lastCheckpoint := time.Now()
 	for r := range out {
 		fresh[r.key] = r.ex
 		freshText[r.key] = r.textHash
 		absorb(r.id, r.ex)
+		if opt.Checkpoint != nil && time.Since(lastCheckpoint) >= every {
+			s.mu.Lock()
+			if s.extractCache == nil {
+				s.extractCache = make(map[[32]byte]cachedExtraction, len(fresh))
+			}
+			for k, e := range fresh {
+				s.extractCache[k] = cachedExtraction{Text: freshText[k], Ex: e}
+			}
+			s.mu.Unlock()
+			opt.Checkpoint()
+			lastCheckpoint = time.Now()
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

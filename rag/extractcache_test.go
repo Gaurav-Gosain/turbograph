@@ -5,6 +5,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Gaurav-Gosain/turbograph/entity"
 )
@@ -342,5 +343,73 @@ func TestEntityGraphInclude(t *testing.T) {
 	}
 	if s.CachedExtractions() != 2 {
 		t.Fatalf("want 2 cached extractions, got %d", s.CachedExtractions())
+	}
+}
+
+// cancellingExtractor counts calls and cancels the run on the given call, the way a
+// timeout, a watchdog or a killed process ends one midway.
+type cancellingExtractor struct {
+	calls  atomic.Int64
+	at     int64
+	cancel context.CancelFunc
+	inner  countingExtractor
+}
+
+func (c *cancellingExtractor) Extract(ctx context.Context, text string) (entity.Extraction, error) {
+	if c.calls.Add(1) == c.at {
+		c.cancel()
+	}
+	return c.inner.Extract(ctx, text)
+}
+
+// TestEntityGraphCheckpointResume: a run cut off midway keeps the answers it got as
+// of its last checkpoint, and the next run reads only the chunks still missing.
+func TestEntityGraphCheckpointResume(t *testing.T) {
+	texts := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
+	s := buildStore(t, texts...)
+	ctx, cancel := context.WithCancel(context.Background())
+	ex := &cancellingExtractor{at: 4, cancel: cancel}
+	var saved []byte
+	opt := EntityBuildOptions{Model: "m1", Workers: 1, CheckpointEvery: time.Nanosecond,
+		Checkpoint: func() error {
+			var buf bytes.Buffer
+			if err := s.Save(&buf); err != nil {
+				return err
+			}
+			saved = buf.Bytes()
+			return nil
+		}}
+	if err := s.BuildEntityGraph(ctx, ex, opt); err == nil {
+		t.Fatal("the cut-off run should report its cancellation")
+	}
+	if saved == nil {
+		t.Fatal("no checkpoint was written")
+	}
+
+	// what is on disk is the last checkpoint, not the in-memory store
+	resumed, err := Load(newKeywordEmbedder(32), bytes.NewReader(saved))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := resumed.CachedExtractions()
+	if kept < 3 {
+		t.Fatalf("checkpoint kept %d answers, want at least the 3 read before the cut", kept)
+	}
+	ex2 := &countingExtractor{}
+	opt2 := EntityBuildOptions{Model: "m1", Workers: 1}
+	if err := resumed.BuildEntityGraph(context.Background(), ex2, opt2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ex2.calls.Load(), int64(len(texts)-kept); got != want {
+		t.Fatalf("resumed run read %d chunks, want only the %d missing", got, want)
+	}
+
+	// and the resumed graph is the graph a single uninterrupted run builds
+	full := buildStore(t, texts...)
+	if err := full.BuildEntityGraph(context.Background(), &countingExtractor{}, opt2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resumed.EntityCount(), full.EntityCount(); got != want {
+		t.Errorf("resumed graph has %d entities, an uninterrupted run %d", got, want)
 	}
 }
